@@ -29,6 +29,13 @@
       "when": 1792207601312,
       "tag": "0003_material_harrier",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1794596691941,
+      "tag": "0004_modern_the_stranger",
+      "breakpoints": true
     }
   ]
 }

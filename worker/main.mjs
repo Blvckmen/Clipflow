@@ -29,6 +29,14 @@ const sessions = new Map(), blockedUntil = new Map(), failures = new Map();
 const live = new Map(), unreported = new Set();
 const jobs = [];  // extracted windows waiting for CPU-heavy processing, handled one at a time
 let config = null, stopping = false, timer, sessionTimer, processing = null;
+let pendingError = null;  // latest problem not yet delivered to the dashboard
+
+// Logs a problem and queues it for the dashboard, which shows the most recent one.
+function problem(message) {
+  const text = String(message).replace(/\s+/g, " ").trim().slice(0, 500);
+  console.warn(text);
+  pendingError = { message: text, at: new Date().toISOString() };
+}
 
 // Redirects are refused so a sign-in wall in front of the dashboard surfaces as an error, not a silent HTML page.
 function api(path, { timeout = 20_000, headers = {}, ...init } = {}) {
@@ -46,10 +54,11 @@ async function probe(streamers) {
   const queue = [...streamers];
   await Promise.all(Array.from({ length: Math.min(probeConcurrency, queue.length) }, async () => {
     for (let s; (s = queue.shift()) && !stopping;) {
-      const result = await probeLive(s.url, AbortSignal.timeout(60_000)).catch(() => ({ status: "error", title: null }));
+      const result = await probeLive(s.url, AbortSignal.timeout(60_000)).catch(error => ({ status: "error", title: null, message: error.message }));
       const before = live.get(s.id)?.status;
       setLive(s.id, result.status, result.title);
-      if (before !== result.status) console.log("Live check:", s.url, "is", result.status + (result.title ? " (" + result.title + ")" : ""));
+      if (result.status === "error") problem("Live check failed for " + s.url + ": " + result.message);
+      else if (before !== result.status) console.log("Live check:", s.url, "is", result.status + (result.title ? " (" + result.title + ")" : ""));
     }
   }));
 }
@@ -57,14 +66,15 @@ async function probe(streamers) {
 async function reportStatus() {
   // Recording streamers are refreshed every cycle so the dashboard never shows them as stale.
   for (const id of sessions.keys()) setLive(id, "recording", live.get(id)?.title ?? null);
-  if (!unreported.size) return;
-  const ids = [...unreported];
+  if (!unreported.size && !pendingError) return;
+  const ids = [...unreported], error = pendingError;
   const streamers = ids.filter(id => live.has(id)).map(id => { const s = live.get(id); return { id, status: s.status, checkedAt: new Date(s.checkedAt).toISOString(), title: s.title }; });
   try {
-    const response = await api("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers }) });
+    const response = await api("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers, ...(error && { error }) }) });
     if (!response.ok) throw new Error("HTTP " + response.status);
     for (const id of ids) unreported.delete(id);
-  } catch (error) { console.warn("Status report deferred:", error.message); }
+    if (pendingError === error) pendingError = null;
+  } catch (failure) { console.warn("Status report deferred:", failure.message); }
 }
 
 async function refresh() {
@@ -84,7 +94,7 @@ async function startSession(streamer) {
   const session = { streamer, recorder, chat: null, startedMs: Date.now(), lastClipMs: Date.now(), pending: null, busy: false };
   sessions.set(streamer.id, session);
   try { await recorder.start(); }
-  catch (error) { sessions.delete(streamer.id); console.warn("Could not start recording", streamer.url + ":", error.message); return; }
+  catch (error) { sessions.delete(streamer.id); problem("Could not start recording " + streamer.url + ": " + error.message); return; }
   session.chat = openChat(streamer.url);
   setLive(streamer.id, "recording", live.get(streamer.id)?.title ?? null);
   console.log("Recording", streamer.url, session.chat ? "(watching chat)" : "(audio only)");
@@ -95,14 +105,16 @@ async function stopSession(id, reason) {
   if (!session) return;
   sessions.delete(id);
   session.chat?.close();
+  const failure = session.recorder.error;
   await session.recorder.stop();
-  console.log("Stopped recording", session.streamer.url + ":", reason);
+  if (failure) problem("Recording " + session.streamer.url + " failed: " + failure);
+  else console.log("Stopped recording", session.streamer.url + ":", reason);
 }
 
 // Copies the buffered window out immediately (the buffer moves on), then queues the slow processing.
 async function clipWindow(session, fromMs, toMs, reason) {
   const { streamer } = session, settings = config;
-  const id = crypto.randomUUID(), dir = join(dataDir, "clips", streamer.id, id), raw = join(dir, "window.ts");
+  const id = crypto.randomUUID(), dir = join(dataDir, "clips", streamer.id, id), raw = join(dir, "window.m2t");
   session.busy = true;
   try {
     store.add(id, streamer.id, join(dir, "clip.mp4"), settings.duration, settings.captions);
@@ -115,7 +127,7 @@ async function clipWindow(session, fromMs, toMs, reason) {
   } catch (error) {
     store.fail(id);
     await rm(dir, { recursive: true, force: true });
-    console.warn("Could not extract clip window for", streamer.url + ":", error.message);
+    problem("Could not cut a clip window for " + streamer.url + ": " + error.message);
   } finally { session.busy = false; }
 }
 
@@ -133,7 +145,7 @@ async function processJobs() {
     } catch (error) {
       store.fail(job.id);
       await rm(job.dir, { recursive: true, force: true });
-      if (!controller.signal.aborted) console.warn("Clip processing failed for", job.streamer.url + ":", error.message);
+      if (!controller.signal.aborted) problem("Clip processing failed for " + job.streamer.url + ": " + error.message);
     } finally { processing = null; }
     void report();
   }
@@ -190,17 +202,17 @@ async function report() {
       const permanent = status => status >= 400 && status < 500 && status !== 401 && status !== 429;
       const response = await api("/api/worker/clips", { method: "POST", body: JSON.stringify({ id: row.id, streamerId: row.streamer, createdAt: row.created_at, duration: row.duration, captions: !!row.captions, sha: row.sha, size }) });
       // 4xx other than auth and rate limiting will not succeed on retry (for example a removed streamer).
-      if (permanent(response.status)) { store.rejected(row.id); console.warn("Clip report rejected:", row.id, response.status); continue; }
+      if (permanent(response.status)) { store.rejected(row.id); problem("Dashboard refused clip " + row.id + " (HTTP " + response.status + ")"); continue; }
       if (!response.ok) throw new Error("HTTP " + response.status);
       // Both steps are idempotent server-side, so a retry after a failed upload safely repeats the report.
       const upload = await api("/api/worker/clips/" + row.id + "/file", { method: "PUT", body: await readFile(row.path), headers: { "content-type": "video/mp4" }, timeout: 180_000 });
       if (upload.status === 501) { store.uploaded(row.id); console.log("Clip reported; dashboard storage is off, file kept locally:", row.id); }
       else if (upload.ok) { store.uploaded(row.id); console.log("Clip uploaded:", row.id); }
-      else if (permanent(upload.status)) { store.rejected(row.id); console.warn("Clip upload rejected:", row.id, upload.status); }
+      else if (permanent(upload.status)) { store.rejected(row.id); problem("Dashboard refused the file for clip " + row.id + " (HTTP " + upload.status + ")"); }
       else throw new Error("upload HTTP " + upload.status);
     } catch (error) {
       store.retry(row.id, row.attempts + 1);
-      console.warn("Clip report deferred:", row.id, error.message);
+      problem("Could not send clip " + row.id + " to the dashboard, will retry: " + error.message);
     }
   }
 }

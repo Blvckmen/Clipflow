@@ -9,7 +9,9 @@ export const preferences=sqliteTable("preferences",{
 });
 export const events=sqliteTable("events",{id:text("id").primaryKey(),owner:text("owner").notNull(),message:text("message").notNull(),createdAt:text("created_at").notNull()},t=>[index("events_owner_created").on(t.owner,t.createdAt)]);
 // Only the SHA-256 of a worker token is stored; the plaintext is shown once on creation.
-export const workerTokens=sqliteTable("worker_tokens",{owner:text("owner").primaryKey(),tokenHash:text("token_hash").notNull(),createdAt:text("created_at").notNull(),lastSeen:text("last_seen")},t=>[uniqueIndex("worker_tokens_hash").on(t.tokenHash)]);
+export const workerTokens=sqliteTable("worker_tokens",{owner:text("owner").primaryKey(),tokenHash:text("token_hash").notNull(),createdAt:text("created_at").notNull(),lastSeen:text("last_seen"),
+ // Most recent problem the worker reported, shown in the dashboard.
+ lastError:text("last_error"),lastErrorAt:text("last_error_at")},t=>[uniqueIndex("worker_tokens_hash").on(t.tokenHash)]);
 export const clips=sqliteTable("clips",{
  id:text("id").primaryKey(),owner:text("owner").notNull(),streamerId:text("streamer_id").notNull(),createdAt:text("created_at").notNull(),duration:integer("duration").notNull(),captions:integer("captions",{mode:"boolean"}).notNull(),sha:text("sha").notNull(),size:integer("size").notNull(),
  // R2 object key once the worker has uploaded the file; null while the file is only on the worker.

@@ -17,7 +17,7 @@ const ctx = (over = {}) => ({ running: new Set(), blockedUntil: new Map(), count
 test("probeResult distinguishes live, offline and failed checks", () => {
   assert.deepEqual(probeResult({ plugin: "kick", metadata: { title: "Brand Risk #16" }, streams: { "720p60": {}, best: {} } }), { status: "live", title: "Brand Risk #16" });
   assert.deepEqual(probeResult({ error: "No playable streams found on this URL: https://kick.com/x" }), { status: "offline", title: null });
-  assert.equal(probeResult({ error: "Error while querying Kick API: 404 Client Error" }).status, "error");
+  assert.deepEqual(probeResult({ error: "Error while querying Kick API: 404 Client Error" }), { status: "error", title: null, message: "Error while querying Kick API: 404 Client Error" });
   assert.equal(probeResult({ streams: {} }).status, "error");
   assert.equal(probeResult(null).status, "error");
   assert.equal(probeResult({ streams: { best: {} }, metadata: { title: "x".repeat(500) } }).title.length, 200);

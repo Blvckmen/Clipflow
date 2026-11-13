@@ -101,6 +101,18 @@ describe("live status", () => {
     const row = (await dash()).body.streamers.find(s => s.id === streamer.id);
     assert.deepEqual([row.live_status, row.live_checked_at, row.live_title], ["live", checkedAt, "API test stream"]);
   });
+  test("the worker's latest error is shown and a new token clears it", async () => {
+    const at = new Date().toISOString();
+    const sent = await worker("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers: [], error: { message: "ffmpeg failed (exit 1): No such file", at } }) });
+    assert.equal(sent.status, 200);
+    let engine = (await dash()).body.engine;
+    assert.deepEqual([engine.lastError, engine.lastErrorAt], ["ffmpeg failed (exit 1): No such file", at]);
+    const tooLong = await worker("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers: [], error: { message: "x".repeat(501), at } }) });
+    assert.equal(tooLong.status, 400);
+    token = (await dash({ action: "token" })).body.token;
+    engine = (await dash()).body.engine;
+    assert.equal(engine.lastError, null);
+  });
   test("invalid status reports are rejected", async () => {
     const bad = await worker("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers: [{ id: streamer.id, status: "streaming", checkedAt: new Date().toISOString() }] }) });
     assert.equal(bad.status, 400);

@@ -17,9 +17,9 @@ export async function GET(){
  const user=await getChatGPTUser();if(!user)return Response.json({error:"Sign in to open your dashboard."},{status:401});
  try{
   const db=database();
-  const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(user.userId).all(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(user.userId).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(user.userId).all(),db.prepare("SELECT c.id,c.streamer_id,c.created_at,c.duration,c.captions,c.size,c.file_key IS NOT NULL AS stored,s.name AS streamer FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.owner=? ORDER BY c.created_at DESC LIMIT 100").bind(user.userId).all(),db.prepare("SELECT created_at,last_seen FROM worker_tokens WHERE owner=?").bind(user.userId).first<{created_at:string;last_seen:string|null}>()]);
+  const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(user.userId).all(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(user.userId).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(user.userId).all(),db.prepare("SELECT c.id,c.streamer_id,c.created_at,c.duration,c.captions,c.size,c.file_key IS NOT NULL AS stored,s.name AS streamer FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.owner=? ORDER BY c.created_at DESC LIMIT 100").bind(user.userId).all(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at FROM worker_tokens WHERE owner=?").bind(user.userId).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null}>()]);
   const lastSeen=w?.last_seen??null,connected=!!lastSeen&&Date.now()-Date.parse(lastSeen)<ENGINE_FRESH_MS;
-  const engine={connected,lastSeen,tokenCreated:w?.created_at??null,status:connected?"Worker connected":w?(lastSeen?"Worker offline":"Waiting for worker"):"Setup required"};
+  const engine={connected,lastSeen,tokenCreated:w?.created_at??null,lastError:w?.last_error??null,lastErrorAt:w?.last_error_at??null,status:connected?"Worker connected":w?(lastSeen?"Worker offline":"Waiting for worker"):"Setup required"};
   return Response.json({user:user.displayName,streamers:s.results,settings:p?{...p,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations))}:defaults,events:e.results,engine,accounts:[],clips:c.results.map(x=>({...x,captions:!!x.captions,stored:!!x.stored})),analytics:null},{headers:{"Cache-Control":"private, no-store"}});
  }catch(error){console.error("Dashboard load failed",error);return Response.json({error:"We couldn't load your workspace. Please retry."},{status:503});}
 }
@@ -62,7 +62,7 @@ export async function POST(request:Request){
   if(payload.action==="token"){
    token=newToken();
    // Replacing the hash revokes any previous token for this owner.
-   statements.push(db.prepare("INSERT INTO worker_tokens (owner,token_hash,created_at,last_seen) VALUES (?,?,?,NULL) ON CONFLICT(owner) DO UPDATE SET token_hash=excluded.token_hash,created_at=excluded.created_at,last_seen=NULL").bind(owner,await hashToken(token),new Date().toISOString()));
+   statements.push(db.prepare("INSERT INTO worker_tokens (owner,token_hash,created_at,last_seen) VALUES (?,?,?,NULL) ON CONFLICT(owner) DO UPDATE SET token_hash=excluded.token_hash,created_at=excluded.created_at,last_seen=NULL,last_error=NULL,last_error_at=NULL").bind(owner,await hashToken(token),new Date().toISOString()));
    message="Created a new worker token. Any previous token was revoked.";
   }
   statements.push(db.prepare("INSERT INTO events (id,owner,message,created_at) VALUES (?,?,?,?)").bind(crypto.randomUUID(),owner,message,new Date().toISOString()));
