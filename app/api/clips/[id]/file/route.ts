@@ -1,9 +1,9 @@
-import { getChatGPTUser } from "../../../../chatgpt-auth";
+import { currentUser } from "../../../../auth";
 import { bucket, database } from "../../../../../db/raw";
 export const dynamic="force-dynamic";
 // Streams a stored clip to its owner, honouring Range so browsers can seek.
 export async function GET(request:Request,{params}:{params:Promise<{id:string}>}){
- const user=await getChatGPTUser();if(!user)return new Response("Sign in to view clips.",{status:401});
+ const user=await currentUser();if(!user)return new Response("Sign in to view clips.",{status:401});
  const store=bucket();if(!store)return new Response("Clip storage is not enabled.",{status:404});
  const {id}=await params;
  const clip=await database().prepare("SELECT file_key,created_at FROM clips WHERE id=? AND owner=?").bind(id,user.userId).first<{file_key:string|null;created_at:string}>();

@@ -1,0 +1,182 @@
+// Deploys Clipflow to your own Cloudflare account, protected by Cloudflare Access.
+//   node scripts/deploy-cloudflare.mjs --check   read-only: verify the token and account prerequisites
+//   node scripts/deploy-cloudflare.mjs           build, provision (idempotent), migrate, deploy, smoke-test
+// Settings come from the environment or a git-ignored .env file in the project root (see DEPLOY.md).
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = fileURLToPath(new URL("..", import.meta.url));
+const checkOnly = process.argv.includes("--check");
+
+function loadDotEnv() {
+  const file = join(root, ".env");
+  if (!existsSync(file)) return;
+  for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
+    const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(line);
+    if (m && !line.trimStart().startsWith("#") && process.env[m[1]] === undefined) process.env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, "$2");
+  }
+}
+loadDotEnv();
+const env = process.env;
+const token = env.CLOUDFLARE_API_TOKEN;
+const workerName = env.CLIPFLOW_WORKER_NAME || "clipflow";
+const dbName = env.CLIPFLOW_D1_NAME || "clipflow";
+const bucketName = env.CLIPFLOW_R2_BUCKET || "clipflow-clips";
+const allowed = (env.CLIPFLOW_ACCESS_EMAILS || "").split(",").map(s => s.trim()).filter(Boolean);
+
+const ok = msg => console.log("  ok   " + msg), warn = msg => console.log("  warn " + msg);
+// Thrown rather than calling process.exit(): exiting with fetch sockets still closing crashes Node on Windows.
+class DeployError extends Error {}
+function fail(msg) { throw new DeployError(msg); }
+
+async function cf(path, init = {}) {
+  const response = await fetch("https://api.cloudflare.com/client/v4" + path, { ...init, headers: { authorization: "Bearer " + token, "content-type": "application/json", ...init.headers } });
+  let body = null;
+  try { body = await response.json(); } catch { /* not json */ }
+  return { status: response.status, ok: response.ok && body?.success !== false, result: body?.result, errors: (body?.errors ?? []).map(e => e.code + ": " + e.message).join("; ") || "HTTP " + response.status };
+}
+
+function wrangler(args, extraEnv = {}) {
+  const result = spawnSync(process.execPath, [join(root, "node_modules/wrangler/bin/wrangler.js"), ...args], { cwd: root, stdio: "inherit", env: { ...env, CI: "true", WRANGLER_SEND_METRICS: "false", ...extraEnv } });
+  if (result.status !== 0) fail("wrangler " + args.slice(0, 3).join(" ") + " failed (exit " + result.status + ")");
+}
+
+async function main() {
+console.log(checkOnly ? "Checking Cloudflare prerequisites (no changes)\n" : "Deploying Clipflow to Cloudflare\n");
+
+// 1. Token and account
+if (!token) fail("CLOUDFLARE_API_TOKEN is not set. Put it in .env (see DEPLOY.md); never commit it.");
+let verify = await cf("/user/tokens/verify");
+let accountId = env.CLOUDFLARE_ACCOUNT_ID;
+if (!verify.ok && accountId) verify = await cf("/accounts/" + accountId + "/tokens/verify");
+if (!verify.ok || verify.result?.status !== "active") fail("API token was not accepted (" + verify.errors + ").");
+ok("API token is active");
+if (!accountId) {
+  const accounts = await cf("/accounts");
+  if (!accounts.ok || !accounts.result?.length) fail("Could not list accounts (" + accounts.errors + "). Set CLOUDFLARE_ACCOUNT_ID in .env.");
+  if (accounts.result.length > 1) fail("The token can see several accounts; set CLOUDFLARE_ACCOUNT_ID in .env to choose one.");
+  accountId = accounts.result[0].id;
+}
+ok("account " + accountId.slice(0, 6) + "…");
+const acct = "/accounts/" + accountId;
+
+// 2. workers.dev subdomain decides the site address
+const sub = await cf(acct + "/workers/subdomain");
+if (!sub.ok || !sub.result?.subdomain) fail("No workers.dev subdomain yet (" + sub.errors + "). Open Cloudflare dashboard → Workers & Pages once to choose one.");
+const host = env.CLIPFLOW_HOSTNAME || workerName + "." + sub.result.subdomain + ".workers.dev";
+ok("site address will be https://" + host);
+
+// 3. Access organization (Zero Trust team)
+const org = await cf(acct + "/access/organizations");
+if (!org.ok || !org.result?.auth_domain) fail("Cloudflare Zero Trust is not set up (" + org.errors + "). Open dashboard → Zero Trust once, pick a team name and the Free plan.");
+const teamDomain = org.result.auth_domain;
+ok("Zero Trust team " + teamDomain);
+if (!allowed.length) fail("CLIPFLOW_ACCESS_EMAILS is empty. List the email addresses allowed to sign in (comma-separated) in .env.");
+ok(allowed.length + " allowed sign-in address(es)");
+
+// 4. Database and storage
+const dbList = await cf(acct + "/d1/database?name=" + encodeURIComponent(dbName));
+if (!dbList.ok) fail("Cannot read D1 databases (" + dbList.errors + "). The token needs D1 Edit.");
+let db = dbList.result.find(d => d.name === dbName);
+ok(db ? "D1 database '" + dbName + "' exists" : "D1 database '" + dbName + "' will be created");
+const bucketCheck = await cf(acct + "/r2/buckets/" + bucketName);
+let bucketReady = bucketCheck.ok;
+const r2Usable = bucketCheck.ok || bucketCheck.status === 404;
+if (bucketReady) ok("R2 bucket '" + bucketName + "' exists");
+else if (r2Usable) ok("R2 bucket '" + bucketName + "' will be created");
+else warn("R2 is unavailable (" + bucketCheck.errors + "). Deploying without clip storage: clips stay on the worker machine. Enable R2 in the dashboard to add it later.");
+const apps = await cf(acct + "/access/apps");
+if (!apps.ok) fail("Cannot read Access applications (" + apps.errors + "). The token needs Access: Apps and Policies Edit.");
+ok("Access applications readable");
+
+if (checkOnly) { console.log("\nAll prerequisites look good. Run without --check to deploy.\n"); return; }
+
+// 5. Build
+console.log("\nBuilding…");
+const build = spawnSync(process.execPath, [join(root, "scripts/run-framework.mjs"), "build"], { cwd: root, stdio: "inherit", env });
+if (build.status !== 0) fail("build failed");
+
+// 6. Provision (idempotent)
+if (!db) {
+  const created = await cf(acct + "/d1/database", { method: "POST", body: JSON.stringify({ name: dbName }) });
+  if (!created.ok) fail("Could not create D1 database (" + created.errors + ").");
+  db = created.result;
+  ok("created D1 database '" + dbName + "'");
+}
+if (!bucketReady && r2Usable) {
+  const created = await cf(acct + "/r2/buckets", { method: "POST", body: JSON.stringify({ name: bucketName }) });
+  if (created.ok) { bucketReady = true; ok("created R2 bucket '" + bucketName + "'"); }
+  else warn("Could not create R2 bucket (" + created.errors + "); deploying without clip storage.");
+}
+
+// Access: the dashboard requires sign-in; the worker API bypasses Access and uses its own bearer token.
+async function ensureApp(name, domain, policy) {
+  let app = apps.result.find(a => a.domain === domain);
+  if (!app) {
+    const created = await cf(acct + "/access/apps", { method: "POST", body: JSON.stringify({ name, domain, type: "self_hosted", session_duration: "24h", app_launcher_visible: false }) });
+    if (!created.ok) fail("Could not create Access application for " + domain + " (" + created.errors + ").");
+    app = created.result;
+    ok("created Access application '" + name + "'");
+  }
+  const policies = await cf(acct + "/access/apps/" + app.id + "/policies");
+  const existing = policies.ok ? policies.result.find(p => p.name === policy.name) : null;
+  const saved = existing
+    ? await cf(acct + "/access/apps/" + app.id + "/policies/" + existing.id, { method: "PUT", body: JSON.stringify({ ...policy, precedence: existing.precedence ?? 1 }) })
+    : await cf(acct + "/access/apps/" + app.id + "/policies", { method: "POST", body: JSON.stringify({ ...policy, precedence: 1 }) });
+  if (!saved.ok) fail("Could not save Access policy '" + policy.name + "' (" + saved.errors + ").");
+  ok("Access policy '" + policy.name + "' on " + domain);
+  return app;
+}
+const dashboardApp = await ensureApp("Clipflow", host, { name: "Allowed people", decision: "allow", include: allowed.map(email => ({ email: { email } })) });
+await ensureApp("Clipflow worker API", host + "/api/worker", { name: "Worker token auth", decision: "bypass", include: [{ everyone: {} }] });
+
+// 7. Deploy config derived from the build output
+const built = JSON.parse(readFileSync(join(root, "dist/server/wrangler.json"), "utf8"));
+const deployConfig = {
+  ...built,
+  name: workerName,
+  workers_dev: !env.CLIPFLOW_HOSTNAME,
+  ...(env.CLIPFLOW_HOSTNAME && { routes: [{ pattern: env.CLIPFLOW_HOSTNAME, custom_domain: true }] }),
+  d1_databases: [{ binding: "DB", database_name: dbName, database_id: db.uuid, migrations_dir: "../../drizzle" }],
+  r2_buckets: bucketReady ? [{ binding: "BUCKET", bucket_name: bucketName }] : [],
+  vars: { ...built.vars, AUTH_MODE: "access", CF_ACCESS_TEAM_DOMAIN: teamDomain, CF_ACCESS_AUD: dashboardApp.aud },
+};
+const deployConfigPath = join(root, "dist/server/wrangler.deploy.json");
+writeFileSync(deployConfigPath, JSON.stringify(deployConfig, null, 2));
+const auth = { CLOUDFLARE_API_TOKEN: token, CLOUDFLARE_ACCOUNT_ID: accountId };
+
+console.log("\nApplying database migrations…");
+wrangler(["d1", "migrations", "apply", "DB", "--remote", "--config", deployConfigPath], auth);
+console.log("\nDeploying Worker…");
+wrangler(["deploy", "--config", deployConfigPath], auth);
+
+// 8. Smoke test: worker API must answer with the app's own 401; the dashboard must be behind Access.
+console.log("\nChecking the live site…");
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let workerOk = false, dashboardOk = false, lastWorker = "", lastDashboard = "";
+for (let attempt = 0; attempt < 12 && !(workerOk && dashboardOk); attempt++) {
+  if (attempt) await sleep(5000);
+  try {
+    const w = await fetch("https://" + host + "/api/worker/config", { redirect: "manual" });
+    lastWorker = w.status + " " + (w.headers.get("location") ?? (await w.text()).slice(0, 80));
+    workerOk = w.status === 401 && lastWorker.includes("Invalid worker token");
+    // Access answers an unauthenticated visit with a redirect to its login page. An app-level 401 here
+    // would still be safe (no data), but means Access is not in front of the site yet.
+    const d = await fetch("https://" + host + "/api/dashboard", { redirect: "manual" });
+    lastDashboard = d.status + " " + (d.headers.get("location") ?? "");
+    dashboardOk = d.status === 302 && lastDashboard.includes(".cloudflareaccess.com");
+  } catch (error) { lastWorker = lastDashboard = error.message; }
+}
+if (workerOk) ok("worker API reachable without sign-in (bearer token required)");
+else warn("worker API check: " + lastWorker);
+if (dashboardOk) ok("dashboard is behind the Access login page");
+else warn("dashboard check (expected a redirect to " + teamDomain + "): " + lastDashboard);
+console.log("\nDone: https://" + host + "\n" + (workerOk && dashboardOk ? "" : "Some checks did not pass yet; Access changes can take a minute. Re-run with --check or open the site.\n"));
+}
+
+main().catch(error => {
+  console.error("\n  FAIL " + (error instanceof DeployError ? error.message : error.stack) + "\n");
+  process.exitCode = 1;
+});

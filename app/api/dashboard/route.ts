@@ -1,4 +1,4 @@
-import { getChatGPTUser } from "../../chatgpt-auth";
+import { currentUser, signInPath } from "../../auth";
 import { bucket, database } from "../../../db/raw";
 import { defaults, parseStreamer, settingsSchema } from "../../../lib/clipflow";
 import { hashToken, newToken } from "../../../lib/worker-auth";
@@ -15,7 +15,7 @@ const actionSchema=z.discriminatedUnion("action",[
 ]);
 const ENGINE_FRESH_MS=5*60_000;
 export async function GET(){
- const user=await getChatGPTUser();if(!user)return Response.json({error:"Sign in to open your dashboard."},{status:401});
+ const user=await currentUser();if(!user)return Response.json({error:"Sign in to open your dashboard.",signIn:signInPath()},{status:401});
  try{
   const db=database();
   const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(user.userId).all(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(user.userId).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(user.userId).all(),db.prepare("SELECT c.id,c.streamer_id,c.created_at,c.duration,c.captions,c.size,c.file_key IS NOT NULL AS stored,c.review,c.reason,s.name AS streamer FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.owner=? ORDER BY c.created_at DESC LIMIT 100").bind(user.userId).all(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at FROM worker_tokens WHERE owner=?").bind(user.userId).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null}>()]);
@@ -25,7 +25,7 @@ export async function GET(){
  }catch(error){console.error("Dashboard load failed",error);return Response.json({error:"We couldn't load your workspace. Please retry."},{status:503});}
 }
 export async function POST(request:Request){
- const user=await getChatGPTUser();if(!user)return Response.json({error:"Sign in before making changes."},{status:401});
+ const user=await currentUser();if(!user)return Response.json({error:"Sign in before making changes.",signIn:signInPath()},{status:401});
  const origin=request.headers.get("origin");if(origin&&origin!==new URL(request.url).origin)return Response.json({error:"Request origin rejected."},{status:403});
  let payload;try{payload=actionSchema.parse(await request.json());}catch{return Response.json({error:"Check your settings and try again."},{status:400});}
  try{
