@@ -1,8 +1,8 @@
 # Clipflow worker
 
 A long-running process that captures clips for one Clipflow user. It polls the
-dashboard for that user's streamers and settings, records short clips from live
-channels, and reports each finished clip back. Clip files stay on this machine.
+dashboard for that user's streamers and settings, records live channels into a
+rolling buffer, clips highlights from it, and reports and uploads each clip.
 
 ## Run
 
@@ -28,14 +28,26 @@ Python's `Scripts` folder (which holds `streamlink.exe`) is on `PATH`, and set
 - While control is running, checks each enabled streamer for a live stream every
   `LIVE_CHECK_SECONDS` (via `streamlink --json`, no download) and reports
   Live / Recording / Offline / Check failed to the dashboard. Only live streamers are recorded.
-- Captures only while global control is **running** and the streamer is **enabled**.
-  Control is re-read every poll; pausing or stopping cancels captures in progress.
-  If the dashboard cannot be reached, all captures are cancelled.
-- Each capture records 90–180 seconds, picks the loudest window (an audio-energy
-  heuristic), crops to 720×1280, and optionally burns in Whisper captions.
-- The daily limit caps clips per streamer per UTC day.
-- An offline channel is retried with backoff (30s up to 5 min). After a successful
-  clip the streamer waits `COOLDOWN_SECONDS` before the next capture.
+- Records only while global control is **running** and the streamer is **enabled**.
+  Control is re-read every poll; pausing or stopping ends recordings and cancels clip
+  processing. If the dashboard cannot be reached, all recordings stop.
+- A live streamer is recorded continuously into a rolling buffer of the last
+  `BUFFER_SECONDS` (6-second segments on disk; older ones are deleted). Clips are cut
+  from that buffer, so the moment that triggered a clip is never missed.
+- **Chat spikes (Twitch):** chat is read anonymously. When the last 10 seconds have at
+  least 6 messages and `CHAT_SPIKE_FACTOR` times the channel's typical 10-second count
+  (median of the last 5 minutes), the worker waits 20 seconds, then clips from the
+  window around it. At most one chat clip per `CHAT_CLIP_GAP_SECONDS`.
+- **Loudest moment (all platforms):** if no clip was made for `COOLDOWN_SECONDS`, the
+  loudest stretch of the recent buffer is clipped. Kick and YouTube rely on this alone,
+  since reading their chat requires registered API apps.
+- Within a window, the clip is placed by loudness plus chat activity 4 seconds later
+  (viewers react after the moment), then its start and end move to the nearest sentence
+  boundary in the transcript (within 4 seconds). The transcript is made once and reused
+  for the captions. Clips are framed to 720×1280.
+- Processing (transcription and rendering) runs one clip at a time; recording continues meanwhile.
+- The daily limit caps clips per streamer per UTC day; reaching it ends that day's recording.
+- A recording that fails or ends is retried with backoff (30s up to 5 min) after a fresh live check.
 - Each clip is reported, then its file is uploaded to the dashboard's storage so it can be
   watched and downloaded there (if storage is off, it stays local). Both are retried until
   accepted. Local files are deleted after `RETENTION_HOURS`; the dashboard copy is kept.
@@ -46,9 +58,12 @@ Python's `Scripts` folder (which holds `streamlink.exe`) is on `PATH`, and set
 | `CLIPFLOW_TOKEN` | required | Worker token from the dashboard |
 | `DATA_DIR` | `/data` | Clips and the local SQLite queue |
 | `POLL_SECONDS` | `60` | How often to read control and settings |
-| `COOLDOWN_SECONDS` | `600` | Wait between clips from one streamer |
+| `COOLDOWN_SECONDS` | `600` | Quiet time before a "loudest moment" clip is taken |
+| `CHAT_CLIP_GAP_SECONDS` | `120` | Minimum time between chat-spike clips from one streamer |
+| `CHAT_SPIKE_FACTOR` | `2.5` | How far above the typical chat rate counts as a spike |
+| `BUFFER_SECONDS` | `240` | How much recent stream is kept on disk while recording |
 | `RETENTION_HOURS` | `72` | How long clip files are kept |
-| `MAX_CAPTURES` | `1` | Simultaneous captures |
+| `MAX_CAPTURES` | `1` | Streamers recorded at the same time |
 | `LIVE_CHECK_SECONDS` | `120` | How often each streamer is checked for a live stream |
 | `STREAMLINK` | `streamlink` | streamlink executable |
 | `WHISPER_MODEL` | `tiny` | faster-whisper model for captions |
@@ -59,6 +74,6 @@ Only capture channels you have permission to record and repost.
 ## Test
 
 ```sh
-npm test                # scheduling, validation, framing, caption placement
+npm test                # scheduling, validation, framing, captions, highlight detection
 npm run test:captions   # caption chunking (Python; on Windows: py test/test_captions.py)
 ```

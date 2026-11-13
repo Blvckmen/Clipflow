@@ -24,7 +24,9 @@ def chunk(segments):
         if i + 1 < len(cues): end = min(end, cues[i + 1][0][0])
         out.append((start, end, " ".join(w[2] for w in cue)))
     return out
-def main(source, target):
+def transcribe(source, target):
+    """Writes {"segments": [{"start", "end", "words": [[start, end, text], ...]}]} for the whole file."""
+    import json
     import numpy as np
     from faster_whisper import WhisperModel
     # Decode with ffmpeg rather than faster-whisper's PyAV path, whose keyword arguments break across PyAV releases.
@@ -32,9 +34,19 @@ def main(source, target):
     audio=np.frombuffer(pcm,dtype="<i2").astype(np.float32)/32768.0
     model=WhisperModel(os.getenv("WHISPER_MODEL","tiny"),device="cpu",compute_type="int8",download_root=os.getenv("WHISPER_DIR","/data/models"),cpu_threads=1)
     segments,_=model.transcribe(audio,beam_size=1,vad_filter=True,word_timestamps=True)
-    words=[[(w.start, w.end, w.word) for w in (segment.words or [])] for segment in segments]
+    out=[{"start":s.start,"end":s.end,"words":[[w.start,w.end,w.word] for w in (s.words or [])]} for s in segments]
+    with open(target,"w",encoding="utf-8") as f: json.dump({"segments":out},f)
+def window(segments, start, end):
+    """Words fully inside [start, end], shifted to start at 0, grouped by segment."""
+    return [[(ws-start, we-start, text) for ws, we, text in seg["words"] if ws >= start and we <= end] for seg in segments]
+def write_srt(words_file, start, end, target):
+    import json
+    with open(words_file,encoding="utf-8") as f: segments=json.load(f)["segments"]
     with open(target,"w",encoding="utf-8") as f:
-        for index,(start,end,text) in enumerate(chunk(words),1):
-            f.write(f"{index}\n{stamp(start)} --> {stamp(end)}\n{text}\n\n")
+        for index,(s,e,text) in enumerate(chunk(window(segments,start,end)),1):
+            f.write(f"{index}\n{stamp(s)} --> {stamp(e)}\n{text}\n\n")
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    # captions.py words <media> <words.json>  |  captions.py srt <words.json> <start> <end> <out.srt>
+    if sys.argv[1] == "words": transcribe(sys.argv[2], sys.argv[3])
+    elif sys.argv[1] == "srt": write_srt(sys.argv[2], float(sys.argv[3]), float(sys.argv[4]), sys.argv[5])
+    else: sys.exit("usage: captions.py words <media> <out.json> | srt <words.json> <start> <end> <out.srt>")

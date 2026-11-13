@@ -25,8 +25,15 @@ and posts live/recording/offline/error to `POST /api/worker/status`; the
 dashboard treats statuses older than 15 minutes as unchecked. Captures start
 only for streamers confirmed live. This is polling, not push: a stream can be
 detected up to one check interval late, and "error" means the check itself
-failed, not that the channel is offline. Highlight selection is an audio-energy
-heuristic. `engine.connected` means the worker polled within five minutes.
+failed, not that the channel is offline. `engine.connected` means the worker
+polled within five minutes.
+
+Highlights: live streamers are recorded into a rolling on-disk buffer. Twitch
+chat is read anonymously and a spike above the channel's own typical rate
+triggers a clip; otherwise the loudest recent stretch is clipped periodically.
+Kick and YouTube are audio-only because their chat needs registered API apps
+(Kick's web chat uses an undocumented token flow, deliberately not used). Clip
+edges are snapped to transcript sentence boundaries.
 
 The publishing view is an empty state. Analytics are unavailable, not
 simulated. Integration cards describe setup; they do not perform OAuth.

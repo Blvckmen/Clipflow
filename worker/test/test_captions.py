@@ -1,6 +1,6 @@
 import os, sys, unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from captions import chunk, clean
+from captions import chunk, clean, window
 
 def words(text, start=0.0, step=0.3):
     return [(start + i * step, start + i * step + 0.25, " " + w) for i, w in enumerate(text.split())]
@@ -27,6 +27,11 @@ class ChunkTest(unittest.TestCase):
     def test_strips_libass_override_syntax(self):
         self.assertEqual(clean(" {\\an8}hi<b>"), "an8hib")
         self.assertEqual(chunk([[(0, 0.2, " {}"), (0.3, 0.5, " ok")]])[0][2], "ok")
+
+class WindowTest(unittest.TestCase):
+    def test_keeps_words_inside_range_and_shifts_them(self):
+        segments = [{"words": [[1.0, 1.5, " early"], [10.0, 10.4, " in"], [19.8, 20.3, " edge"]]}, {"words": [[12.0, 12.5, " also"]]}]
+        self.assertEqual(window(segments, 10.0, 20.0), [[(0.0, 0.40000000000000036, " in")], [(2.0, 2.5, " also")]])
 
 if __name__ == "__main__":
     unittest.main()

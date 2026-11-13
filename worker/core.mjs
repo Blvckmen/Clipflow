@@ -66,7 +66,8 @@ export class Store {
     this.db.exec("UPDATE clips SET state='interrupted' WHERE state='capturing'");
   }
   add(id,streamer,path,duration,captions) { this.db.prepare("INSERT INTO clips(id,streamer,path,state,created_at,duration,captions) VALUES (?,?,?,'capturing',?,?,?)").run(id,streamer,path,new Date().toISOString(),duration,Number(captions)); }
-  ready(id,sha) {this.db.prepare("UPDATE clips SET state='ready',sha=? WHERE id=?").run(sha,id);}
+  // Sentence snapping makes the final length differ slightly from the configured one.
+  ready(id,sha,duration) {this.db.prepare("UPDATE clips SET state='ready',sha=?,duration=coalesce(?,duration) WHERE id=?").run(sha,duration??null,id);}
   fail(id) {this.db.prepare("UPDATE clips SET state='failed' WHERE id=?").run(id);}
   uploaded(id) {this.db.prepare("UPDATE clips SET state='uploaded' WHERE id=?").run(id);}
   rejected(id) {this.db.prepare("UPDATE clips SET state='rejected' WHERE id=?").run(id);}
