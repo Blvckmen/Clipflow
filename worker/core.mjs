@@ -63,9 +63,11 @@ export class Store {
     this.db.exec("PRAGMA journal_mode=WAL");
     this.db.exec("CREATE TABLE IF NOT EXISTS clips (id TEXT PRIMARY KEY, streamer TEXT NOT NULL, path TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, duration INTEGER NOT NULL, captions INTEGER NOT NULL, sha TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_try INTEGER NOT NULL DEFAULT 0)");
     this.db.exec("CREATE INDEX IF NOT EXISTS clips_streamer_date ON clips(streamer,created_at)");
+    // Added after the first release; older local databases gain the column on start.
+    if (!this.db.prepare("PRAGMA table_info(clips)").all().some(c => c.name === "reason")) this.db.exec("ALTER TABLE clips ADD COLUMN reason TEXT");
     this.db.exec("UPDATE clips SET state='interrupted' WHERE state='capturing'");
   }
-  add(id,streamer,path,duration,captions) { this.db.prepare("INSERT INTO clips(id,streamer,path,state,created_at,duration,captions) VALUES (?,?,?,'capturing',?,?,?)").run(id,streamer,path,new Date().toISOString(),duration,Number(captions)); }
+  add(id,streamer,path,duration,captions,reason=null) { this.db.prepare("INSERT INTO clips(id,streamer,path,state,created_at,duration,captions,reason) VALUES (?,?,?,'capturing',?,?,?,?)").run(id,streamer,path,new Date().toISOString(),duration,Number(captions),reason); }
   // Sentence snapping makes the final length differ slightly from the configured one.
   ready(id,sha,duration) {this.db.prepare("UPDATE clips SET state='ready',sha=?,duration=coalesce(?,duration) WHERE id=?").run(sha,duration??null,id);}
   fail(id) {this.db.prepare("UPDATE clips SET state='failed' WHERE id=?").run(id);}

@@ -16,4 +16,8 @@ export const clips=sqliteTable("clips",{
  id:text("id").primaryKey(),owner:text("owner").notNull(),streamerId:text("streamer_id").notNull(),createdAt:text("created_at").notNull(),duration:integer("duration").notNull(),captions:integer("captions",{mode:"boolean"}).notNull(),sha:text("sha").notNull(),size:integer("size").notNull(),
  // R2 object key once the worker has uploaded the file; null while the file is only on the worker.
  fileKey:text("file_key"),
+ // pending | approved | rejected. Review mode makes new clips pending; automatic mode approves them on arrival.
+ review:text("review").notNull().default("approved"),reviewedAt:text("reviewed_at"),
+ // What made the worker cut this clip: "chat" (chat spike) or "audio" (loudest recent moment).
+ reason:text("reason"),
 },t=>[index("clips_owner_created").on(t.owner,t.createdAt)]);

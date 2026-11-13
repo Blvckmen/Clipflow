@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { database } from "../../../../db/raw";
 import { workerOwner } from "../../../../lib/worker-auth";
-const clipSchema=z.object({id:z.string().uuid(),streamerId:z.string().uuid(),createdAt:z.string().datetime(),duration:z.number().int().min(15).max(90),captions:z.boolean(),sha:z.string().regex(/^[0-9a-f]{64}$/),size:z.number().int().min(1024).max(32*1024*1024)});
+const clipSchema=z.object({id:z.string().uuid(),streamerId:z.string().uuid(),createdAt:z.string().datetime(),duration:z.number().int().min(15).max(90),captions:z.boolean(),sha:z.string().regex(/^[0-9a-f]{64}$/),size:z.number().int().min(1024).max(32*1024*1024),reason:z.enum(["chat","audio"]).optional()});
+const reasonText={chat:" after a chat spike",audio:" at its loudest moment"};
 export async function POST(request:Request){
  try{
   const db=database(),owner=await workerOwner(request,db);
@@ -12,9 +13,12 @@ export async function POST(request:Request){
   // Reports are retried by the worker, so a repeated id is acknowledged without a second log entry.
   const existing=await db.prepare("SELECT owner FROM clips WHERE id=?").bind(clip.id).first<{owner:string}>();
   if(existing)return existing.owner===owner?Response.json({ok:true,duplicate:true}):Response.json({error:"Clip id conflict."},{status:409});
+  // The owner's publishing mode at arrival decides whether the clip waits for review.
+  const prefs=await db.prepare("SELECT mode FROM preferences WHERE owner=?").bind(owner).first<{mode:string}>();
+  const review=prefs?.mode==="review"?"pending":"approved";
   await db.batch([
-   db.prepare("INSERT INTO clips (id,owner,streamer_id,created_at,duration,captions,sha,size) VALUES (?,?,?,?,?,?,?,?)").bind(clip.id,owner,clip.streamerId,clip.createdAt,clip.duration,Number(clip.captions),clip.sha,clip.size),
-   db.prepare("INSERT INTO events (id,owner,message,created_at) VALUES (?,?,?,?)").bind(crypto.randomUUID(),owner,"Worker captured a "+clip.duration+"s clip from "+streamer.name+".",new Date().toISOString()),
+   db.prepare("INSERT INTO clips (id,owner,streamer_id,created_at,duration,captions,sha,size,review,reason) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(clip.id,owner,clip.streamerId,clip.createdAt,clip.duration,Number(clip.captions),clip.sha,clip.size,review,clip.reason??null),
+   db.prepare("INSERT INTO events (id,owner,message,created_at) VALUES (?,?,?,?)").bind(crypto.randomUUID(),owner,"Worker captured a "+clip.duration+"s clip from "+streamer.name+(clip.reason?reasonText[clip.reason]:"")+(review==="pending"?"; waiting for your review.":"."),new Date().toISOString()),
   ]);
   return Response.json({ok:true});
  }catch(error){console.error("Clip report failed",error);return Response.json({error:"Clip report not saved."},{status:503});}

@@ -158,6 +158,30 @@ describe("clips", () => {
     assert.equal((await fetch(file)).status, 401);
     assert.equal((await fetch(base + "/api/clips/" + randomUUID() + "/file", { headers: { cookie } })).status, 404);
   });
+  test("publishing mode decides the starting review state and the trigger reason is kept", async () => {
+    const { duration, dailyLimit, captions, framing, destinations } = originalSettings;
+    const setMode = m => dash({ action: "settings", settings: { mode: m, duration, dailyLimit, captions, framing, destinations } });
+    await setMode("review");
+    const held = (await reportClip(Buffer.alloc(2048, 1), { reason: "chat" })).clip;
+    await setMode("automatic");
+    const auto = (await reportClip(Buffer.alloc(2048, 2), { reason: "audio" })).clip;
+    const listed = (await dash()).body.clips;
+    const row = id => listed.find(c => c.id === id);
+    assert.deepEqual([row(held.id).review, row(held.id).reason], ["pending", "chat"]);
+    assert.deepEqual([row(auto.id).review, row(auto.id).reason], ["approved", "audio"]);
+    assert.equal((await reportClip(Buffer.alloc(2048, 3), { reason: "vibes" })).response.status, 400);
+    assert.match((await dash()).body.events[0].message, /at its loudest moment\.$/);
+  });
+  test("review decisions are saved, validated and owner-checked", async () => {
+    const pending = (await dash()).body.clips.find(c => c.streamer_id === streamer.id && c.review === "pending");
+    for (const decision of ["approved", "rejected", "pending"]) {
+      const result = await dash({ action: "reviewClip", id: pending.id, review: decision });
+      assert.equal(result.status, 200);
+      assert.equal((await dash()).body.clips.find(c => c.id === pending.id).review, decision);
+    }
+    assert.equal((await dash({ action: "reviewClip", id: pending.id, review: "maybe" })).status, 400);
+    assert.equal((await dash({ action: "reviewClip", id: randomUUID(), review: "approved" })).status, 404);
+  });
   test("delete removes the record and the stored file", async () => {
     assert.equal((await dash({ action: "deleteClip", id: clip.id })).status, 200);
     assert.equal((await fetch(base + "/api/clips/" + clip.id + "/file", { headers: { cookie } })).status, 404);

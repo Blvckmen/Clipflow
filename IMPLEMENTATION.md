@@ -35,7 +35,13 @@ Kick and YouTube are audio-only because their chat needs registered API apps
 (Kick's web chat uses an undocumented token flow, deliberately not used). Clip
 edges are snapped to transcript sentence boundaries.
 
-The publishing view is an empty state. Analytics are unavailable, not
+Review: in "Review before publishing" mode new clips arrive pending; in
+automatic mode they are approved on arrival. Owners approve, reject or reset
+clips in the Clip library (filters, per-row buttons, and an Approve/Reject
+player that advances to the next pending clip). Each clip records its trigger
+(chat spike or loudest moment). Approval does not publish anything yet.
+
+The publishing view is otherwise an empty state. Analytics are unavailable, not
 simulated. Integration cards describe setup; they do not perform OAuth.
 No social account connection, publishing, or metric collection runs in this
 version.

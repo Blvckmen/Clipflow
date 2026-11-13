@@ -11,13 +11,14 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("control"),control:z.enum(["running","paused","stopped"])}),
  z.object({action:z.literal("token")}),
  z.object({action:z.literal("deleteClip"),id:z.string().uuid()}),
+ z.object({action:z.literal("reviewClip"),id:z.string().uuid(),review:z.enum(["approved","rejected","pending"])}),
 ]);
 const ENGINE_FRESH_MS=5*60_000;
 export async function GET(){
  const user=await getChatGPTUser();if(!user)return Response.json({error:"Sign in to open your dashboard."},{status:401});
  try{
   const db=database();
-  const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(user.userId).all(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(user.userId).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(user.userId).all(),db.prepare("SELECT c.id,c.streamer_id,c.created_at,c.duration,c.captions,c.size,c.file_key IS NOT NULL AS stored,s.name AS streamer FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.owner=? ORDER BY c.created_at DESC LIMIT 100").bind(user.userId).all(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at FROM worker_tokens WHERE owner=?").bind(user.userId).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null}>()]);
+  const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(user.userId).all(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(user.userId).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(user.userId).all(),db.prepare("SELECT c.id,c.streamer_id,c.created_at,c.duration,c.captions,c.size,c.file_key IS NOT NULL AS stored,c.review,c.reason,s.name AS streamer FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.owner=? ORDER BY c.created_at DESC LIMIT 100").bind(user.userId).all(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at FROM worker_tokens WHERE owner=?").bind(user.userId).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null}>()]);
   const lastSeen=w?.last_seen??null,connected=!!lastSeen&&Date.now()-Date.parse(lastSeen)<ENGINE_FRESH_MS;
   const engine={connected,lastSeen,tokenCreated:w?.created_at??null,lastError:w?.last_error??null,lastErrorAt:w?.last_error_at??null,status:connected?"Worker connected":w?(lastSeen?"Worker offline":"Waiting for worker"):"Setup required"};
   return Response.json({user:user.displayName,streamers:s.results,settings:p?{...p,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations))}:defaults,events:e.results,engine,accounts:[],clips:c.results.map(x=>({...x,captions:!!x.captions,stored:!!x.stored})),analytics:null},{headers:{"Cache-Control":"private, no-store"}});
@@ -57,6 +58,13 @@ export async function POST(request:Request){
    if(clip.file_key)await bucket()?.delete(clip.file_key);
    statements.push(db.prepare("DELETE FROM clips WHERE id=? AND owner=?").bind(payload.id,owner));
    message="Deleted a clip"+(clip.name?" from "+clip.name:"")+".";
+  }
+  if(payload.action==="reviewClip"){
+   const clip=await db.prepare("SELECT s.name FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(payload.id,owner).first<{name:string|null}>();
+   if(!clip)return Response.json({error:"Clip not found."},{status:404});
+   // Reviews are frequent, so they update the clip without adding to the activity log.
+   await db.prepare("UPDATE clips SET review=?,reviewed_at=? WHERE id=? AND owner=?").bind(payload.review,payload.review==="pending"?null:new Date().toISOString(),payload.id,owner).run();
+   return Response.json({ok:true,message:{approved:"Clip approved.",rejected:"Clip rejected.",pending:"Clip moved back to review."}[payload.review]});
   }
   let token:string|undefined;
   if(payload.action==="token"){

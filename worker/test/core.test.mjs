@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { Store, allowed, channelUrl, dueForProbe, plan, probeResult, retryDelay, validateControl } from "../core.mjs";
 import { captionStyle, frameFilter } from "../media.mjs";
 
@@ -101,15 +102,29 @@ test("retryDelay backs off to a five minute cap", () => {
   assert.equal(retryDelay(10), 300_000);
 });
 
+test("Store adds the reason column to databases created before it existed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "clipflow-"));
+  try {
+    const old = new DatabaseSync(join(dir, "worker.sqlite"));
+    old.exec("CREATE TABLE clips (id TEXT PRIMARY KEY, streamer TEXT NOT NULL, path TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, duration INTEGER NOT NULL, captions INTEGER NOT NULL, sha TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_try INTEGER NOT NULL DEFAULT 0)");
+    old.close();
+    const store = new Store(dir);
+    store.add("z", a, "/tmp/z.mp4", 30, true, "audio");
+    store.ready("z", "f".repeat(64), 31);
+    assert.deepEqual(store.pending().map(r => [r.reason, r.duration]), [["audio", 31]]);
+    store.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("Store tracks clip states and recovers interrupted captures", () => {
   const dir = mkdtempSync(join(tmpdir(), "clipflow-"));
   try {
     let store = new Store(dir);
-    store.add("x", a, "/tmp/x.mp4", 45, true);
+    store.add("x", a, "/tmp/x.mp4", 45, true, "chat");
     store.add("y", a, "/tmp/y.mp4", 45, false);
     assert.equal(store.countToday(a), 2);
     store.ready("x", "f".repeat(64));
-    assert.deepEqual(store.pending().map(r => r.id), ["x"]);
+    assert.deepEqual(store.pending().map(r => [r.id, r.reason]), [["x", "chat"]]);
     store.retry("x", 1);
     assert.deepEqual(store.pending(), []);
     store.close();

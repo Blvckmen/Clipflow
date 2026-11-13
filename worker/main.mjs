@@ -22,6 +22,8 @@ const bufferSeconds = seconds(env.BUFFER_SECONDS, 240) / 1000, spikeFactor = Num
 const maxSessions = Math.max(1, Math.floor(Number(env.MAX_CAPTURES ?? 1)));
 const liveCheckMs = seconds(env.LIVE_CHECK_SECONDS, 120), probeConcurrency = 3, probesPerCycle = 15;
 const postRollMs = 20_000;
+// Why a clip was cut; the code is sent to the dashboard with the clip.
+const reasonLabel = { chat: "chat spike", audio: "loudest moment" };
 const store = new Store(dataDir);
 // streamer id -> { streamer, recorder, chat, startedMs, lastClipMs, pending: { atMs, reason } | null, busy }
 const sessions = new Map(), blockedUntil = new Map(), failures = new Map();
@@ -117,7 +119,7 @@ async function clipWindow(session, fromMs, toMs, reason) {
   const id = crypto.randomUUID(), dir = join(dataDir, "clips", streamer.id, id), raw = join(dir, "window.m2t");
   session.busy = true;
   try {
-    store.add(id, streamer.id, join(dir, "clip.mp4"), settings.duration, settings.captions);
+    store.add(id, streamer.id, join(dir, "clip.mp4"), settings.duration, settings.captions, reason);
     await rm(dir, { recursive: true, force: true });
     await mkdir(dir, { recursive: true });
     const rawStartMs = await session.recorder.extract(fromMs, toMs, raw, AbortSignal.timeout(60_000));
@@ -141,7 +143,7 @@ async function processJobs() {
     try {
       const result = await processWindow(job.raw, { settings: job.settings, focusFrom: job.focusFrom, focusTo: job.focusTo, chat: job.chat }, join(job.dir, "clip.mp4"), controller.signal);
       store.ready(job.id, result.sha, Math.min(90, Math.max(15, Math.round(result.end - result.start))));
-      console.log("Clip ready", job.id, "from", job.streamer.url, "(" + job.reason + ", " + Math.round(result.end - result.start) + "s)");
+      console.log("Clip ready", job.id, "from", job.streamer.url, "(" + reasonLabel[job.reason] + ", " + Math.round(result.end - result.start) + "s)");
     } catch (error) {
       store.fail(job.id);
       await rm(job.dir, { recursive: true, force: true });
@@ -182,14 +184,14 @@ async function checkSessions() {
       const spike = chatSpike(session.chat.times, now, { sinceMs: Math.max(session.chat.since, session.startedMs), factor: spikeFactor });
       if (spike.spike) {
         console.log("Chat spike on", name + ":", spike.recent, "messages in 10s vs typical", spike.baseline);
-        session.pending = { atMs: now, reason: "chat spike" };
+        session.pending = { atMs: now, reason: "chat" };
         continue;
       }
     }
     const lookbackS = Math.min(bufferSeconds - 20, Math.max(90, settings.duration * 2));
     if (now - session.lastClipMs >= fallbackMs && session.recorder.buffered() >= lookbackS) {
       session.lastClipMs = now;
-      void clipWindow(session, latest - lookbackS * 1000, latest, "loudest moment");
+      void clipWindow(session, latest - lookbackS * 1000, latest, "audio");
     }
   }
 }
@@ -200,7 +202,7 @@ async function report() {
     try { size = (await stat(row.path)).size; } catch { store.fail(row.id); continue; }
     try {
       const permanent = status => status >= 400 && status < 500 && status !== 401 && status !== 429;
-      const response = await api("/api/worker/clips", { method: "POST", body: JSON.stringify({ id: row.id, streamerId: row.streamer, createdAt: row.created_at, duration: row.duration, captions: !!row.captions, sha: row.sha, size }) });
+      const response = await api("/api/worker/clips", { method: "POST", body: JSON.stringify({ id: row.id, streamerId: row.streamer, createdAt: row.created_at, duration: row.duration, captions: !!row.captions, sha: row.sha, size, ...(row.reason && { reason: row.reason }) }) });
       // 4xx other than auth and rate limiting will not succeed on retry (for example a removed streamer).
       if (permanent(response.status)) { store.rejected(row.id); problem("Dashboard refused clip " + row.id + " (HTTP " + response.status + ")"); continue; }
       if (!response.ok) throw new Error("HTTP " + response.status);
