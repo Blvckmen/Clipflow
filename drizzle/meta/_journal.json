@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1791366007805,
+      "tag": "0000_closed_newton_destine",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1792197876079,
+      "tag": "0001_short_wallop",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1792201940171,
+      "tag": "0002_omniscient_shooting_star",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1792207601312,
+      "tag": "0003_material_harrier",
+      "breakpoints": true
+    }
+  ]
+}
