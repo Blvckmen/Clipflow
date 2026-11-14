@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Store, allowed, channelUrl, dueForProbe, plan, probeResult, retryDelay, validateControl } from "../core.mjs";
-import { captionStyle, frameFilter } from "../media.mjs";
+import { sourceSignals, sourceWords } from "../media.mjs";
 
 const a = "11111111-1111-4111-8111-111111111111", b = "22222222-2222-4222-8222-222222222222", c = "33333333-3333-4333-8333-333333333333";
 const config = (over = {}) => ({ control: "running", duration: 45, captions: true, dailyLimit: 2, streamers: [
@@ -58,20 +58,24 @@ test("validateControl defaults and checks framing", () => {
   assert.throws(() => validateControl(config({ framing: "stretch" })));
 });
 
-test("frameFilter always produces a 720x1280 graph", () => {
-  assert.match(frameFilter("crop"), /crop=720:1280/);
-  assert.match(frameFilter("fit"), /pad=720:1280/);
-  assert.match(frameFilter("blur"), /^split\[bg\]\[fg\];.*overlay/);
-  assert.equal(frameFilter(undefined), frameFilter("blur"));
+test("validateControl accepts render requests and streamer styles, and rejects malformed ones", () => {
+  const render = { id: a, rev: 2, edit: { trim: { start: 0, end: 20 } } };
+  assert.deepEqual(validateControl(config()).renders, [], "older dashboards send none");
+  assert.equal(validateControl(config({ renders: [render] })).renders[0].rev, 2);
+  assert.throws(() => validateControl(config({ renders: [{ ...render, rev: 0 }] })));
+  assert.throws(() => validateControl(config({ renders: [{ ...render, id: "x" }] })));
+  assert.throws(() => validateControl(config({ renders: "all" })));
+  assert.equal(validateControl(config({ streamers: [{ id: a, url: "https://twitch.tv/alpha", status: "armed", style: { frame: { mode: "crop" } } }] })).streamers[0].style.frame.mode, "crop");
+  assert.throws(() => validateControl(config({ streamers: [{ id: a, url: "https://twitch.tv/alpha", status: "armed", style: "loud" }] })));
 });
 
-test("captionStyle places captions under the picture only when there is room", () => {
-  assert.match(captionStyle("blur", 1920, 1080), /Alignment=8,MarginV=879$/);
-  assert.match(captionStyle("fit", 1280, 720), /Alignment=8,MarginV=879$/);
-  assert.match(captionStyle("crop", 1920, 1080), /Alignment=2,MarginV=300$/);
-  assert.match(captionStyle("blur", 1080, 1920), /Alignment=2,MarginV=300$/, "vertical source fills the frame");
-  assert.match(captionStyle("blur", 0, 0), /Alignment=2,MarginV=300$/, "unknown size falls back to the lower third");
-  assert.match(captionStyle("blur", 1920, 1080), /^PlayResX=720,PlayResY=1280,/);
+test("sourceWords keeps words inside the source and shifts them to its start", () => {
+  const segments = [{ words: [[9, 9.5, " too early"], [10.2, 10.6, " Hello"], [10.7, 11, " {big}\\ world!"], [19.5, 20.5, " too late"]] }];
+  assert.deepEqual(sourceWords(segments, 10, 20), [[0.2, 0.6, "Hello"], [0.7, 1, "big world!"]]);
+});
+
+test("sourceSignals scales loudness to the loudest second and lines chat up with it", () => {
+  assert.deepEqual(sourceSignals([0, 1, 2, 4, 8], [0, 3, 0, 9], 1, 4), { energy: [0.25, 0.5, 1], chat: [3, 0, 9] });
 });
 
 test("allowed needs global running and an armed streamer", () => {

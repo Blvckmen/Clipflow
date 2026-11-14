@@ -1,9 +1,11 @@
-import { mkdir, readFile, rm, stat } from "node:fs/promises";
+import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Store, allowed, channelUrl, dueForProbe, plan, retryDelay, validateControl } from "./core.mjs";
 import { chatSpike, perSecond } from "./highlights.mjs";
 import { openChat } from "./chat.mjs";
 import { probeLive, processWindow, streamlink } from "./media.mjs";
+import { normalizeEdit } from "./edit.mjs";
+import { renderClip, videoInfo } from "./render.mjs";
 import { Recorder } from "./recorder.mjs";
 
 const env = process.env;
@@ -29,7 +31,10 @@ const store = new Store(dataDir);
 const sessions = new Map(), blockedUntil = new Map(), failures = new Map();
 // streamer id -> { status: live|recording|offline|error, checkedAt (ms), title }; `unreported` holds ids changed since the last status post.
 const live = new Map(), unreported = new Set();
-const jobs = [];  // extracted windows waiting for CPU-heavy processing, handled one at a time
+// CPU-heavy work, handled one at a time: extracted windows to turn into clips, and re-renders requested from the
+// dashboard editor ({ kind: "render", id, rev, edit, words, source }).
+const jobs = [];
+const renderRevs = new Map();  // clip id -> newest edit revision already queued or rendered
 let config = null, stopping = false, timer, sessionTimer, processing = null;
 let pendingError = null;  // latest problem not yet delivered to the dashboard
 
@@ -124,7 +129,9 @@ async function clipWindow(session, fromMs, toMs, reason) {
     await mkdir(dir, { recursive: true });
     const rawStartMs = await session.recorder.extract(fromMs, toMs, raw, AbortSignal.timeout(60_000));
     const length = (toMs - rawStartMs) / 1000 + 10;
-    jobs.push({ id, dir, raw, streamer, settings, reason, chat: session.chat ? perSecond(session.chat.times, rawStartMs, length) : [], focusFrom: (fromMs - rawStartMs) / 1000, focusTo: (toMs - rawStartMs) / 1000 });
+    // The streamer's own look if one is saved, else the workspace's.
+    const style = settings.streamers.find(s => s.id === streamer.id)?.style ?? settings.style ?? null;
+    jobs.push({ id, dir, raw, streamer, settings, style, reason, chat: session.chat ? perSecond(session.chat.times, rawStartMs, length) : [], focusFrom: (fromMs - rawStartMs) / 1000, focusTo: (toMs - rawStartMs) / 1000 });
     void processJobs();
   } catch (error) {
     store.fail(id);
@@ -137,11 +144,12 @@ async function processJobs() {
   if (processing) return;
   while (jobs.length && !stopping) {
     const job = jobs.shift();
+    if (job.kind === "render") { await rerender(job); continue; }
     if (!allowed(config, job.streamer.id)) { store.fail(job.id); await rm(job.dir, { recursive: true, force: true }); continue; }
     const controller = new AbortController();
     processing = { job, controller };
     try {
-      const result = await processWindow(job.raw, { settings: job.settings, focusFrom: job.focusFrom, focusTo: job.focusTo, chat: job.chat }, join(job.dir, "clip.mp4"), controller.signal);
+      const result = await processWindow(job.raw, { settings: job.settings, style: job.style, focusFrom: job.focusFrom, focusTo: job.focusTo, chat: job.chat }, job.dir, controller.signal);
       store.ready(job.id, result.sha, Math.min(90, Math.max(15, Math.round(result.end - result.start))));
       console.log("Clip ready", job.id, "from", job.streamer.url, "(" + reasonLabel[job.reason] + ", " + Math.round(result.end - result.start) + "s)");
     } catch (error) {
@@ -156,7 +164,8 @@ async function processJobs() {
 // Runs every few seconds: ends sessions that should stop and turns chat spikes or quiet periods into clips.
 async function checkSessions() {
   const now = Date.now();
-  if (processing && !allowed(config, processing.job.streamer.id)) processing.controller.abort();
+  // Re-renders were asked for by hand and run regardless of automation; captures stop with their streamer.
+  if (processing?.job.streamer && !allowed(config, processing.job.streamer.id)) processing.controller.abort();
   for (const [id, session] of sessions) {
     const settings = config, name = session.streamer.url;
     if (!allowed(settings, id)) { await stopSession(id, "paused, stopped or disabled"); continue; }
@@ -196,22 +205,83 @@ async function checkSessions() {
   }
 }
 
+// Re-renders a clip with an edit saved in the dashboard editor and uploads the result in place of the old file.
+async function rerender(job) {
+  const controller = new AbortController();
+  processing = { job, controller };
+  const local = store.get(job.id), localSource = local && join(dirname(local.path), "source.mp4");
+  const scratch = join(dataDir, "renders", job.id);
+  try {
+    let source = localSource;
+    if (!source || !await access(source).then(() => true, () => false)) {
+      // The worker no longer has this clip (pruned or captured elsewhere): fetch the source the dashboard stored.
+      await mkdir(scratch, { recursive: true });
+      const response = await api("/api/worker/clips/" + job.id + "/source", { timeout: 180_000 });
+      if (!response.ok) throw new Error("source download HTTP " + response.status);
+      source = join(scratch, "source.mp4");
+      await writeFile(source, Buffer.from(await response.arrayBuffer()));
+    }
+    await mkdir(scratch, { recursive: true });
+    const info = job.source?.width ? job.source : await videoInfo(source, controller.signal);
+    const edit = normalizeEdit(job.edit, { duration: info.duration || job.source?.duration || 600 });
+    const out = join(scratch, "render-" + job.rev + ".mp4");
+    const result = await renderClip(source, { edit, words: job.edit.words ?? job.words ?? [], width: info.width, height: info.height }, out, controller.signal);
+    const upload = await api("/api/worker/clips/" + job.id + "/render", { method: "PUT", body: await readFile(out), headers: { "content-type": "video/mp4", "x-edit-rev": String(job.rev), "x-clip-sha256": result.sha }, timeout: 180_000 });
+    // 409: the clip was edited again meanwhile; the newer revision arrives with the next config poll.
+    if (!upload.ok && upload.status !== 409) throw new Error("upload HTTP " + upload.status);
+    console.log("Re-rendered clip", job.id, "(edit " + job.rev + ", " + result.duration + "s)");
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      problem("Re-render failed for clip " + job.id + ": " + error.message);
+      await api("/api/worker/clips/" + job.id + "/render", { method: "POST", body: JSON.stringify({ rev: job.rev, error: String(error.message).slice(0, 300) }) }).catch(() => {});
+    } else renderRevs.delete(job.id);
+  } finally {
+    processing = null;
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+function queueRenders(list) {
+  for (const r of list ?? []) {
+    if ((renderRevs.get(r.id) ?? -1) >= r.rev) continue;
+    renderRevs.set(r.id, r.rev);
+    // A newer revision replaces a waiting older one.
+    const waiting = jobs.findIndex(j => j.kind === "render" && j.id === r.id);
+    if (waiting >= 0) jobs.splice(waiting, 1);
+    jobs.push({ kind: "render", ...r });
+  }
+  if (jobs.length) void processJobs();
+}
+
+async function readMeta(path) {
+  try { return JSON.parse(await readFile(join(dirname(path), "meta.json"), "utf8")); } catch { return null; }
+}
+
 async function report() {
   for (const row of store.pending()) {
     let size;
     try { size = (await stat(row.path)).size; } catch { store.fail(row.id); continue; }
     try {
       const permanent = status => status >= 400 && status < 500 && status !== 401 && status !== 429;
-      const response = await api("/api/worker/clips", { method: "POST", body: JSON.stringify({ id: row.id, streamerId: row.streamer, createdAt: row.created_at, duration: row.duration, captions: !!row.captions, sha: row.sha, size, ...(row.reason && { reason: row.reason }) }) });
+      // The editor's material: the first edit, transcript, heat strip and the source's size and hash.
+      const meta = await readMeta(row.path);
+      const extra = meta ? { edit: meta.edit, transcript: meta.words, signals: meta.signals, source: { ...meta.source, sha: meta.sourceSha, size: meta.sourceSize } } : {};
+      const response = await api("/api/worker/clips", { method: "POST", body: JSON.stringify({ id: row.id, streamerId: row.streamer, createdAt: row.created_at, duration: row.duration, captions: !!row.captions, sha: row.sha, size, ...(row.reason && { reason: row.reason }), ...extra }) });
       // 4xx other than auth and rate limiting will not succeed on retry (for example a removed streamer).
       if (permanent(response.status)) { store.rejected(row.id); problem("Dashboard refused clip " + row.id + " (HTTP " + response.status + ")"); continue; }
       if (!response.ok) throw new Error("HTTP " + response.status);
       // Both steps are idempotent server-side, so a retry after a failed upload safely repeats the report.
       const upload = await api("/api/worker/clips/" + row.id + "/file", { method: "PUT", body: await readFile(row.path), headers: { "content-type": "video/mp4" }, timeout: 180_000 });
-      if (upload.status === 501) { store.uploaded(row.id); console.log("Clip reported; dashboard storage is off, file kept locally:", row.id); }
+      if (upload.status === 501) { store.uploaded(row.id); console.log("Clip reported; dashboard storage is off, file kept locally:", row.id); continue; }
       else if (upload.ok) { store.uploaded(row.id); console.log("Clip uploaded:", row.id); }
-      else if (permanent(upload.status)) { store.rejected(row.id); problem("Dashboard refused the file for clip " + row.id + " (HTTP " + upload.status + ")"); }
+      else if (permanent(upload.status)) { store.rejected(row.id); problem("Dashboard refused the file for clip " + row.id + " (HTTP " + upload.status + ")"); continue; }
       else throw new Error("upload HTTP " + upload.status);
+      // The source lets the clip be edited after this machine has pruned it. Not fatal: without it the clip
+      // can still be edited here until the retention period ends.
+      if (meta) {
+        const sent = await api("/api/worker/clips/" + row.id + "/source", { method: "PUT", body: await readFile(join(dirname(row.path), "source.mp4")), headers: { "content-type": "video/mp4" }, timeout: 300_000 }).catch(error => ({ ok: false, status: error.message }));
+        if (!sent.ok) problem("Could not store the editable source for clip " + row.id + " (" + sent.status + "); it can be edited while this machine keeps it.");
+      }
     } catch (error) {
       store.retry(row.id, row.attempts + 1);
       problem("Could not send clip " + row.id + " to the dashboard, will retry: " + error.message);
@@ -229,6 +299,7 @@ async function prune() {
 
 async function tick() {
   await refresh();
+  queueRenders(config?.renders);
   // Stop disallowed recordings before the (slow) live checks rather than after them.
   for (const id of sessions.keys()) if (!allowed(config, id)) await stopSession(id, "paused, stopped or disabled");
   await probe(dueForProbe(config, live, { running: new Set(sessions.keys()), now: Date.now(), interval: liveCheckMs, limit: probesPerCycle }));

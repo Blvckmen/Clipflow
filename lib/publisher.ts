@@ -5,7 +5,7 @@ import * as instagram from "./instagram";
 import { defaultCaption } from "./clipflow";
 
 type Env = Cloudflare.Env;
-type AccountRow = { id: string; owner: string; external_id: string; username: string; token_enc: string; token_expires_at: string; token_refreshed_at: string; connected_at: string; control: string | null; destinations: string | null; daily_limit: number | null; caption_template: string | null };
+type AccountRow = { id: string; owner: string; external_id: string; username: string; token_enc: string; token_expires_at: string; token_refreshed_at: string; connected_at: string; control: string | null; daily_limit: number | null; caption_template: string | null };
 type PostRow = { id: string; clip_id: string; state: string; container_id: string | null; attempts: number; updated_at: string };
 
 const CHECK_EVERY_MS = 60_000;            // Instagram recommends checking a container about once a minute
@@ -31,7 +31,7 @@ export function renderCaption(template: string, values: { streamer: string; plat
 export async function runPublisher(env: Env, now = Date.now()) {
   const config = instagramConfig(env);
   if (!config || !env.DB || !env.MEDIA_KEY || !env.PUBLIC_URL) return;
-  const { results } = await env.DB.prepare("SELECT a.*, p.control, p.destinations, p.daily_limit, p.caption_template FROM accounts a LEFT JOIN preferences p ON p.owner=a.owner WHERE a.platform='instagram' AND a.status='connected'").all<AccountRow>();
+  const { results } = await env.DB.prepare("SELECT a.*, p.control, p.daily_limit, p.caption_template FROM accounts a LEFT JOIN preferences p ON p.owner=a.owner WHERE a.platform='instagram' AND a.status='connected'").all<AccountRow>();
   for (const account of results) {
     try { await runAccount(env, config, account, now); }
     catch (error) {
@@ -55,14 +55,14 @@ async function runAccount(env: Env, config: instagram.InstagramConfig, account: 
   // Pausing or stopping automation also pauses publishing.
   if (account.control !== "running") return;
 
-  const destinations: string[] = JSON.parse(account.destinations ?? "[]");
-  if (destinations.includes("Instagram")) {
-    // Queue approved, uploaded clips that became approved after the account was connected — never the old backlog.
-    await db.prepare(`INSERT OR IGNORE INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at)
-      SELECT lower(hex(randomblob(16))),c.owner,c.id,'instagram',?,'queued',?,?,? FROM clips c
-      WHERE c.owner=? AND c.review='approved' AND c.file_key IS NOT NULL AND coalesce(c.reviewed_at,c.created_at)>=?
-      AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.clip_id=c.id AND p.platform='instagram')`).bind(account.id, iso, iso, iso, account.owner, account.connected_at).run();
-  }
+  // Queue approved, uploaded clips from the streamers this account is linked to, approved after both the account
+  // was connected and the streamer was linked to it — never the old backlog. Clips waiting for a re-render wait.
+  await db.prepare(`INSERT OR IGNORE INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at)
+    SELECT lower(hex(randomblob(16))),c.owner,c.id,'instagram',?,'queued',?,?,? FROM clips c
+    JOIN streamer_accounts sa ON sa.streamer_id=c.streamer_id AND sa.account_id=?
+    WHERE c.owner=? AND c.review='approved' AND c.file_key IS NOT NULL AND coalesce(c.render_state,'')!='queued'
+    AND coalesce(c.reviewed_at,c.created_at)>=max(?,sa.created_at)
+    AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.clip_id=c.id AND p.account_id=?)`).bind(account.id, iso, iso, iso, account.id, account.owner, account.connected_at, account.id).run();
 
   const fail = async (post: PostRow, message: string) => {
     const attempts = post.attempts + 1, final = attempts >= MAX_ATTEMPTS;
@@ -100,12 +100,14 @@ async function runAccount(env: Env, config: instagram.InstagramConfig, account: 
   // 2. Otherwise start the oldest queued post, within the daily limit and Instagram's own allowance.
   const queued = await db.prepare("SELECT id,clip_id,state,container_id,attempts,updated_at FROM posts WHERE account_id=? AND state='queued' AND next_attempt_at<=? ORDER BY created_at LIMIT 1").bind(account.id, iso).first<PostRow>();
   if (!queued) return;
-  const clip = await db.prepare("SELECT c.review,c.file_key,s.name,s.platform FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(queued.clip_id, account.owner).first<{ review: string; file_key: string | null; name: string | null; platform: string | null }>();
+  const clip = await db.prepare("SELECT c.review,c.file_key,c.render_state,s.name,s.platform FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(queued.clip_id, account.owner).first<{ review: string; file_key: string | null; render_state: string | null; name: string | null; platform: string | null }>();
   if (!clip || clip.review !== "approved" || !clip.file_key) {
     // Rejected or deleted after it was queued: drop it rather than post it.
     await db.prepare("DELETE FROM posts WHERE id=?").bind(queued.id).run();
     return;
   }
+  // Edited after it was queued: post the new version once the worker has rendered it.
+  if (clip.render_state === "queued") return;
   const since = new Date(now - 24 * 3600_000).toISOString();
   const today = await db.prepare("SELECT count(*) AS n FROM posts WHERE account_id=? AND state='published' AND published_at>=?").bind(account.id, since).first<{ n: number }>();
   if ((today?.n ?? 0) >= (account.daily_limit ?? 5)) return;

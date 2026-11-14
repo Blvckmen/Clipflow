@@ -26,8 +26,13 @@ export function validateControl(c) {
   const ids = new Set();
   for (const s of c.streamers) {
     if (!/^[0-9a-f-]{36}$/i.test(s.id) || ids.has(s.id) || !["armed","paused","stopped"].includes(s.status)) throw new Error("Invalid streamer");
+    if (s.style !== undefined && s.style !== null && typeof s.style !== "object") throw new Error("Invalid streamer style");
     channelUrl(s.url); ids.add(s.id);
   }
+  // Re-renders requested from the editor. Dashboards that predate the editor omit them.
+  c.renders ??= [];
+  if (!Array.isArray(c.renders) || c.renders.length > 20) throw new Error("Invalid renders");
+  for (const r of c.renders) if (!/^[0-9a-f-]{36}$/i.test(r?.id) || !Number.isInteger(r.rev) || r.rev < 1 || !r.edit || typeof r.edit !== "object") throw new Error("Invalid render request");
   return c;
 }
 export function allowed(c, id) { return c?.control === "running" && c.streamers.some(s => s.id === id && s.status === "armed"); }
@@ -74,6 +79,7 @@ export class Store {
   uploaded(id) {this.db.prepare("UPDATE clips SET state='uploaded' WHERE id=?").run(id);}
   rejected(id) {this.db.prepare("UPDATE clips SET state='rejected' WHERE id=?").run(id);}
   retry(id,attempt) {this.db.prepare("UPDATE clips SET attempts=?,next_try=? WHERE id=?").run(attempt,Date.now()+retryDelay(attempt),id);}
+  get(id) {return this.db.prepare("SELECT * FROM clips WHERE id=?").get(id)??null;}
   pending() {return this.db.prepare("SELECT * FROM clips WHERE state='ready' AND next_try<=? ORDER BY created_at LIMIT 10").all(Date.now());}
   countToday(streamer) {return this.db.prepare("SELECT count(*) AS n FROM clips WHERE streamer=? AND created_at>=? AND state IN ('capturing','ready','uploaded')").get(streamer,new Date().toISOString().slice(0,10)).n;}
   old(before) {return this.db.prepare("SELECT * FROM clips WHERE created_at<? AND state!='capturing'").all(before);}

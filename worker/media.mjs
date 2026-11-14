@@ -1,27 +1,18 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { join, dirname } from "node:path";
-import { mkdir, readFile, rm, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { command } from "./process.mjs";
 import { fileURLToPath } from "node:url";
 import { channelUrl, clipHash, probeResult } from "./core.mjs";
 import { pickWindow, snapToSentences } from "./highlights.mjs";
+import { defaultEdit, defaultStyle, normalizeStyle } from "./edit.mjs";
+import { renderClip, videoInfo } from "./render.mjs";
 const run=promisify(execFile);
 export const streamlink=process.env.STREAMLINK||"streamlink";
 const python=process.env.PYTHON||"python", script=name=>fileURLToPath(new URL("./"+name,import.meta.url));
-// 720x1280 output. "blur" fills the bars with a blurred, darkened copy (blurred at low resolution for speed).
-export function frameFilter(framing) {
-  const fit="scale=720:1280:force_original_aspect_ratio=decrease", fill="scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280";
-  if(framing==="crop")return fill+",setsar=1";
-  if(framing==="fit")return fit+",pad=720:1280:(ow-iw)/2:(oh-ih)/2,setsar=1";
-  return "split[bg][fg];[bg]"+fill+",scale=180:320,boxblur=8:2,eq=brightness=-0.12,scale=720:1280[bg];[fg]"+fit+"[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1";
-}
-// libass style in 720x1280 pixel units. Captions go just under the picture when there is room, else the lower third.
-export function captionStyle(framing,width,height) {
-  const base="PlayResX=720,PlayResY=1280,FontName=DejaVu Sans,FontSize=54,Bold=1,Outline=4,Shadow=0,MarginL=40,MarginR=40";
-  const shown=framing!=="crop"&&width>0&&height>0?Math.min(1280,Math.round(720*height/width)):1280, below=(1280-shown)/2;
-  return below>=200?base+",Alignment=8,MarginV="+Math.round(1280-below+36):base+",Alignment=2,MarginV=300";
-}
+// Seconds of extra footage kept either side of the chosen moment, so the editor can widen the trim.
+export const SOURCE_PAD=6;
 // Asks streamlink whether the channel has playable streams, without downloading any media.
 export async function probeLive(url,signal) {
   let stdout;
@@ -29,19 +20,29 @@ export async function probeLive(url,signal) {
   catch (error) { stdout=error.stdout; }  // streamlink exits 1 for offline channels but still prints JSON.
   try { return probeResult(JSON.parse(stdout||"null")); } catch { return probeResult(null); }
 }
-async function videoSize(file,signal) {
-  try {
-    const {stdout}=await run("ffprobe",["-v","error","-select_streams","v:0","-show_entries","stream=width,height","-of","csv=p=0:s=x",file],{signal,timeout:30_000,windowsHide:true});
-    const [width,height]=stdout.trim().split("x").map(Number);
-    return {width,height};
-  } catch { return {width:0,height:0}; }
+// Transcript words inside [from, to] of the window, shifted so 0 is `from`: [[start, end, text], ...].
+export function sourceWords(segments,from,to) {
+  const out=[];
+  for(const seg of segments??[])for(const [s,e,t] of seg.words??[]){
+    const text=String(t).replace(/[\r\n{}\\<>]/g,"").trim();
+    if(text&&s>=from&&e<=to)out.push([Math.round((s-from)*100)/100,Math.round((e-from)*100)/100,text.slice(0,40)]);
+  }
+  return out;
 }
-// Turns a buffered recording window into the final clip. Chooses the best `settings.duration` seconds inside
-// [focusFrom, focusTo] (seconds into `raw`) from loudness plus per-second chat counts, snaps the edges to sentence
-// boundaries, frames it vertically and burns in captions. The transcript is made once and reused for captions.
-// Removes `raw` and intermediates. Returns { sha, start, end }.
-export async function processWindow(raw,{settings,focusFrom=0,focusTo=Infinity,chat=[]},file,signal) {
-  const dir=dirname(file), cut=join(dir,"cut.mp4"), energyFile=join(dir,"energy.json"), wordsFile=join(dir,"words.json");
+// Per-second loudness (0-1, relative to the loudest second) and chat message counts across the source, for the
+// editor's "why this moment" heat strip.
+export function sourceSignals(energy,chat,from,to) {
+  const a=Math.max(0,Math.floor(from)),b=Math.min(energy.length,Math.ceil(to));
+  const e=energy.slice(a,b),peak=Math.max(1e-9,...e);
+  return {energy:e.map(v=>Math.round(v/peak*100)/100),chat:Array.from({length:b-a},(_,i)=>chat[a+i]??0)};
+}
+// Turns a buffered recording window into a clip. Chooses the best `settings.duration` seconds inside
+// [focusFrom, focusTo] (seconds into `raw`) from loudness plus per-second chat counts and snaps the edges to sentence
+// boundaries. Then keeps an unframed *source* (the moment plus SOURCE_PAD seconds either side) with its transcript,
+// and renders the vertical clip from it with `edit` (see edit.mjs), the same way the dashboard editor re-renders.
+// Writes clip.mp4, source.mp4 and meta.json into `dir` and removes `raw` and intermediates.
+export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infinity,chat=[]},dir,signal) {
+  const source=join(dir,"source.mp4"), energyFile=join(dir,"energy.json"), wordsFile=join(dir,"words.json");
   await mkdir(dir,{recursive:true});
   try {
     if(signal.aborted)throw new Error("Cancelled");
@@ -58,19 +59,23 @@ export async function processWindow(raw,{settings,focusFrom=0,focusTo=Infinity,c
     const duration=settings.duration, total=energy.length;
     const first=pickWindow({energy,chat,duration,from:Math.max(0,Math.floor(focusFrom)),to:Math.min(total,Math.ceil(focusTo))});
     const {start,end}=snapToSentences(first,first+duration,segments,{minLen:Math.max(15,duration-8),maxLen:Math.min(90,duration+8),total});
-    await command("ffmpeg",["-hide_banner","-loglevel","error","-y","-ss",String(start),"-i",raw,"-t",String(end-start),"-vf",frameFilter(settings.framing),"-c:v","libx264","-preset","veryfast","-crf","25","-maxrate","1500k","-bufsize","3000k","-c:a","aac","-b:a","96k","-movflags","+faststart",cut],{signal}).done;
-    if(settings.captions) {
-      await command(python,[script("captions.py"),"srt",wordsFile,String(start),String(end),join(dir,"captions.srt")],{signal,timeout:60_000}).done;
-      const {width,height}=await videoSize(raw,signal);
-      // Relative subtitle path: filter syntax treats ':' as a separator, which breaks absolute Windows paths.
-      await command("ffmpeg",["-hide_banner","-loglevel","error","-y","-i",cut,"-vf","subtitles=captions.srt:force_style='"+captionStyle(settings.framing,width,height)+"'","-c:v","libx264","-preset","veryfast","-crf","25","-maxrate","1500k","-bufsize","3000k","-c:a","copy","-movflags","+faststart",file],{signal,cwd:dir}).done;
-    } else {
-      await command("ffmpeg",["-hide_banner","-loglevel","error","-y","-i",cut,"-c","copy",file],{signal}).done;
-    }
-    const size=(await stat(file)).size;
-    if(size<1024||size>32*1024*1024)throw new Error("Clip size outside allowed range");
-    return {sha:clipHash(await readFile(file)),start,end};
+    const from=Math.max(0,start-SOURCE_PAD), to=Math.min(total,end+SOURCE_PAD);
+    // Frequent keyframes keep seeking in the editor responsive.
+    await command("ffmpeg",["-hide_banner","-loglevel","error","-y","-ss",String(from),"-i",raw,"-t",String(to-from),"-vf","scale=1280:1280:force_original_aspect_ratio=decrease:force_divisible_by=2","-c:v","libx264","-preset","veryfast","-crf","23","-maxrate","3000k","-bufsize","6000k","-g","30","-c:a","aac","-b:a","128k","-movflags","+faststart",source],{signal}).done;
+    const info=await videoInfo(source,signal);
+    const words=sourceWords(segments,from,to);
+    let base=null;
+    try { if(style)base=normalizeStyle(style); } catch { /* an unreadable saved style falls back to the defaults */ }
+    base??=defaultStyle({framing:settings.framing,captions:settings.captions});
+    // The workspace's on/off switch for captions always wins over a saved style.
+    base.captions.on=!!settings.captions;
+    const edit=defaultEdit(base,{trimStart:start-from,trimEnd:end-from});
+    const rendered=await renderClip(source,{edit,words,width:info.width,height:info.height},join(dir,"clip.mp4"),signal);
+    const sourceBytes=await readFile(source);
+    const meta={edit,words,signals:sourceSignals(energy,chat,from,to),source:{width:info.width,height:info.height,duration:Math.round((info.duration||to-from)*100)/100},sourceSha:clipHash(sourceBytes),sourceSize:sourceBytes.length};
+    await writeFile(join(dir,"meta.json"),JSON.stringify(meta));
+    return {...rendered,start,end};
   } finally {
-    for(const path of [raw,cut,energyFile,wordsFile,join(dir,"captions.srt")])await rm(path,{force:true});
+    for(const path of [raw,energyFile,wordsFile])await rm(path,{force:true});
   }
 }

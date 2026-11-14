@@ -54,6 +54,15 @@ logs to `worker\data\worker.log`.
   (viewers react after the moment), then its start and end move to the nearest sentence
   boundary in the transcript (within 4 seconds). The transcript is made once and reused
   for the captions. Clips are framed to 720×1280.
+- Each clip keeps an unframed **source** (the moment plus 6 seconds either side) and its
+  transcript. The clip is rendered from the source with an *edit* (`edit.mjs`): trim, framing,
+  colour, caption style and animation, hook title and progress bar. The first edit uses the
+  streamer's saved look, or the workspace's. The source is uploaded to the dashboard's storage
+  so the clip can be edited there; when an edit is saved, the worker picks it up on its next
+  config poll, re-renders the clip (`render.mjs`, from its local source or a downloaded copy)
+  and uploads the result in place of the old file. Re-renders run even while automation is
+  paused. Caption fonts must be installed on this machine (the Docker image ships DejaVu and
+  Liberation, which stands in for Arial); a missing font falls back to a default one.
 - Processing (transcription and rendering) runs one clip at a time; recording continues meanwhile.
 - The daily limit caps clips per streamer per UTC day; reaching it ends that day's recording.
 - A recording that fails or ends is retried with backoff (30s up to 5 min) after a fresh live check.
@@ -83,6 +92,6 @@ Only capture channels you have permission to record and repost.
 ## Test
 
 ```sh
-npm test                # scheduling, validation, framing, captions, highlight detection
+npm test                # scheduling, validation, edit model (layout, captions, ffmpeg graph), highlight detection
 npm run test:captions   # caption chunking (Python; on Windows: py test/test_captions.py)
 ```

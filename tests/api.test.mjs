@@ -6,6 +6,7 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
+import { defaultEdit, defaultStyle } from "../worker/edit.mjs";
 
 const base = process.env.BASE_URL ?? "http://127.0.0.1:5199";
 let cookie = "", token = "", streamer, originalSettings;
@@ -187,5 +188,125 @@ describe("clips", () => {
     assert.equal((await fetch(base + "/api/clips/" + clip.id + "/file", { headers: { cookie } })).status, 404);
     assert.equal((await dash()).body.clips.some(c => c.id === clip.id), false);
     assert.equal((await dash({ action: "deleteClip", id: clip.id })).status, 404);
+  });
+});
+
+describe("streamers start clipping and route to accounts", () => {
+  test("adding a streamer switches automation on and returns its id", async () => {
+    await dash({ action: "control", control: "paused" });
+    const name = "apistart" + Date.now().toString(36);
+    const added = await dash({ action: "add", url: "https://kick.com/" + name });
+    assert.equal(added.status, 200);
+    assert.match(added.body.message, /Clipping starts as soon as they go live/);
+    const { body } = await dash();
+    assert.equal(body.settings.control, "running");
+    const row = body.streamers.find(s => s.id === added.body.streamerId);
+    assert.deepEqual(row.accounts, [], "no account picked: library only");
+    assert.equal((await dash({ action: "remove", id: row.id })).status, 200);
+    await dash({ action: "control", control: "paused" });
+  });
+  test("only the owner's own accounts can be linked", async () => {
+    assert.equal((await dash({ action: "add", url: "https://kick.com/apibad" + Date.now().toString(36), accounts: [randomUUID()] })).status, 404);
+    assert.equal((await dash({ action: "assign", streamerId: streamer.id, accounts: [randomUUID()] })).status, 404);
+    assert.equal((await dash({ action: "assign", streamerId: randomUUID(), accounts: [] })).status, 404);
+    const cleared = await dash({ action: "assign", streamerId: streamer.id, accounts: [] });
+    assert.equal(cleared.status, 200);
+    assert.match(cleared.body.message, /kept in the library and not posted/);
+  });
+  test("a streamer's saved look reaches the worker, and bad looks are refused", async () => {
+    const style = { ...defaultStyle(), frame: { mode: "crop", zoom: 1.4, x: 0.2, y: 0 } };
+    assert.equal((await dash({ action: "style", streamerId: streamer.id, style })).status, 200);
+    let config = await (await worker("/api/worker/config")).json();
+    assert.equal(config.streamers.find(s => s.id === streamer.id).style.frame.zoom, 1.4);
+    const bad = await dash({ action: "style", streamerId: streamer.id, style: { ...style, captions: { font: "Papyrus" } } });
+    assert.equal(bad.status, 400);
+    assert.match(bad.body.error, /Font/);
+    assert.equal((await dash({ action: "style", style })).status, 200, "workspace look");
+    config = await (await worker("/api/worker/config")).json();
+    assert.equal(config.style.frame.mode, "crop");
+    await dash({ action: "style", streamerId: streamer.id, style: null });
+    await dash({ action: "style", style: null });
+    config = await (await worker("/api/worker/config")).json();
+    assert.equal(config.streamers.find(s => s.id === streamer.id).style, null);
+    assert.equal(config.style, null);
+  });
+});
+
+describe("clip editor", () => {
+  const file = Buffer.alloc(5000, 4), source = Buffer.alloc(9000, 5);
+  const words = [[6.2, 6.6, "Hello"], [6.7, 7.1, "chat!"]];
+  const firstEdit = defaultEdit(defaultStyle(), { trimStart: 6, trimEnd: 36 });
+  let clip;
+  const edit = id => fetch(base + "/api/clips/" + id + "/edit", { headers: { cookie } });
+  const save = (id, body) => fetch(base + "/api/clips/" + id + "/edit", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body) });
+  const render = (id, bytes, rev, sha = sha256(bytes)) => worker("/api/worker/clips/" + id + "/render", { method: "PUT", headers: { "content-type": "video/mp4", "x-edit-rev": String(rev), "x-clip-sha256": sha }, body: bytes });
+
+  test("a clip reported with its source and transcript can be opened in the editor", async () => {
+    const reported = await reportClip(file, { edit: firstEdit, transcript: words, signals: { energy: [0.1, 1], chat: [0, 4] }, source: { width: 1920, height: 1080, duration: 42, sha: sha256(source), size: source.length } });
+    clip = reported.clip;
+    assert.equal(reported.response.status, 200);
+    assert.equal((await upload(clip.id, file)).status, 200);
+    const opened = await (await edit(clip.id)).json();
+    assert.deepEqual([opened.edit.trim, opened.words, opened.rev, opened.source.duration, opened.sourceStored], [{ start: 6, end: 36 }, words, 0, 42, false]);
+    assert.equal((await dash()).body.clips.find(c => c.id === clip.id).editable, true);
+    const old = (await reportClip(Buffer.alloc(3000, 9))).clip;
+    assert.equal((await edit(old.id)).status, 409, "clips from older workers have nothing to edit");
+    assert.equal((await fetch(base + "/api/clips/" + clip.id + "/edit")).status, 401);
+  });
+  test("an invalid edit in a report is refused", async () => {
+    const bad = await reportClip(file, { edit: { ...firstEdit, trim: { start: 0, end: 2 } }, transcript: [], source: { width: 1, height: 1, duration: 42, sha: sha256(source), size: source.length } });
+    assert.equal(bad.response.status, 400);
+  });
+  test("the source upload is checked and then playable by its owner only", async () => {
+    const put = bytes => worker("/api/worker/clips/" + clip.id + "/source", { method: "PUT", headers: { "content-type": "video/mp4" }, body: bytes });
+    assert.equal((await put(Buffer.alloc(9000, 6))).status, 422);
+    assert.equal((await put(source)).status, 200);
+    assert.deepEqual(await (await put(source)).json(), { ok: true, duplicate: true });
+    const got = await fetch(base + "/api/clips/" + clip.id + "/source", { headers: { cookie } });
+    assert.equal(got.status, 200);
+    assert.deepEqual(Buffer.from(await got.arrayBuffer()), source);
+    assert.equal((await fetch(base + "/api/clips/" + clip.id + "/source")).status, 401);
+    assert.equal((await worker("/api/worker/clips/" + clip.id + "/source")).status, 200, "a worker can fetch it back to re-render");
+    assert.equal((await edit(clip.id).then(r => r.json())).sourceStored, true);
+  });
+  test("saving an edit validates it, guards against stale saves and queues a render for the worker", async () => {
+    const invalid = await save(clip.id, { edit: { ...firstEdit, captions: { ...firstEdit.captions, color: "red" } }, rev: 0 });
+    assert.equal(invalid.status, 400);
+    assert.match((await invalid.json()).error, /colour/);
+    const changed = { ...firstEdit, trim: { start: 10, end: 30 }, hook: { ...firstEdit.hook, text: "watch this" }, words: [[6.2, 6.6, "Hi"], [6.7, 7.1, ""]] };
+    const saved = await save(clip.id, { edit: changed, rev: 0, saveStyle: "streamer" });
+    assert.equal(saved.status, 200);
+    assert.equal((await saved.json()).rev, 1);
+    assert.equal((await save(clip.id, { edit: changed, rev: 0 })).status, 409, "a save based on an old version is refused");
+    const row = (await dash()).body.clips.find(c => c.id === clip.id);
+    assert.deepEqual([row.render_state, row.edit_rev], ["queued", 1]);
+    const config = await (await worker("/api/worker/config")).json();
+    const job = config.renders.find(r => r.id === clip.id);
+    assert.deepEqual([job.rev, job.edit.trim, job.edit.hook.text, job.edit.words[1][2], job.source.width], [1, { start: 10, end: 30 }, "watch this", "", 1920]);
+    assert.ok(config.streamers.find(s => s.id === streamer.id).style, "saveStyle stored the look for the streamer");
+    await dash({ action: "style", streamerId: streamer.id, style: null });
+  });
+  test("the worker's render replaces the file only for the newest edit", async () => {
+    const rendered = Buffer.alloc(6000, 8);
+    assert.equal((await render(clip.id, rendered, 0)).status, 409, "old revision");
+    assert.equal((await render(clip.id, rendered, 1, "f".repeat(64))).status, 422, "hash mismatch");
+    assert.equal((await render(clip.id, rendered, 1)).status, 200);
+    const row = (await dash()).body.clips.find(c => c.id === clip.id);
+    assert.deepEqual([row.render_state, row.duration, row.size], [null, 20, rendered.length]);
+    const got = await fetch(base + "/api/clips/" + clip.id + "/file", { headers: { cookie } });
+    assert.deepEqual(Buffer.from(await got.arrayBuffer()), rendered);
+    assert.equal((await render(clip.id, rendered, 1)).status, 409, "already rendered");
+    assert.equal((await (await worker("/api/worker/config")).json()).renders.some(r => r.id === clip.id), false);
+  });
+  test("a failed render is shown and the previous file stays", async () => {
+    assert.equal((await save(clip.id, { edit: firstEdit, rev: 1 })).status, 200);
+    assert.equal((await worker("/api/worker/clips/" + clip.id + "/render", { method: "POST", body: JSON.stringify({ rev: 2, error: "ffmpeg failed (exit 1)" }) })).status, 200);
+    const row = (await dash()).body.clips.find(c => c.id === clip.id);
+    assert.deepEqual([row.render_state, row.render_error], ["failed", "ffmpeg failed (exit 1)"]);
+    assert.equal((await fetch(base + "/api/clips/" + clip.id + "/file", { headers: { cookie } })).status, 200);
+  });
+  test("deleting a clip also removes its source", async () => {
+    assert.equal((await dash({ action: "deleteClip", id: clip.id })).status, 200);
+    assert.equal((await worker("/api/worker/clips/" + clip.id + "/source")).status, 404);
   });
 });

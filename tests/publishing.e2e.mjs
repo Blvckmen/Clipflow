@@ -27,8 +27,8 @@ async function cron(advanceMs = 0) {
   assert.equal(r.status, 200, "publisher run failed: " + (await r.text()).slice(0, 600));
 }
 const fakeLog = async () => (await fetch("http://127.0.0.1:" + fake.port + "/__log")).json();
-async function addClip() {
-  const bytes = randomBytes(6000), clip = { id: randomUUID(), streamerId: streamer.id, createdAt: new Date().toISOString(), duration: 30, captions: true, sha: createHash("sha256").update(bytes).digest("hex"), size: bytes.length, reason: "chat" };
+async function addClip(streamerId = streamer.id) {
+  const bytes = randomBytes(6000), clip = { id: randomUUID(), streamerId, createdAt: new Date().toISOString(), duration: 30, captions: true, sha: createHash("sha256").update(bytes).digest("hex"), size: bytes.length, reason: "chat" };
   assert.equal((await worker("/api/worker/clips", { method: "POST", body: JSON.stringify(clip) })).status, 200);
   assert.equal((await worker("/api/worker/clips/" + clip.id + "/file", { method: "PUT", headers: { "content-type": "video/mp4" }, body: bytes })).status, 200);
   return { clip, bytes };
@@ -50,9 +50,10 @@ before(async () => {
 
 after(async () => {
   try {
-    for (const c of (await dash()).body.clips ?? []) await dash({ action: "deleteClip", id: c.id });
-    if ((await dash()).body.accounts?.length) await dash({ action: "disconnect", platform: "instagram" });
-    if (streamer) await dash({ action: "remove", id: streamer.id });
+    const { body } = await dash();
+    for (const c of body.clips ?? []) await dash({ action: "deleteClip", id: c.id });
+    for (const a of body.accounts ?? []) await dash({ action: "disconnect", id: a.id });
+    for (const s of body.streamers ?? []) await dash({ action: "remove", id: s.id });
     await dash({ action: "control", control: "paused" });
   } finally { dev?.kill(); fake?.server.close(); }
 });
@@ -68,14 +69,15 @@ test("connecting Instagram stores an encrypted token and never exposes it", asyn
   assert.match(cookie, /^ig_oauth_state=/);
   const authorize = await fetch(start.headers.get("location"), { redirect: "manual" });
   const callback = authorize.headers.get("location");
-  assert.match(callback, /\/api\/connections\/instagram\/callback\?code=fake-code&state=.*#_$/);
+  assert.match(callback, /\/api\/connections\/instagram\/callback\?code=fake-code-\d+&state=.*#_$/);
   // A callback without the browser's state cookie is refused (CSRF protection).
   const forged = await fetch(callback.replace("#_", ""), { headers: who, redirect: "manual" });
   assert.match(forged.headers.get("location"), /connect_error=/);
   const done = await fetch(callback.replace("#_", ""), { headers: { ...who, cookie }, redirect: "manual" });
-  assert.match(done.headers.get("location"), /\?connected=instagram$/);
+  assert.match(done.headers.get("location"), /\?connected=instagram&account=clipflow_test$/);
   const { body } = await dash();
   assert.deepEqual(body.accounts.map(a => [a.platform, a.username, a.status]), [["instagram", "clipflow_test", "connected"]]);
+  assert.deepEqual(body.streamers[0].accounts, [body.accounts[0].id], "the first account posts for every existing streamer");
   assert.ok(!JSON.stringify(body).includes("long-"), "no token in dashboard data");
 });
 
@@ -126,18 +128,54 @@ test("rejected clips are not posted and pausing stops publishing", async () => {
   assert.ok(queued, "resumed: the approved clip is queued");
 });
 
+test("several accounts: each streamer posts only to the accounts linked to it", async () => {
+  assert.equal((await dash({ action: "add", url: "https://kick.com/" + owner + "b" })).status, 200);
+  const second = (await dash()).body.streamers.find(s => s.url === "https://kick.com/" + owner + "b");
+  assert.deepEqual(second.accounts, [], "added without picking an account: library only");
+  // Connect a second Instagram account, started from the second streamer.
+  await fetch("http://127.0.0.1:" + fake.port + "/__signin?id=17890001&username=second_test", { method: "POST" });
+  const start = await fetch(base + "/api/connections/instagram/start?streamer=" + second.id + "&another=1", { headers: who, redirect: "manual" });
+  assert.equal(new URL(start.headers.get("location")).searchParams.get("force_reauth"), "true", "Instagram is asked which account to use");
+  const cookie = start.headers.get("set-cookie").split(";")[0];
+  const authorize = await fetch(start.headers.get("location"), { redirect: "manual" });
+  const done = await fetch(authorize.headers.get("location").replace("#_", ""), { headers: { ...who, cookie }, redirect: "manual" });
+  assert.match(done.headers.get("location"), /connected=instagram&account=second_test$/);
+  let { body } = await dash();
+  const first = body.accounts.find(a => a.username === "clipflow_test"), other = body.accounts.find(a => a.username === "second_test");
+  assert.equal(body.accounts.length, 2);
+  assert.deepEqual(body.streamers.find(s => s.id === second.id).accounts, [other.id], "linked to the streamer it was started from");
+  assert.deepEqual(body.streamers.find(s => s.id === streamer.id).accounts, [first.id], "the first streamer keeps its account");
+
+  const { clip } = await addClip(second.id);
+  await cron(120_000);
+  assert.deepEqual((await posts()).filter(p => p.clip_id === clip.id).map(p => p.account), ["second_test"]);
+  const { containers } = await fakeLog();
+  assert.equal(containers.at(-1)[1].user, "17890001", "uploaded with the second account's own token");
+
+  assert.equal((await dash({ action: "assign", streamerId: streamer.id, accounts: [first.id, other.id] })).status, 200);
+  assert.equal((await dash({ action: "assign", streamerId: streamer.id, accounts: [randomUUID()] })).status, 404, "only your own accounts");
+  const both = await addClip();
+  await cron(120_000);
+  assert.deepEqual((await posts()).filter(p => p.clip_id === both.clip.id).map(p => p.account).sort(), ["clipflow_test", "second_test"]);
+  ({ body } = await dash());
+  assert.deepEqual(body.streamers.find(s => s.id === streamer.id).accounts.sort(), [first.id, other.id].sort());
+});
+
 test("a revoked Instagram token marks the account for reconnection without losing the post", async () => {
   await fetch("http://127.0.0.1:" + fake.port + "/__revoke", { method: "POST" });
   await cron(600_000); await cron(120_000);
   const { body } = await dash();
-  assert.equal(body.accounts[0].status, "expired");
-  assert.match(body.accounts[0].last_error, /reconnect/i);
-  assert.ok(body.posts.some(p => p.state === "queued" || p.state === "processing"), "post kept for after reconnecting");
+  // An account learns its token is gone the next time it calls Instagram, i.e. when it has something to post.
+  const expired = body.accounts.filter(a => a.status === "expired");
+  assert.ok(expired.length >= 1, "an account with work waiting is marked for reconnection");
+  for (const account of expired) assert.match(account.last_error, /reconnect/i);
+  assert.ok(body.posts.some(p => expired.some(a => a.id === p.account_id) && (p.state === "queued" || p.state === "processing")), "its post is kept for after reconnecting");
 });
 
-test("disconnecting removes the account and drops unsent posts", async () => {
-  assert.equal((await dash({ action: "disconnect", platform: "instagram" })).status, 200);
+test("disconnecting removes the account and its links, and drops unsent posts", async () => {
+  for (const a of (await dash()).body.accounts) assert.equal((await dash({ action: "disconnect", id: a.id })).status, 200);
   const { body } = await dash();
   assert.equal(body.accounts.length, 0);
-  assert.deepEqual(body.posts.map(p => p.state), ["published"]);
+  assert.ok(body.streamers.every(s => s.accounts.length === 0));
+  assert.ok(body.posts.every(p => p.state === "published"), "only published history is kept");
 });
