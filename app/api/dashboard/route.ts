@@ -1,7 +1,8 @@
 import { currentUser, signInPath } from "../../auth";
 import { bucket, database } from "../../../db/raw";
 import { defaultCaption, defaults, parseStreamer, settingsSchema } from "../../../lib/clipflow";
-import { instagramConfig } from "../../../lib/publisher";
+import { instagramConfig, zernioConfig } from "../../../lib/publisher";
+import { listAccounts, VIDEO_PLATFORMS, ZernioError } from "../../../lib/zernio";
 import { normalizeStyle } from "../../../worker/edit.mjs";
 import { env } from "cloudflare:workers";
 import { hashToken, newToken } from "../../../lib/worker-auth";
@@ -19,6 +20,8 @@ const actionSchema=z.discriminatedUnion("action",[
  // `platform` is the pre-multi-account form: it disconnects that platform's only account.
  z.object({action:z.literal("disconnect"),id:z.string().uuid().optional(),platform:z.enum(["instagram"]).optional()}),
  z.object({action:z.literal("retryPost"),id:z.string().min(1).max(64)}),
+ // Copies the accounts connected on Zernio into this workspace (new ones added, removed ones marked).
+ z.object({action:z.literal("syncZernio")}),
  z.object({action:z.literal("assign"),streamerId:z.string().uuid(),accounts:accountIds}),
  // A streamer's own clip look, or the workspace's (no streamerId). A null style goes back to the default.
  z.object({action:z.literal("style"),streamerId:z.string().uuid().optional(),style:z.unknown().nullable()}),
@@ -31,7 +34,7 @@ export async function GET(){
   const db=database(),owner=user.userId;
   const [a,po,l]=await Promise.all([
    // Tokens never leave the server: only display fields are selected.
-   db.prepare("SELECT id,platform,username,status,connected_at,last_error FROM accounts WHERE owner=? ORDER BY connected_at").bind(owner).all(),
+   db.prepare("SELECT id,provider,platform,username,status,connected_at,last_error FROM accounts WHERE owner=? ORDER BY connected_at").bind(owner).all(),
    db.prepare("SELECT p.id,p.clip_id,p.platform,p.account_id,p.state,p.permalink,p.error,p.attempts,p.created_at,p.published_at,s.name AS streamer,a.username AS account FROM posts p LEFT JOIN clips c ON c.id=p.clip_id LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner LEFT JOIN accounts a ON a.id=p.account_id WHERE p.owner=? ORDER BY p.created_at DESC LIMIT 100").bind(owner).all(),
    db.prepare("SELECT streamer_id,account_id FROM streamer_accounts WHERE owner=?").bind(owner).all<{streamer_id:string;account_id:string}>(),
   ]);
@@ -40,7 +43,7 @@ export async function GET(){
   const engine={connected,lastSeen,tokenCreated:w?.created_at??null,lastError:w?.last_error??null,lastErrorAt:w?.last_error_at??null,status:connected?"Worker connected":w?(lastSeen?"Worker offline":"Waiting for worker"):"Setup required"};
   const streamers=s.results.map(x=>({...x,style:parse(x.style),accounts:l.results.filter(k=>k.streamer_id===x.id).map(k=>k.account_id)}));
   const settings=p?{...p,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,style:parse(p.style)}:{...defaults,style:null};
-  return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results,posts:po.results,publishing:{instagram:!!instagramConfig(env)},clips:c.results.map(x=>({...x,captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,source_stored:!!x.source_stored})),storage:!!bucket(),analytics:null},{headers:{"Cache-Control":"private, no-store"}});
+  return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results,posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:!!zernioConfig(env)},clips:c.results.map(x=>({...x,captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,source_stored:!!x.source_stored})),storage:!!bucket(),analytics:null},{headers:{"Cache-Control":"private, no-store"}});
  }catch(error){console.error("Dashboard load failed",error);return Response.json({error:"We couldn't load your workspace. Please retry."},{status:503});}
 }
 export async function POST(request:Request){
@@ -126,13 +129,16 @@ export async function POST(request:Request){
    return Response.json({ok:true,message:{approved:"Clip approved.",rejected:"Clip rejected.",pending:"Clip moved back to review."}[payload.review]});
   }
   if(payload.action==="disconnect"){
+   type Row={id:string;username:string;provider:string;platform:string};
    const account=payload.id
-    ?await db.prepare("SELECT id,username FROM accounts WHERE owner=? AND id=?").bind(owner,payload.id).first<{id:string;username:string}>()
-    :payload.platform?await db.prepare("SELECT id,username FROM accounts WHERE owner=? AND platform=? ORDER BY connected_at LIMIT 1").bind(owner,payload.platform).first<{id:string;username:string}>():null;
+    ?await db.prepare("SELECT id,username,provider,platform FROM accounts WHERE owner=? AND id=?").bind(owner,payload.id).first<Row>()
+    :payload.platform?await db.prepare("SELECT id,username,provider,platform FROM accounts WHERE owner=? AND platform=? ORDER BY connected_at LIMIT 1").bind(owner,payload.platform).first<Row>():null;
    if(!account)return Response.json({error:"That account is not connected."},{status:404});
    // Posts not yet sent are dropped with the account; published history is kept.
    statements.push(db.prepare("DELETE FROM posts WHERE account_id=? AND state IN ('queued','processing','failed')").bind(account.id),db.prepare("DELETE FROM streamer_accounts WHERE account_id=?").bind(account.id),db.prepare("DELETE FROM accounts WHERE id=?").bind(account.id));
-   message="Disconnected Instagram account @"+account.username+". Remove Clipflow under Instagram settings → Apps and websites to revoke its access fully.";
+   message=account.provider==="zernio"
+    ?"Removed "+(VIDEO_PLATFORMS[account.platform]??account.platform)+" account @"+account.username+" from Clipflow. It stays connected on Zernio; disconnect it there too if you no longer use it, or it returns on the next sync."
+    :"Disconnected Instagram account @"+account.username+". Remove Clipflow under Instagram settings → Apps and websites to revoke its access fully.";
   }
   if(payload.action==="retryPost"){
    const post=await db.prepare("SELECT state FROM posts WHERE id=? AND owner=?").bind(payload.id,owner).first<{state:string}>();
@@ -140,6 +146,26 @@ export async function POST(request:Request){
    if(post.state!=="failed")return Response.json({error:"Only failed posts can be retried."},{status:409});
    await db.prepare("UPDATE posts SET state='queued',attempts=0,error=NULL,container_id=NULL,next_attempt_at=?,updated_at=? WHERE id=? AND owner=?").bind(iso,iso,payload.id,owner).run();
    return Response.json({ok:true,message:"Post queued again."});
+  }
+  if(payload.action==="syncZernio"){
+   const config=zernioConfig(env);
+   if(!config)return Response.json({error:"Zernio isn't set up on this site yet: add ZERNIO_API_KEY (see DEPLOY.md)."},{status:409});
+   let remote;
+   try{remote=(await listAccounts(config)).filter(a=>VIDEO_PLATFORMS[a.platform]);}
+   catch(error){console.error("Zernio sync failed",error);return Response.json({error:error instanceof ZernioError&&error.keyInvalid?"Zernio refused the API key. Check ZERNIO_API_KEY.":"Couldn't reach Zernio. Please try again."},{status:502});}
+   const {results:mine}=await db.prepare("SELECT id,external_id,status FROM accounts WHERE owner=? AND provider='zernio'").bind(owner).all<{id:string;external_id:string;status:string}>();
+   const any=await db.prepare("SELECT count(*) AS n FROM accounts WHERE owner=?").bind(owner).first<{n:number}>();
+   const added:string[]=[],remoteIds=new Set(remote.map(a=>a._id));
+   for(const a of remote){
+    const username=(a.username||a.displayName||a._id).replace(/^@/,"").slice(0,80),active=a.isActive!==false,existing=mine.find(m=>m.external_id===a._id);
+    if(existing){statements.push(db.prepare("UPDATE accounts SET username=?,status=?,last_error=? WHERE id=?").bind(username,active?"connected":"expired",active?null:"Disconnected on Zernio; reconnect it there, then sync again.",existing.id));continue;}
+    const id=crypto.randomUUID();added.push(VIDEO_PLATFORMS[a.platform]+" @"+username);
+    statements.push(db.prepare("INSERT INTO accounts (id,owner,provider,platform,external_id,username,token_enc,token_expires_at,token_refreshed_at,status,connected_at) VALUES (?,?,'zernio',?,?,?,'','','',?,?)").bind(id,owner,a.platform,a._id,username,active?"connected":"expired",iso));
+    // A workspace's very first accounts post every streamer's clips, so a simple setup needs no extra step.
+    if(!any?.n)statements.push(db.prepare("INSERT OR IGNORE INTO streamer_accounts (streamer_id,account_id,owner,created_at) SELECT id,?,owner,? FROM streamers WHERE owner=?").bind(id,iso,owner));
+   }
+   for(const m of mine)if(!remoteIds.has(m.external_id)&&m.status==="connected")statements.push(db.prepare("UPDATE accounts SET status='expired',last_error=? WHERE id=?").bind("No longer connected on Zernio; reconnect it there, then sync again.",m.id));
+   message=added.length?"Added from Zernio: "+added.join(", ")+".":remote.length?"Zernio accounts are up to date.":"No video accounts are connected on Zernio yet. Connect TikTok, Instagram or YouTube at zernio.com, then sync again.";
   }
   let token:string|undefined;
   if(payload.action==="token"){

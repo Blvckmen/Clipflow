@@ -59,7 +59,7 @@ after(async () => {
 });
 
 test("dashboard reports Instagram publishing as available", async () => {
-  assert.deepEqual((await dash()).body.publishing, { instagram: true });
+  assert.deepEqual((await dash()).body.publishing, { instagram: true, zernio: false });
 });
 
 test("connecting Instagram stores an encrypted token and never exposes it", async () => {

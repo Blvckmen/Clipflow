@@ -44,7 +44,29 @@ that `/api/worker/*` answers the worker directly (it uses its own bearer token, 
 exempt from Access). Then sign in, open **Connect worker**, create a token and point the
 worker at the site (see `worker/README.md`).
 
-## Instagram publishing (optional)
+## Publishing to TikTok, Instagram and YouTube (Zernio)
+
+The simple way to publish. [Zernio](https://zernio.com) already has approved apps for each platform, so there is
+no Meta app, Google audit or TikTok review to go through.
+
+1. On zernio.com, connect the accounts you post to (TikTok, Instagram professional accounts, YouTube channels;
+   Facebook, X and Threads work too). Each uses that platform's own sign-in.
+2. Copy your Zernio API key into `.env`, then `npm run deploy`:
+
+   ```ini
+   ZERNIO_API_KEY=sk_...
+   ```
+3. In the dashboard: **Connections → Sync accounts**. The first accounts you sync post every streamer's clips;
+   change that per streamer under **Streamers → Posts to**. Sync again after connecting or reconnecting an account
+   on Zernio.
+
+Each approved clip is sent to Zernio as a signed video link (valid 24 hours) and published right away. Retries,
+the daily limit and pausing work as below. YouTube gets the caption's first line as its title. TikTok asks that the
+creator has seen each post: clips you approve yourself in review mode are published, while clips approved
+automatically go to your TikTok drafts to finish in the app. Test locally against a fake Zernio with
+`npm run build` then `npm run test:zernio`.
+
+## Instagram publishing directly (optional, instead of Zernio)
 
 Clipflow posts approved clips as Reels to **your own** Instagram professional account. Meta's docs say an
 app that only serves accounts you own or manage needs Standard Access, so no App Review is required.

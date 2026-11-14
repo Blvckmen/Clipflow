@@ -57,6 +57,13 @@
       "when": 1794625798578,
       "tag": "0007_routing_gallery_editor",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1794632655025,
+      "tag": "0008_zernio",
+      "breakpoints": true
     }
   ]
 }

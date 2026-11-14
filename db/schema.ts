@@ -36,8 +36,10 @@ export const clips=sqliteTable("clips",{
 },t=>[index("clips_owner_created").on(t.owner,t.createdAt)]);
 // Connected publishing accounts; an owner can connect several per platform. The access token is AES-GCM
 // encrypted with the TOKEN_KEY secret.
+// provider "instagram": connected directly with Instagram Login, token stored here. provider "zernio": connected on
+// Zernio and posted through the site's ZERNIO_API_KEY; external_id is Zernio's account id and no token is stored.
 export const accounts=sqliteTable("accounts",{
- id:text("id").primaryKey(),owner:text("owner").notNull(),platform:text("platform").notNull(),externalId:text("external_id").notNull(),username:text("username").notNull(),
+ id:text("id").primaryKey(),owner:text("owner").notNull(),provider:text("provider").notNull().default("instagram"),platform:text("platform").notNull(),externalId:text("external_id").notNull(),username:text("username").notNull(),
  tokenEnc:text("token_enc").notNull(),tokenExpiresAt:text("token_expires_at").notNull(),tokenRefreshedAt:text("token_refreshed_at").notNull(),
  // connected | expired (needs reconnecting). Only clips approved after connected_at are published.
  status:text("status").notNull().default("connected"),connectedAt:text("connected_at").notNull(),lastError:text("last_error"),

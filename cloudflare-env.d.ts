@@ -16,6 +16,8 @@ declare namespace Cloudflare {
     INSTAGRAM_AUTH_URL?: string;
     INSTAGRAM_API_URL?: string;
     INSTAGRAM_GRAPH_URL?: string;
+    ZERNIO_API_KEY?: string;  // secret: posts to the accounts connected on zernio.com
+    ZERNIO_API_URL?: string;  // overridable only so tests can point at a local fake Zernio
     ENABLE_TEST_CRON?: string;  // local tests only; never set in a deployment
   }
 }

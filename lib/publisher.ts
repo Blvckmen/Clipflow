@@ -1,17 +1,29 @@
 // Publishes approved clips to connected accounts. Runs from the Worker's once-a-minute cron trigger and does a
 // bounded amount of work per account per run, so a slow platform never holds up the rest.
+// Accounts come from one of two providers: Instagram connected directly (Instagram Login, token stored here), or
+// any platform connected on Zernio (one site-wide API key). Both share the queue, retries and daily limit below;
+// a provider adapter only knows how to start a post and how to check on one.
 import { decrypt, encrypt, signedMediaPath } from "./secure";
 import * as instagram from "./instagram";
+import * as zernio from "./zernio";
 import { defaultCaption } from "./clipflow";
 
 type Env = Cloudflare.Env;
-type AccountRow = { id: string; owner: string; external_id: string; username: string; token_enc: string; token_expires_at: string; token_refreshed_at: string; connected_at: string; control: string | null; daily_limit: number | null; caption_template: string | null };
+type AccountRow = { id: string; owner: string; provider: string; platform: string; external_id: string; username: string; token_enc: string; token_expires_at: string; token_refreshed_at: string; connected_at: string; control: string | null; daily_limit: number | null; caption_template: string | null };
 type PostRow = { id: string; clip_id: string; state: string; container_id: string | null; attempts: number; updated_at: string };
+type ClipInfo = { reviewed: boolean; streamer: string; platform: string };
+// What an adapter reports back: done, still going (check again later), or failed with a reason.
+type Outcome = { state: "published"; mediaId: string | null; permalink: string | null } | { state: "processing"; containerId: string } | { state: "failed"; message: string } | { state: "wait" };
+type Adapter = {
+  timeoutMs: number; linkTtlMs: number;
+  start(post: PostRow, link: string, caption: string, clip: ClipInfo): Promise<Outcome>;
+  check(post: PostRow): Promise<Outcome>;
+  // A problem with the account as a whole (expired sign-in, revoked key): stop this account rather than fail the post.
+  accountProblem(error: unknown): { message: string; expire: boolean } | null;
+};
 
-const CHECK_EVERY_MS = 60_000;            // Instagram recommends checking a container about once a minute
-const PROCESSING_TIMEOUT_MS = 15 * 60_000; // give up on a container that never finishes and retry from scratch
+const CHECK_EVERY_MS = 60_000;   // Instagram recommends checking a container about once a minute
 const MAX_ATTEMPTS = 3;
-const LINK_TTL_MS = 3 * 3600_000;          // the signed video link must outlive Instagram's fetch
 const REFRESH_WITHIN_MS = 10 * 24 * 3600_000;
 
 export function instagramConfig(env: Env): instagram.InstagramConfig | null {
@@ -24,33 +36,109 @@ export function instagramConfig(env: Env): instagram.InstagramConfig | null {
   };
 }
 
+export function zernioConfig(env: Env): zernio.ZernioConfig | null {
+  if (!env.ZERNIO_API_KEY) return null;
+  return { apiKey: env.ZERNIO_API_KEY, apiUrl: env.ZERNIO_API_URL || "https://zernio.com/api/v1" };
+}
+
 export function renderCaption(template: string, values: { streamer: string; platform: string }) {
   return template.replace(/\{streamer\}/g, values.streamer).replace(/\{platform\}/g, values.platform).slice(0, 2200);
 }
 
 export async function runPublisher(env: Env, now = Date.now()) {
-  const config = instagramConfig(env);
-  if (!config || !env.DB || !env.MEDIA_KEY || !env.PUBLIC_URL) return;
-  const { results } = await env.DB.prepare("SELECT a.*, p.control, p.daily_limit, p.caption_template FROM accounts a LEFT JOIN preferences p ON p.owner=a.owner WHERE a.platform='instagram' AND a.status='connected'").all<AccountRow>();
+  if (!env.DB || !env.MEDIA_KEY || !env.PUBLIC_URL) return;
+  const ig = instagramConfig(env), zn = zernioConfig(env);
+  if (!ig && !zn) return;
+  const { results } = await env.DB.prepare("SELECT a.*, p.control, p.daily_limit, p.caption_template FROM accounts a LEFT JOIN preferences p ON p.owner=a.owner WHERE a.status='connected'").all<AccountRow>();
   for (const account of results) {
-    try { await runAccount(env, config, account, now); }
-    catch (error) {
+    try {
+      const adapter = account.provider === "zernio" ? (zn && zernioAdapter(zn, account)) : (ig && await instagramAdapter(env, ig, account, now));
+      if (adapter) await runAccount(env, adapter, account, now);
+    } catch (error) {
       console.error("Publisher failed for account", account.id, error);
       await env.DB.prepare("UPDATE accounts SET last_error=? WHERE id=?").bind(String((error as Error).message).slice(0, 500), account.id).run();
     }
   }
 }
 
-async function runAccount(env: Env, config: instagram.InstagramConfig, account: AccountRow, now: number) {
-  const db = env.DB!, iso = new Date(now).toISOString();
+async function instagramAdapter(env: Env, config: instagram.InstagramConfig, account: AccountRow, now: number): Promise<Adapter> {
   let token = await decrypt(account.token_enc, env.TOKEN_KEY!);
-
   // Long-lived tokens last 60 days and can be refreshed once they are a day old.
   if (Date.parse(account.token_expires_at) - now < REFRESH_WITHIN_MS && now - Date.parse(account.token_refreshed_at) > 24 * 3600_000) {
     const renewed = await instagram.refresh(config, token);
     token = renewed.access_token;
-    await db.prepare("UPDATE accounts SET token_enc=?,token_expires_at=?,token_refreshed_at=? WHERE id=?").bind(await encrypt(token, env.TOKEN_KEY!), new Date(now + renewed.expires_in * 1000).toISOString(), iso, account.id).run();
+    await env.DB!.prepare("UPDATE accounts SET token_enc=?,token_expires_at=?,token_refreshed_at=? WHERE id=?").bind(await encrypt(token, env.TOKEN_KEY!), new Date(now + renewed.expires_in * 1000).toISOString(), new Date(now).toISOString(), account.id).run();
   }
+  return {
+    timeoutMs: 15 * 60_000, linkTtlMs: 3 * 3600_000,  // the signed link must outlive Instagram's fetch
+    async start(_post, link, caption) {
+      const quota = await instagram.publishingQuota(config, token, account.external_id);
+      if (quota.used >= quota.total) return { state: "wait" };
+      return { state: "processing", containerId: await instagram.createReel(config, token, account.external_id, link, caption) };
+    },
+    async check(post) {
+      const status = await instagram.containerStatus(config, token, post.container_id!);
+      if (status.code === "FINISHED" || status.code === "PUBLISHED") {
+        // PUBLISHED means an earlier publish call succeeded but its response was lost; don't publish twice.
+        const mediaId = status.code === "FINISHED" ? await instagram.publish(config, token, account.external_id, post.container_id!) : null;
+        return { state: "published", mediaId, permalink: mediaId ? await instagram.permalink(config, token, mediaId).catch(() => null) : null };
+      }
+      if (status.code === "IN_PROGRESS") return { state: "wait" };
+      return { state: "failed", message: "Instagram could not process the video (" + status.code + (status.detail ? ": " + status.detail : "") + ")." };
+    },
+    accountProblem(error) {
+      return error instanceof instagram.InstagramError && error.tokenInvalid ? { message: "Instagram sign-in expired or was revoked; reconnect the account.", expire: true } : null;
+    },
+  };
+}
+
+function zernioAdapter(config: zernio.ZernioConfig, account: AccountRow): Adapter {
+  const outcome = (post: zernio.ZernioPost): Outcome => {
+    const result = zernio.platformResult(post);
+    if (post.status === "published" || result?.status === "published")
+      return { state: "published", mediaId: result?.platformPostId ?? null, permalink: result?.platformPostUrl ?? null };
+    if (post.status === "failed" || post.status === "partial" || post.status === "cancelled" || result?.status === "failed")
+      return { state: "failed", message: zernio.platformError(post) };
+    // scheduled / publishing / pending: Zernio is still working on it (it retries transient errors itself).
+    return { state: "processing", containerId: post._id };
+  };
+  return {
+    // Zernio may retry a transient failure itself later, so the video link stays valid for a day.
+    timeoutMs: 60 * 60_000, linkTtlMs: 24 * 3600_000,
+    async start(post, link, caption, clip) {
+      const platform: Record<string, unknown> = { platform: account.platform, accountId: account.external_id };
+      const body: Record<string, unknown> = { content: caption, publishNow: true, platforms: [platform], mediaItems: [{ type: "video", url: link, mimeType: "video/mp4" }] };
+      if (account.platform === "youtube") {
+        platform.platformSpecificData = { title: (caption.split("\n")[0].trim() || clip.streamer + " clip").slice(0, 100) };
+        body.visibility = "public";
+      }
+      if (account.platform === "tiktok") {
+        // TikTok wants the creator to have seen and agreed to each post. A clip you approved in review counts;
+        // a clip approved automatically goes to your TikTok drafts instead, to finish in the app.
+        body.tiktokSettings = clip.reviewed
+          ? { privacyLevel: "PUBLIC_TO_EVERYONE", allowComment: true, allowDuet: true, allowStitch: true, commercialContentType: "none", contentPreviewConfirmed: true, expressConsentGiven: true }
+          : { draft: true };
+      }
+      // One key per attempt: a lost response is answered with the same post, while a retry after a definite
+      // failure (automatic or by hand) is a fresh post. The attempt count separates automatic retries; updated_at,
+      // set when a manual retry resets that count, separates those.
+      return outcome(await zernio.createPost(config, body, post.id + "-" + post.attempts + "-" + Date.parse(post.updated_at)));
+    },
+    async check(post) {
+      const result = outcome(await zernio.getPost(config, post.container_id!));
+      return result.state === "processing" ? { state: "wait" } : result;
+    },
+    accountProblem(error) {
+      if (!(error instanceof zernio.ZernioError)) return null;
+      if (error.keyInvalid) return { message: "Zernio refused the site's API key; replace ZERNIO_API_KEY and redeploy.", expire: false };
+      if (error.accountInvalid) return { message: "This account was disconnected on Zernio; reconnect it there, then sync accounts.", expire: true };
+      return null;
+    },
+  };
+}
+
+async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: number) {
+  const db = env.DB!, iso = new Date(now).toISOString();
 
   // Pausing or stopping automation also pauses publishing.
   if (account.control !== "running") return;
@@ -58,49 +146,46 @@ async function runAccount(env: Env, config: instagram.InstagramConfig, account: 
   // Queue approved, uploaded clips from the streamers this account is linked to, approved after both the account
   // was connected and the streamer was linked to it — never the old backlog. Clips waiting for a re-render wait.
   await db.prepare(`INSERT OR IGNORE INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at)
-    SELECT lower(hex(randomblob(16))),c.owner,c.id,'instagram',?,'queued',?,?,? FROM clips c
+    SELECT lower(hex(randomblob(16))),c.owner,c.id,?,?,'queued',?,?,? FROM clips c
     JOIN streamer_accounts sa ON sa.streamer_id=c.streamer_id AND sa.account_id=?
     WHERE c.owner=? AND c.review='approved' AND c.file_key IS NOT NULL AND coalesce(c.render_state,'')!='queued'
     AND coalesce(c.reviewed_at,c.created_at)>=max(?,sa.created_at)
-    AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.clip_id=c.id AND p.account_id=?)`).bind(account.id, iso, iso, iso, account.id, account.owner, account.connected_at, account.id).run();
+    AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.clip_id=c.id AND p.account_id=?)`).bind(account.platform, account.id, iso, iso, iso, account.id, account.owner, account.connected_at, account.id).run();
 
   const fail = async (post: PostRow, message: string) => {
     const attempts = post.attempts + 1, final = attempts >= MAX_ATTEMPTS;
     await db.prepare("UPDATE posts SET state=?,container_id=NULL,attempts=?,error=?,next_attempt_at=?,updated_at=? WHERE id=?")
       .bind(final ? "failed" : "queued", attempts, message.slice(0, 500), new Date(now + 5 * 60_000 * attempts).toISOString(), iso, post.id).run();
   };
-  const tokenProblem = async (error: unknown) => {
-    if (error instanceof instagram.InstagramError && error.tokenInvalid) {
-      await db.prepare("UPDATE accounts SET status='expired',last_error=? WHERE id=?").bind("Instagram sign-in expired or was revoked; reconnect the account.", account.id).run();
-      return true;
-    }
-    return false;
+  const apply = async (post: PostRow, result: Outcome) => {
+    if (result.state === "published")
+      await db.prepare("UPDATE posts SET state='published',media_id=?,permalink=?,error=NULL,published_at=?,updated_at=? WHERE id=?").bind(result.mediaId, result.permalink, iso, iso, post.id).run();
+    else if (result.state === "processing")
+      await db.prepare("UPDATE posts SET state='processing',container_id=?,next_attempt_at=?,updated_at=? WHERE id=?").bind(result.containerId, new Date(now + CHECK_EVERY_MS).toISOString(), iso, post.id).run();
+    else if (result.state === "failed") await fail(post, result.message);
+  };
+  const handle = async (post: PostRow, error: unknown) => {
+    const problem = adapter.accountProblem(error);
+    if (problem) await db.prepare("UPDATE accounts SET status=?,last_error=? WHERE id=?").bind(problem.expire ? "expired" : "connected", problem.message, account.id).run();
+    else if (!(error instanceof zernio.ZernioError && error.inFlight)) await fail(post, (error as Error).message);
   };
 
-  // 1. Finish a post whose container is processing.
+  // 1. Finish a post the platform is still processing.
   const processing = await db.prepare("SELECT id,clip_id,state,container_id,attempts,updated_at FROM posts WHERE account_id=? AND state='processing' AND next_attempt_at<=? ORDER BY created_at LIMIT 1").bind(account.id, iso).first<PostRow>();
   if (processing) {
     try {
-      const status = await instagram.containerStatus(config, token, processing.container_id!);
-      if (status.code === "FINISHED" || status.code === "PUBLISHED") {
-        // PUBLISHED means an earlier publish call succeeded but its response was lost; don't publish twice.
-        const mediaId = status.code === "FINISHED" ? await instagram.publish(config, token, account.external_id, processing.container_id!) : null;
-        const link = mediaId ? await instagram.permalink(config, token, mediaId).catch(() => null) : null;
-        await db.prepare("UPDATE posts SET state='published',media_id=?,permalink=?,error=NULL,published_at=?,updated_at=? WHERE id=?").bind(mediaId, link, iso, iso, processing.id).run();
-      } else if (status.code === "IN_PROGRESS") {
-        if (now - Date.parse(processing.updated_at) > PROCESSING_TIMEOUT_MS) await fail(processing, "Instagram took too long to process the video.");
-        else await db.prepare("UPDATE posts SET next_attempt_at=? WHERE id=?").bind(new Date(now + CHECK_EVERY_MS).toISOString(), processing.id).run();
-      } else await fail(processing, "Instagram could not process the video (" + status.code + (status.detail ? ": " + status.detail : "") + ").");
-    } catch (error) {
-      if (!await tokenProblem(error)) await fail(processing, (error as Error).message);
-    }
+      const result = await adapter.check(processing);
+      if (result.state !== "wait") await apply(processing, result);
+      else if (now - Date.parse(processing.updated_at) > adapter.timeoutMs) await fail(processing, "The platform took too long to process the video.");
+      else await db.prepare("UPDATE posts SET next_attempt_at=? WHERE id=?").bind(new Date(now + CHECK_EVERY_MS).toISOString(), processing.id).run();
+    } catch (error) { await handle(processing, error); }
     return;
   }
 
-  // 2. Otherwise start the oldest queued post, within the daily limit and Instagram's own allowance.
+  // 2. Otherwise start the oldest queued post, within the daily limit.
   const queued = await db.prepare("SELECT id,clip_id,state,container_id,attempts,updated_at FROM posts WHERE account_id=? AND state='queued' AND next_attempt_at<=? ORDER BY created_at LIMIT 1").bind(account.id, iso).first<PostRow>();
   if (!queued) return;
-  const clip = await db.prepare("SELECT c.review,c.file_key,c.render_state,s.name,s.platform FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(queued.clip_id, account.owner).first<{ review: string; file_key: string | null; render_state: string | null; name: string | null; platform: string | null }>();
+  const clip = await db.prepare("SELECT c.review,c.reviewed_at,c.file_key,c.render_state,s.name,s.platform FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(queued.clip_id, account.owner).first<{ review: string; reviewed_at: string | null; file_key: string | null; render_state: string | null; name: string | null; platform: string | null }>();
   if (!clip || clip.review !== "approved" || !clip.file_key) {
     // Rejected or deleted after it was queued: drop it rather than post it.
     await db.prepare("DELETE FROM posts WHERE id=?").bind(queued.id).run();
@@ -112,13 +197,9 @@ async function runAccount(env: Env, config: instagram.InstagramConfig, account: 
   const today = await db.prepare("SELECT count(*) AS n FROM posts WHERE account_id=? AND state='published' AND published_at>=?").bind(account.id, since).first<{ n: number }>();
   if ((today?.n ?? 0) >= (account.daily_limit ?? 5)) return;
   try {
-    const quota = await instagram.publishingQuota(config, token, account.external_id);
-    if (quota.used >= quota.total) return;
-    const link = env.PUBLIC_URL!.replace(/\/$/, "") + await signedMediaPath(queued.clip_id, now + LINK_TTL_MS, env.MEDIA_KEY!);
-    const caption = renderCaption(account.caption_template || defaultCaption, { streamer: clip.name ?? "a streamer", platform: clip.platform ?? "stream" });
-    const containerId = await instagram.createReel(config, token, account.external_id, link, caption);
-    await db.prepare("UPDATE posts SET state='processing',container_id=?,next_attempt_at=?,updated_at=? WHERE id=?").bind(containerId, new Date(now + CHECK_EVERY_MS).toISOString(), iso, queued.id).run();
-  } catch (error) {
-    if (!await tokenProblem(error)) await fail(queued, (error as Error).message);
-  }
+    const link = env.PUBLIC_URL!.replace(/\/$/, "") + await signedMediaPath(queued.clip_id, now + adapter.linkTtlMs, env.MEDIA_KEY!);
+    const info = { reviewed: !!clip.reviewed_at, streamer: clip.name ?? "a streamer", platform: clip.platform ?? "stream" };
+    const caption = renderCaption(account.caption_template || defaultCaption, info);
+    await apply(queued, await adapter.start(queued, link, caption, info));
+  } catch (error) { await handle(queued, error); }
 }

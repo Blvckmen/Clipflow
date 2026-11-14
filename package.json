@@ -14,6 +14,7 @@
     "test:api": "node --test tests/api.test.mjs",
     "test:unit": "node --test tests/access-jwt.test.mjs tests/secure.test.mjs",
     "test:publishing": "node --test --test-concurrency=1 tests/publishing.e2e.mjs",
+    "test:zernio": "node --test --test-concurrency=1 tests/zernio.e2e.mjs",
     "deploy:check": "node scripts/deploy-cloudflare.mjs --check",
     "deploy": "node scripts/deploy-cloudflare.mjs",
     "db:generate": "drizzle-kit generate"
