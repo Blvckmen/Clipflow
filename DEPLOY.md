@@ -23,7 +23,7 @@ new database migrations.
    - Account · Account Settings · Read
 6. **`.env`** in the project root (already git-ignored — never commit it or paste the token anywhere):
 
-   ```
+   ```ini
    CLOUDFLARE_API_TOKEN=...
    CLIPFLOW_ACCESS_EMAILS=you@example.com
    # Optional:
@@ -58,7 +58,7 @@ app that only serves accounts you own or manage needs Standard Access, so no App
    (Settings → Apps and websites → Tester invites).
 6. Add to `.env`, then `npm run deploy`:
 
-   ```
+   ```ini
    INSTAGRAM_APP_ID=...
    INSTAGRAM_APP_SECRET=...
    ```
