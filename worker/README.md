@@ -19,9 +19,18 @@ docker run -d --name clipflow-worker -v clipflow-data:/data \
 Without Docker, install Node 24+, ffmpeg, streamlink, and `pip install faster-whisper`,
 then run `node main.mjs` with the same variables plus `DATA_DIR` pointing to a writable folder.
 
-On Windows, `python` is often only the Microsoft Store alias: set `PYTHON=py`, make sure
-Python's `Scripts` folder (which holds `streamlink.exe`) is on `PATH`, and set
-`WHISPER_DIR` (for example `worker\data\models`), since the default is `/data/models`.
+### Windows, always on
+
+1. Create `worker\.env` (git-ignored) with `CLIPFLOW_URL=https://your-site` and `CLIPFLOW_TOKEN=cfw_...`.
+2. `powershell -ExecutionPolicy Bypass -File worker\install-windows.ps1` registers a "Clipflow worker"
+   task that starts `run-windows.ps1` hidden at sign-in; start it now with
+   `Start-ScheduledTask -TaskName 'Clipflow worker'`. `-Remove` unregisters it.
+3. Keep the PC awake while plugged in (`powercfg /change standby-timeout-ac 0`) and check what closing
+   the lid does; a sleeping PC records nothing.
+
+`run-windows.ps1` uses `py` as Python, finds `streamlink.exe` in Python's Scripts folder, keeps data and
+the Whisper model in `worker\data`, restarts the worker if it exits (backing off up to 5 minutes), and
+logs to `worker\data\worker.log`.
 
 ## Behaviour
 
