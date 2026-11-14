@@ -1,18 +1,45 @@
 import { z } from "zod";
+import { env } from "cloudflare:workers";
 import { currentUser } from "../../../../auth";
-import { database } from "../../../../../db/raw";
-import { normalizeEdit, styleOf } from "../../../../../worker/edit.mjs";
+import { bucket, database, sourceKey } from "../../../../../db/raw";
+import { aiCaptionsAvailable } from "../../../../../lib/post-caption";
+import { defaultEdit, defaultStyle, normalizeEdit, styleOf } from "../../../../../worker/edit.mjs";
 export const dynamic="force-dynamic";
 const parse=(json:unknown)=>{try{return typeof json==="string"?JSON.parse(json):null;}catch{return null;}};
-type Row={id:string;streamer_id:string;edit:string|null;edit_rev:number;transcript:string|null;signals:string|null;source_meta:string|null;source_key:string|null;render_state:string|null;render_error:string|null;rendered_at:string|null;review:string;reason:string|null;created_at:string;streamer:string|null;streamer_style:string|null};
-const load=(db:D1Database,id:string,owner:string)=>db.prepare("SELECT c.id,c.streamer_id,c.edit,c.edit_rev,c.transcript,c.signals,c.source_meta,c.source_key,c.render_state,c.render_error,c.rendered_at,c.review,c.reason,c.created_at,s.name AS streamer,s.style AS streamer_style FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(id,owner).first<Row>();
-// Everything the editor needs for one clip: its edit, transcript, heat strip and source details.
+type Row={id:string;streamer_id:string;edit:string|null;edit_rev:number;transcript:string|null;signals:string|null;source_meta:string|null;source_key:string|null;file_key:string|null;duration:number;render_state:string|null;render_error:string|null;rendered_at:string|null;review:string;reason:string|null;created_at:string;streamer:string|null;streamer_style:string|null;post_caption:string|null;caption_source:string|null;caption_error:string|null;ai_captions:number|null};
+const load=(db:D1Database,id:string,owner:string)=>db.prepare("SELECT c.id,c.streamer_id,c.edit,c.edit_rev,c.transcript,c.signals,c.source_meta,c.source_key,c.file_key,c.duration,c.render_state,c.render_error,c.rendered_at,c.review,c.reason,c.created_at,c.post_caption,c.caption_source,c.caption_error,s.name AS streamer,s.style AS streamer_style,p.ai_captions FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner LEFT JOIN preferences p ON p.owner=c.owner WHERE c.id=? AND c.owner=?").bind(id,owner).first<Row>();
+const sha256=async(bytes:ArrayBuffer)=>[...new Uint8Array(await crypto.subtle.digest("SHA-256",bytes))].map(b=>b.toString(16).padStart(2,"0")).join("");
+
+// A clip captured before editing existed has only its finished, captioned 720x1280 file. That file becomes its
+// source (copied, because a re-render replaces the clip's file), so it can still be trimmed, zoomed, recoloured
+// and given a hook title and progress bar. Its captions are part of the picture and can't be restyled.
+async function adoptLegacy(db:D1Database,clip:Row,owner:string){
+ const store=bucket();
+ if(!store||!clip.file_key)return false;
+ const object=await store.get(clip.file_key);
+ if(!object)return false;
+ const bytes=await object.arrayBuffer(),key=sourceKey(clip.id),sha=await sha256(bytes);
+ await store.put(key,bytes,{httpMetadata:{contentType:"video/mp4"},sha256:sha});
+ const base=defaultStyle({framing:"crop",captions:false});
+ const edit=normalizeEdit(defaultEdit(base,{trimStart:0,trimEnd:Math.min(90,clip.duration)}),{duration:clip.duration});
+ const saved=await db.prepare("UPDATE clips SET edit=?,transcript='[]',source_meta=?,source_key=?,source_sha=?,source_size=? WHERE id=? AND owner=? AND edit IS NULL")
+  .bind(JSON.stringify(edit),JSON.stringify({width:720,height:1280,duration:clip.duration,legacy:true}),key,sha,bytes.byteLength,clip.id,owner).run();
+ return saved.meta.changes>0;
+}
+
+// Everything the editor needs for one clip: its edit, transcript, heat strip, source details and post caption.
 export async function GET(_request:Request,{params}:{params:Promise<{id:string}>}){
  const user=await currentUser();if(!user)return Response.json({error:"Sign in to edit clips."},{status:401});
- const {id}=await params,clip=await load(database(),id,user.userId);
+ const db=database(),{id}=await params;
+ let clip=await load(db,id,user.userId);
  if(!clip)return Response.json({error:"Clip not found."},{status:404});
- if(!clip.edit)return Response.json({error:"This clip was captured before editing was available, so it has no editable source."},{status:409});
- return Response.json({id:clip.id,streamerId:clip.streamer_id,streamer:clip.streamer,streamerStyle:parse(clip.streamer_style),edit:parse(clip.edit),rev:clip.edit_rev,words:parse(clip.transcript)??[],signals:parse(clip.signals),source:parse(clip.source_meta),sourceStored:!!clip.source_key,render:{state:clip.render_state,error:clip.render_error,at:clip.rendered_at},review:clip.review,reason:clip.reason,createdAt:clip.created_at},{headers:{"Cache-Control":"private, no-store"}});
+ if(!clip.edit){
+  if(!await adoptLegacy(db,clip,user.userId)&&!(await load(db,id,user.userId))?.edit)return Response.json({error:"This clip's file isn't in clip storage, so it can't be edited here."},{status:409});
+  clip=(await load(db,id,user.userId))!;
+ }
+ const source=parse(clip.source_meta);
+ return Response.json({id:clip.id,streamerId:clip.streamer_id,streamer:clip.streamer,streamerStyle:parse(clip.streamer_style),edit:parse(clip.edit),rev:clip.edit_rev,words:parse(clip.transcript)??[],signals:parse(clip.signals),source,legacy:!!source?.legacy,sourceStored:!!clip.source_key,render:{state:clip.render_state,error:clip.render_error,at:clip.rendered_at},review:clip.review,reason:clip.reason,createdAt:clip.created_at,
+  caption:{text:clip.post_caption,source:clip.caption_source,error:clip.caption_error,ai:aiCaptionsAvailable(env)&&clip.ai_captions!==0}},{headers:{"Cache-Control":"private, no-store"}});
 }
 // Saves an edit and queues the re-render. `saveStyle` also makes this edit's look the default for the clip's
 // streamer or for the whole workspace, so future clips come out the same way.

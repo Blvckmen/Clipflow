@@ -66,6 +66,25 @@ creator has seen each post: clips you approve yourself in review mode are publis
 automatically go to your TikTok drafts to finish in the app. Test locally against a fake Zernio with
 `npm run build` then `npm run test:zernio`.
 
+## Post captions written by Claude (optional)
+
+With an Anthropic API key, Claude (`claude-opus-5-5`, low effort) writes each clip's post caption from what was
+said in it: a title line (also the YouTube title), a sentence or two, and hashtags. Captions are written within a
+minute of a clip arriving, so you can read and change them in **Clip library → Edit → Post caption** before they
+post; text you type there is never overwritten. Without a key, or if Claude can't write one, the caption template
+from Settings is used.
+
+1. Create a key at platform.claude.com → API keys. Each caption is one short request, roughly a cent or less.
+2. Add to `.env`, then `npm run deploy`:
+
+   ```ini
+   ANTHROPIC_API_KEY=sk-ant-...
+   ```
+3. Optional: under **Settings → Publishing preferences**, add guidance for Claude (tone, hashtags to always use).
+
+If Claude declines a caption, the API retries it on a fallback model (`fallbacks: "default"`); if that also fails,
+the template is used.
+
 ## Instagram publishing directly (optional, instead of Zernio)
 
 Clipflow posts approved clips as Reels to **your own** Instagram professional account. Meta's docs say an

@@ -7,6 +7,7 @@ import { decrypt, encrypt, signedMediaPath } from "./secure";
 import * as instagram from "./instagram";
 import * as zernio from "./zernio";
 import { defaultCaption } from "./clipflow";
+import { captionForPost, fillCaptions } from "./post-caption";
 
 type Env = Cloudflare.Env;
 type AccountRow = { id: string; owner: string; provider: string; platform: string; external_id: string; username: string; token_enc: string; token_expires_at: string; token_refreshed_at: string; connected_at: string; control: string | null; daily_limit: number | null; caption_template: string | null };
@@ -46,7 +47,10 @@ export function renderCaption(template: string, values: { streamer: string; plat
 }
 
 export async function runPublisher(env: Env, now = Date.now()) {
-  if (!env.DB || !env.MEDIA_KEY || !env.PUBLIC_URL) return;
+  if (!env.DB) return;
+  // Write captions for new clips first, so they can be read (and edited) before they post.
+  await fillCaptions(env, now).catch(error => console.error("Caption writing failed:", error));
+  if (!env.MEDIA_KEY || !env.PUBLIC_URL) return;
   const ig = instagramConfig(env), zn = zernioConfig(env);
   if (!ig && !zn) return;
   const { results } = await env.DB.prepare("SELECT a.*, p.control, p.daily_limit, p.caption_template FROM accounts a LEFT JOIN preferences p ON p.owner=a.owner WHERE a.status='connected'").all<AccountRow>();
@@ -199,7 +203,8 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   try {
     const link = env.PUBLIC_URL!.replace(/\/$/, "") + await signedMediaPath(queued.clip_id, now + adapter.linkTtlMs, env.MEDIA_KEY!);
     const info = { reviewed: !!clip.reviewed_at, streamer: clip.name ?? "a streamer", platform: clip.platform ?? "stream" };
-    const caption = renderCaption(account.caption_template || defaultCaption, info);
+    // The clip's own caption (written by Claude or typed by the owner), else the workspace template.
+    const caption = await captionForPost(env, queued.clip_id).catch(() => null) ?? renderCaption(account.caption_template || defaultCaption, info);
     await apply(queued, await adapter.start(queued, link, caption, info));
   } catch (error) { await handle(queued, error); }
 }

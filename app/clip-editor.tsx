@@ -2,15 +2,15 @@
 // The clip editor. The preview is drawn on a canvas from the same layout and caption code (worker/edit.mjs) the
 // worker renders with, so what you see is what gets posted. Saving stores the edit; the worker re-renders it.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, Scissors, Undo2 } from "lucide-react";
+import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, Scissors, Sparkles, Undo2 } from "lucide-react";
 import { ANIMATIONS, FONTS, H, MAX_CLIP, MIN_CLIP, PRESETS, W, activeCue, cues, layout } from "../worker/edit.mjs";
 
 type Frame = { mode: "blur" | "crop" | "fit"; zoom: number; x: number; y: number };
 type Captions = { on: boolean; preset: string; font: string; size: number; color: string; highlight: string; outline: number; outlineColor: string; box: boolean; boxColor: string; uppercase: boolean; animation: string; words: number; y: number; mask: boolean };
 type Word = [number, number, string];
 export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { text: string; seconds: number; color: string; bg: string }; progress: { on: boolean; color: string }; words?: Word[] };
-type Bundle = { id: string; streamerId: string; streamer: string | null; edit: Edit; rev: number; words: Word[]; signals: { energy: number[]; chat: number[] } | null; source: { width: number; height: number; duration: number }; sourceStored: boolean; render: { state: string | null; error: string | null; at: string | null }; createdAt: string };
-type Tab = "frame" | "captions" | "extras" | "transcript";
+type Bundle = { id: string; streamerId: string; streamer: string | null; edit: Edit; rev: number; words: Word[]; signals: { energy: number[]; chat: number[] } | null; source: { width: number; height: number; duration: number }; legacy: boolean; sourceStored: boolean; render: { state: string | null; error: string | null; at: string | null }; createdAt: string; caption: { text: string | null; source: string | null; error: string | null; ai: boolean } };
+type Tab = "frame" | "captions" | "extras" | "transcript" | "post";
 
 const animationLabels: Record<string, string> = { none: "Static", pop: "Pop in", karaoke: "Karaoke", word: "One word at a time" };
 const fmt = (t: number) => Math.floor(t / 60) + ":" + (t % 60).toFixed(1).padStart(4, "0");
@@ -61,11 +61,13 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
   const [tab, setTab] = useState<Tab>("captions"), [playing, setPlaying] = useState(false), [time, setTime] = useState(0), [safe, setSafe] = useState(true), [saveStyle, setSaveStyle] = useState(false), [selected, setSelected] = useState<number | null>(null);
   const video = useRef<HTMLVideoElement>(null), canvas = useRef<HTMLCanvasElement>(null), strip = useRef<HTMLDivElement>(null);
   const lastPush = useRef({ at: 0, key: "" }), editRef = useRef<Edit | null>(null);
+  // The post caption is saved on its own (no re-render needed).
+  const [postText, setPostText] = useState(""), [captionSource, setCaptionSource] = useState<string | null>(null), [captionBusy, setCaptionBusy] = useState<"" | "write" | "save">(""), [captionNote, setCaptionNote] = useState("");
 
   useEffect(() => {
     let live = true;
     fetch("/api/clips/" + clipId + "/edit").then(async r => { const body = await r.json() as Bundle & { error?: string }; if (!r.ok) throw new Error(body.error); return body; })
-      .then(b => { if (!live) return; setBundle(b); setEditState(b.edit); })
+      .then(b => { if (!live) return; setBundle(b); setEditState(b.edit); setPostText(b.caption.text ?? ""); setCaptionSource(b.caption.source); setCaptionNote(b.caption.error ? "Last attempt failed: " + b.caption.error : ""); if (b.legacy) setTab("frame"); })
       .catch(e => live && setError(e instanceof Error ? e.message : "Couldn't open this clip."));
     return () => { live = false; };
   }, [clipId]);
@@ -177,6 +179,17 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
   };
 
+  const captionAction = async (body: { action: "write" } | { action: "save"; text: string }) => {
+    setCaptionBusy(body.action); setCaptionNote(""); setError("");
+    try {
+      const response = await fetch("/api/clips/" + clipId + "/caption", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const result = await response.json() as { error?: string; text: string | null; source: string | null; message: string };
+      if (!response.ok) throw new Error(result.error);
+      setPostText(result.text ?? ""); setCaptionSource(result.source); setCaptionNote(result.message);
+    } catch (e) { setCaptionNote(e instanceof Error ? e.message : "Couldn't update the caption."); }
+    finally { setCaptionBusy(""); }
+  };
+
   const save = async () => {
     if (!edit || !bundle) return;
     setSaving(true); setError("");
@@ -241,9 +254,19 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
           </div>
           {bundle.signals && <div className="heat-legend"><span><i className="loud" />Loudness</span><span><i className="chat" />Chat activity</span><span className="muted">Why this moment was clipped</span></div>}
         </div>
-        <div className="editor-tabs" role="tablist">{(["captions", "frame", "extras", "transcript"] as Tab[]).map(t => <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "active" : ""} onClick={() => setTab(t)}>{{ captions: "Captions", frame: "Frame & look", extras: "Hook & extras", transcript: "Transcript" }[t]}</button>)}</div>
+        <div className="editor-tabs" role="tablist">{(["captions", "frame", "extras", "transcript", "post"] as Tab[]).map(t => <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "active" : ""} onClick={() => setTab(t)}>{{ captions: "Captions", frame: "Frame & look", extras: "Hook & extras", transcript: "Transcript", post: "Post caption" }[t]}</button>)}</div>
         <div className="editor-controls">
-          {tab === "captions" && <>
+          {bundle.legacy && (tab === "captions" || tab === "transcript") && <div className="subtle-note">This clip was captured before the editor existed, so its captions are part of the picture and can&apos;t be restyled or corrected. You can still trim it, reframe it, adjust its colour, and add a hook title and progress bar. Clips captured from now on are fully editable.</div>}
+          {tab === "post" && <>
+            <p className="hint">The text posted with this clip on Instagram, TikTok and YouTube. The first line is also the YouTube title. {bundle.caption.ai ? "Claude writes it from what was said in the clip; you can rewrite it or type your own." : "Claude isn't set up on this site, so the caption template from Settings is used unless you type one here."}</p>
+            <label className="wide">Caption <small>{captionSource === "ai" ? "Written by Claude" : captionSource === "edited" ? "Your text: Claude won't change it" : "Not written yet: " + (bundle.caption.ai ? "Claude writes it before the clip posts" : "the template is used")}</small>
+              <textarea rows={9} maxLength={2200} value={postText} onChange={e => setPostText(e.target.value)} placeholder={bundle.caption.ai ? "Leave empty and Claude writes one" : "Type the caption to post with this clip"} /></label>
+            <div className="caption-actions"><span className="muted">{postText.length} / 2200</span>
+              <button className="secondary" disabled={!!captionBusy || !bundle.caption.ai} title={bundle.caption.ai ? "Replaces the current caption" : "Needs ANTHROPIC_API_KEY on this site"} onClick={() => void captionAction({ action: "write" })}>{captionBusy === "write" ? <Loader2 className="spin" size={15} /> : <Sparkles size={15} />}{postText ? "Rewrite with Claude" : "Write with Claude"}</button>
+              <button className="primary" disabled={!!captionBusy} onClick={() => void captionAction({ action: "save", text: postText })}>{captionBusy === "save" ? <Loader2 className="spin" size={15} /> : <Check size={15} />}Save caption</button></div>
+            {captionNote && <p className="hint" role="status">{captionNote}</p>}
+          </>}
+          {tab === "captions" && !bundle.legacy && <>
             <label className="switch-row"><input type="checkbox" checked={c.on} onChange={e => setCaption({ on: e.target.checked, preset: c.preset })} />Show captions</label>
             <div className="presets">{Object.entries(PRESETS).map(([key, p]) => <button key={key} className={c.preset === key ? "preset active" : "preset"} onClick={() => { const { label: _label, ...values } = p as typeof p & { label: string }; void _label; setCaption({ ...values, preset: key }); }} style={{ fontFamily: `"${p.font}", sans-serif`, color: p.box ? p.color : p.color, background: p.box ? p.boxColor : undefined, textShadow: p.box ? "none" : `0 0 3px ${p.outlineColor}, 0 0 3px ${p.outlineColor}` }}>{p.uppercase ? p.label.toUpperCase() : p.label}</button>)}</div>
             <div className="control-grid">
@@ -287,7 +310,7 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
             <label className="switch-row"><input type="checkbox" checked={edit.progress.on} onChange={e => set("progress", { on: e.target.checked })} />Progress bar along the bottom <small>Viewers who can see the end coming watch to it</small></label>
             {edit.progress.on && <label className="color inline">Bar colour<input type="color" value={edit.progress.color} onChange={e => set("progress", { color: e.target.value })} /></label>}
           </>}
-          {tab === "transcript" && <>
+          {tab === "transcript" && !bundle.legacy && <>
             <p className="hint">Click a word to jump to it. Fix a mis-heard word by editing it; clear a word to hide it from the captions. Words outside the trim are dimmed.</p>
             {words.length ? <div className="transcript">{words.map((w, i) => {
               const inside = w[0] >= edit.trim.start - 0.05 && w[1] <= edit.trim.end + 0.05, now = time >= w[0] && time < w[1];

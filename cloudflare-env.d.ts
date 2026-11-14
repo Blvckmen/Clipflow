@@ -18,6 +18,8 @@ declare namespace Cloudflare {
     INSTAGRAM_GRAPH_URL?: string;
     ZERNIO_API_KEY?: string;  // secret: posts to the accounts connected on zernio.com
     ZERNIO_API_URL?: string;  // overridable only so tests can point at a local fake Zernio
+    ANTHROPIC_API_KEY?: string;  // secret: lets Claude write post captions
+    ANTHROPIC_BASE_URL?: string;  // overridable only so tests can point at a local fake Claude API
     ENABLE_TEST_CRON?: string;  // local tests only; never set in a deployment
   }
 }

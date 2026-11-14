@@ -305,6 +305,43 @@ describe("clip editor", () => {
     assert.deepEqual([row.render_state, row.render_error], ["failed", "ffmpeg failed (exit 1)"]);
     assert.equal((await fetch(base + "/api/clips/" + clip.id + "/file", { headers: { cookie } })).status, 200);
   });
+  test("a clip from before the editor opens in limited mode, with its finished file as the source", async () => {
+    const bytes = Buffer.alloc(7000, 3), old = (await reportClip(bytes, { duration: 22 })).clip;
+    assert.equal((await upload(old.id, bytes)).status, 200);
+    assert.equal((await dash()).body.clips.find(c => c.id === old.id).editable, true);
+    const opened = await (await edit(old.id)).json();
+    assert.deepEqual([opened.legacy, opened.sourceStored, opened.source.width, opened.source.height, opened.edit.captions.on, opened.edit.trim.end, opened.words], [true, true, 720, 1280, false, 22, []]);
+    const src = await fetch(base + "/api/clips/" + old.id + "/source", { headers: { cookie } });
+    assert.deepEqual(Buffer.from(await src.arrayBuffer()), bytes, "the source is a copy of the finished clip");
+    assert.equal((await save(old.id, { edit: { ...opened.edit, trim: { start: 2, end: 20 } }, rev: 0 })).status, 200);
+    assert.equal((await edit(old.id).then(r => r.json())).rev, 1, "opening it again keeps the edit");
+    await dash({ action: "deleteClip", id: old.id });
+  });
+  test("a clip's post caption can be saved, cleared, and asks for a key before Claude can write one", async () => {
+    const caption = body => fetch(base + "/api/clips/" + clip.id + "/caption", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body) });
+    let r = await caption({ action: "save", text: "  Watch till the end #clips  " });
+    assert.deepEqual(await r.json().then(b => [b.text, b.source]), ["Watch till the end #clips", "edited"]);
+    assert.equal((await edit(clip.id).then(x => x.json())).caption.text, "Watch till the end #clips");
+    r = await caption({ action: "save", text: "" });
+    assert.deepEqual(await r.json().then(b => [b.text, b.source]), [null, null]);
+    if (!(await dash()).body.publishing.ai) {
+      r = await caption({ action: "write" });
+      assert.equal(r.status, 409);
+      assert.match((await r.json()).error, /ANTHROPIC_API_KEY/);
+    }
+    assert.equal((await caption({ action: "save", text: "x".repeat(2201) })).status, 400);
+    assert.equal((await fetch(base + "/api/clips/" + clip.id + "/caption", { method: "POST", body: "{}" })).status, 401);
+  });
+  test("AI caption settings are saved and kept when a client leaves them out", async () => {
+    const { mode, duration, dailyLimit, captions, framing, destinations } = originalSettings;
+    assert.equal((await dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, framing, destinations, aiCaptions: false, captionNotes: "No emoji" } })).status, 200);
+    let s = (await dash()).body.settings;
+    assert.deepEqual([s.aiCaptions, s.captionNotes], [false, "No emoji"]);
+    assert.equal((await dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, framing, destinations } })).status, 200);
+    s = (await dash()).body.settings;
+    assert.deepEqual([s.aiCaptions, s.captionNotes], [false, "No emoji"], "unchanged");
+    await dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, framing, destinations, aiCaptions: true, captionNotes: "" } });
+  });
   test("deleting a clip also removes its source", async () => {
     assert.equal((await dash({ action: "deleteClip", id: clip.id })).status, 200);
     assert.equal((await worker("/api/worker/clips/" + clip.id + "/source")).status, 404);

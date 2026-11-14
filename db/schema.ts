@@ -12,6 +12,9 @@ export const preferences=sqliteTable("preferences",{
  captionTemplate:text("caption_template").notNull().default("{streamer} on {platform} #clips #{platform}"),
  // The workspace's default clip look (JSON style); null uses the built-in one with `framing` and `captions`.
  style:text("style"),
+ // Post captions written by Claude from each clip's transcript (when the site has an Anthropic API key), with
+ // the owner's own guidance; caption_template is the fallback.
+ aiCaptions:integer("ai_captions",{mode:"boolean"}).notNull().default(true),captionNotes:text("caption_notes").notNull().default(""),
 });
 export const events=sqliteTable("events",{id:text("id").primaryKey(),owner:text("owner").notNull(),message:text("message").notNull(),createdAt:text("created_at").notNull()},t=>[index("events_owner_created").on(t.owner,t.createdAt)]);
 // Only the SHA-256 of a worker token is stored; the plaintext is shown once on creation.
@@ -33,6 +36,9 @@ export const clips=sqliteTable("clips",{
  // The edit the current file was (or is about to be) rendered with. Saving an edit bumps edit_rev and sets
  // render_state to queued; the worker renders that revision and the upload clears it (or sets failed).
  edit:text("edit"),editRev:integer("edit_rev").notNull().default(0),renderState:text("render_state"),renderError:text("render_error"),renderedAt:text("rendered_at"),
+ // The text posted with the clip. caption_source: "ai" (written by Claude, regenerated on request) or "edited"
+ // (typed by the owner, never overwritten). Null caption: not written yet, so the template is used.
+ postCaption:text("post_caption"),captionSource:text("caption_source"),captionTries:integer("caption_tries").notNull().default(0),captionError:text("caption_error"),
 },t=>[index("clips_owner_created").on(t.owner,t.createdAt)]);
 // Connected publishing accounts; an owner can connect several per platform. The access token is AES-GCM
 // encrypted with the TOKEN_KEY secret.

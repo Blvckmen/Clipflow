@@ -64,6 +64,13 @@
       "when": 1794632655025,
       "tag": "0008_zernio",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1794636117318,
+      "tag": "0009_ai_post_captions",
+      "breakpoints": true
     }
   ]
 }

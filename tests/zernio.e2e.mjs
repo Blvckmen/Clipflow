@@ -68,7 +68,7 @@ after(async () => {
 });
 
 test("dashboard reports Zernio publishing as available", async () => {
-  assert.deepEqual((await dash()).body.publishing, { instagram: false, zernio: true });
+  assert.deepEqual((await dash()).body.publishing, { instagram: false, zernio: true, ai: false });
 });
 
 test("syncing copies Zernio's video accounts and links the first ones to every streamer", async () => {
