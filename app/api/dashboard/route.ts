@@ -1,6 +1,8 @@
 import { currentUser, signInPath } from "../../auth";
 import { bucket, database } from "../../../db/raw";
-import { defaults, parseStreamer, settingsSchema } from "../../../lib/clipflow";
+import { defaultCaption, defaults, parseStreamer, settingsSchema } from "../../../lib/clipflow";
+import { instagramConfig } from "../../../lib/publisher";
+import { env } from "cloudflare:workers";
 import { hashToken, newToken } from "../../../lib/worker-auth";
 import { z } from "zod";
 const actionSchema=z.discriminatedUnion("action",[
@@ -12,16 +14,23 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("token")}),
  z.object({action:z.literal("deleteClip"),id:z.string().uuid()}),
  z.object({action:z.literal("reviewClip"),id:z.string().uuid(),review:z.enum(["approved","rejected","pending"])}),
+ z.object({action:z.literal("disconnect"),platform:z.enum(["instagram"])}),
+ z.object({action:z.literal("retryPost"),id:z.string().min(1).max(64)}),
 ]);
 const ENGINE_FRESH_MS=5*60_000;
 export async function GET(){
  const user=await currentUser();if(!user)return Response.json({error:"Sign in to open your dashboard.",signIn:signInPath()},{status:401});
  try{
   const db=database();
+  const [a,po]=await Promise.all([
+   // Tokens never leave the server: only display fields are selected.
+   db.prepare("SELECT platform,username,status,connected_at,last_error FROM accounts WHERE owner=?").bind(user.userId).all(),
+   db.prepare("SELECT p.id,p.clip_id,p.platform,p.state,p.permalink,p.error,p.attempts,p.created_at,p.published_at,s.name AS streamer FROM posts p LEFT JOIN clips c ON c.id=p.clip_id LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE p.owner=? ORDER BY p.created_at DESC LIMIT 100").bind(user.userId).all(),
+  ]);
   const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(user.userId).all(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(user.userId).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(user.userId).all(),db.prepare("SELECT c.id,c.streamer_id,c.created_at,c.duration,c.captions,c.size,c.file_key IS NOT NULL AS stored,c.review,c.reason,s.name AS streamer FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.owner=? ORDER BY c.created_at DESC LIMIT 100").bind(user.userId).all(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at FROM worker_tokens WHERE owner=?").bind(user.userId).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null}>()]);
   const lastSeen=w?.last_seen??null,connected=!!lastSeen&&Date.now()-Date.parse(lastSeen)<ENGINE_FRESH_MS;
   const engine={connected,lastSeen,tokenCreated:w?.created_at??null,lastError:w?.last_error??null,lastErrorAt:w?.last_error_at??null,status:connected?"Worker connected":w?(lastSeen?"Worker offline":"Waiting for worker"):"Setup required"};
-  return Response.json({user:user.displayName,streamers:s.results,settings:p?{...p,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations))}:defaults,events:e.results,engine,accounts:[],clips:c.results.map(x=>({...x,captions:!!x.captions,stored:!!x.stored})),analytics:null},{headers:{"Cache-Control":"private, no-store"}});
+  return Response.json({user:user.displayName,streamers:s.results,settings:p?{...p,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template}:defaults,events:e.results,engine,accounts:a.results,posts:po.results,publishing:{instagram:!!instagramConfig(env)},clips:c.results.map(x=>({...x,captions:!!x.captions,stored:!!x.stored})),analytics:null},{headers:{"Cache-Control":"private, no-store"}});
  }catch(error){console.error("Dashboard load failed",error);return Response.json({error:"We couldn't load your workspace. Please retry."},{status:503});}
 }
 export async function POST(request:Request){
@@ -44,7 +53,8 @@ export async function POST(request:Request){
   }
   if(payload.action==="settings"){
    const s=payload.settings;
-   statements.push(db.prepare("INSERT INTO preferences (owner,mode,duration,daily_limit,captions,framing,destinations,control) VALUES (?,?,?,?,?,?,?,'paused') ON CONFLICT(owner) DO UPDATE SET mode=excluded.mode,duration=excluded.duration,daily_limit=excluded.daily_limit,captions=excluded.captions,framing=excluded.framing,destinations=excluded.destinations").bind(owner,s.mode,s.duration,s.dailyLimit,Number(s.captions),s.framing,JSON.stringify(s.destinations)));
+   // A client that omits captionTemplate keeps the saved one.
+   statements.push(db.prepare("INSERT INTO preferences (owner,mode,duration,daily_limit,captions,framing,destinations,control,caption_template) VALUES (?,?,?,?,?,?,?,'paused',?) ON CONFLICT(owner) DO UPDATE SET mode=excluded.mode,duration=excluded.duration,daily_limit=excluded.daily_limit,captions=excluded.captions,framing=excluded.framing,destinations=excluded.destinations,caption_template=coalesce(?,preferences.caption_template)").bind(owner,s.mode,s.duration,s.dailyLimit,Number(s.captions),s.framing,JSON.stringify(s.destinations),s.captionTemplate??defaultCaption,s.captionTemplate??null));
    message="Saved clipping and publishing preferences.";
   }
   if(payload.action==="control"){
@@ -65,6 +75,20 @@ export async function POST(request:Request){
    // Reviews are frequent, so they update the clip without adding to the activity log.
    await db.prepare("UPDATE clips SET review=?,reviewed_at=? WHERE id=? AND owner=?").bind(payload.review,payload.review==="pending"?null:new Date().toISOString(),payload.id,owner).run();
    return Response.json({ok:true,message:{approved:"Clip approved.",rejected:"Clip rejected.",pending:"Clip moved back to review."}[payload.review]});
+  }
+  if(payload.action==="disconnect"){
+   const account=await db.prepare("SELECT id,username FROM accounts WHERE owner=? AND platform=?").bind(owner,payload.platform).first<{id:string;username:string}>();
+   if(!account)return Response.json({error:"That account is not connected."},{status:404});
+   // Posts not yet sent are dropped with the account; published history is kept.
+   statements.push(db.prepare("DELETE FROM posts WHERE account_id=? AND state IN ('queued','processing','failed')").bind(account.id),db.prepare("DELETE FROM accounts WHERE id=?").bind(account.id));
+   message="Disconnected Instagram account @"+account.username+". Remove Clipflow under Instagram settings → Apps and websites to revoke its access fully.";
+  }
+  if(payload.action==="retryPost"){
+   const post=await db.prepare("SELECT state FROM posts WHERE id=? AND owner=?").bind(payload.id,owner).first<{state:string}>();
+   if(!post)return Response.json({error:"Post not found."},{status:404});
+   if(post.state!=="failed")return Response.json({error:"Only failed posts can be retried."},{status:409});
+   await db.prepare("UPDATE posts SET state='queued',attempts=0,error=NULL,container_id=NULL,next_attempt_at=?,updated_at=? WHERE id=? AND owner=?").bind(new Date().toISOString(),new Date().toISOString(),payload.id,owner).run();
+   return Response.json({ok:true,message:"Post queued again."});
   }
   let token:string|undefined;
   if(payload.action==="token"){

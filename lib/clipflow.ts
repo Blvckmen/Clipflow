@@ -1,8 +1,11 @@
 import { z } from "zod";
 export const destinations=["TikTok","Instagram","YouTube","Facebook","X"] as const;
 export const framings={blur:"Blurred background",crop:"Centre crop",fit:"Fit with black bars"} as const;
-export const settingsSchema=z.object({mode:z.enum(["automatic","review"]),duration:z.number().int().min(15).max(90),dailyLimit:z.number().int().min(1).max(50),captions:z.boolean(),framing:z.enum(["blur","crop","fit"]),destinations:z.array(z.enum(destinations)).max(5).transform(x=>[...new Set(x)])});
-export const defaults={mode:"automatic",duration:45,dailyLimit:5,captions:true,framing:"blur",destinations:[] as string[],control:"paused"};
+export const settingsSchema=z.object({mode:z.enum(["automatic","review"]),duration:z.number().int().min(15).max(90),dailyLimit:z.number().int().min(1).max(50),captions:z.boolean(),framing:z.enum(["blur","crop","fit"]),destinations:z.array(z.enum(destinations)).max(5).transform(x=>[...new Set(x)]),captionTemplate:z.string().trim().min(1).max(500).optional()});
+export const defaultCaption="{streamer} on {platform} #clips #{platform}";
+export const defaults={mode:"automatic",duration:45,dailyLimit:5,captions:true,framing:"blur",destinations:[] as string[],control:"paused",captionTemplate:defaultCaption};
+// Platforms this build can actually publish to once an account is connected.
+export const publishable=["Instagram"] as const;
 export function parseStreamer(input:string){
  let url:URL; try{url=new URL(input.trim());}catch{throw new Error("Paste a complete channel URL, including https://.");}
  if(url.protocol!=="https:"||url.username||url.password||url.port)throw new Error("Use a secure channel URL without credentials or a port.");

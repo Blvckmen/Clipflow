@@ -6,5 +6,16 @@ declare namespace Cloudflare {
     AUTH_MODE?: string;
     CF_ACCESS_TEAM_DOMAIN?: string;
     CF_ACCESS_AUD?: string;
+    // Publishing. PUBLIC_URL is the site's origin, used for signed video links when there is no request.
+    PUBLIC_URL?: string;
+    TOKEN_KEY?: string;      // secret: base64 32-byte key encrypting stored platform tokens
+    MEDIA_KEY?: string;      // secret: base64 32-byte key signing temporary video links
+    INSTAGRAM_APP_ID?: string;
+    INSTAGRAM_APP_SECRET?: string;  // secret
+    // Overridable only so tests can point at a local fake Instagram.
+    INSTAGRAM_AUTH_URL?: string;
+    INSTAGRAM_API_URL?: string;
+    INSTAGRAM_GRAPH_URL?: string;
+    ENABLE_TEST_CRON?: string;  // local tests only; never set in a deployment
   }
 }

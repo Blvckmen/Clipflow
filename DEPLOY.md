@@ -44,6 +44,36 @@ that `/api/worker/*` answers the worker directly (it uses its own bearer token, 
 exempt from Access). Then sign in, open **Connect worker**, create a token and point the
 worker at the site (see `worker/README.md`).
 
+## Instagram publishing (optional)
+
+Clipflow posts approved clips as Reels to **your own** Instagram professional account. Meta's docs say an
+app that only serves accounts you own or manage needs Standard Access, so no App Review is required.
+
+1. Make the Instagram account **Professional** (Business or Creator) in the Instagram app's settings.
+2. At developers.facebook.com create an app with the **Instagram API with Instagram Login** use case.
+3. Under its Instagram API setup, copy the **Instagram app ID** and **Instagram app secret** (not the Meta app ID).
+4. Under Business login settings, add the OAuth redirect URI
+   `https://<your site>/api/connections/instagram/callback`.
+5. Under App roles, add your Instagram account as an **Instagram tester**, then accept the invite in Instagram
+   (Settings → Apps and websites → Tester invites).
+6. Add to `.env`, then `npm run deploy`:
+
+   ```
+   INSTAGRAM_APP_ID=...
+   INSTAGRAM_APP_SECRET=...
+   ```
+7. In the dashboard: **Connections → Connect Instagram**, then **Settings → Preferred destinations → Instagram**,
+   and adjust the post caption if you like.
+
+The deploy script also generates `TOKEN_KEY` (encrypts stored Instagram tokens) and `MEDIA_KEY` (signs the
+temporary video links Instagram downloads from) and saves them to `.env`. Keep them: changing `TOKEN_KEY`
+makes stored tokens unreadable, so accounts would need reconnecting.
+
+A once-a-minute cron trigger publishes. Only clips approved after the account was connected are posted, at
+most the daily limit per day and within Instagram's own 24-hour limit; pausing or stopping automation pauses
+publishing. Test the whole flow locally against a fake Instagram with `npm run build` then
+`npm run test:publishing`.
+
 ## How sign-in works
 
 The app reads `AUTH_MODE`:

@@ -43,6 +43,13 @@
       "when": 1794598268517,
       "tag": "0005_white_vapor",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1794618540614,
+      "tag": "0006_melted_living_tribunal",
+      "breakpoints": true
     }
   ]
 }
