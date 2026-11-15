@@ -44,8 +44,8 @@ const postsFor = async clipId => Object.fromEntries((await dash()).body.posts.fi
 const sentFor = async clipId => Object.fromEntries((await fakeLog()).posts.filter(p => p.params.mediaItems[0].url.includes(clipId)).map(p => [p.platform, p]));
 
 before(async () => {
-  fake = await startFakeZernio({ apiKey: "sk_test" });
-  const vars = { ENABLE_TEST_CRON: "1", ZERNIO_API_KEY: "sk_test", ZERNIO_API_URL: "http://127.0.0.1:" + fake.port + "/api/v1", MEDIA_KEY: randomBytes(32).toString("base64"), PUBLIC_URL: base };
+  fake = await startFakeZernio({ keys: { sk_test: "Site Owner", sk_mine_123456: "Dan" } });
+  const vars = { ENABLE_TEST_CRON: "1", ZERNIO_API_KEY: "sk_test", ZERNIO_API_URL: "http://127.0.0.1:" + fake.port + "/api/v1", TOKEN_KEY: randomBytes(32).toString("base64"), MEDIA_KEY: randomBytes(32).toString("base64"), PUBLIC_URL: base };
   dev = spawn(process.execPath, ["--import", "./scripts/sites-env.mjs", "./node_modules/wrangler/bin/wrangler.js", "dev", "--config", "dist/server/wrangler.json", "--local", "--persist-to", ".wrangler/state", "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", "0", ...Object.entries(vars).flatMap(([k, v]) => ["--var", k + ":" + v])], { cwd: root, stdio: "ignore", env: { ...process.env, CI: "true" } });
   for (let i = 0; i < 90; i++) { try { await fetch(base + "/api/worker/config"); break; } catch { await sleep(1000); } }
   assert.equal((await dash({ action: "settings", settings })).status, 200);
@@ -68,19 +68,23 @@ after(async () => {
 });
 
 test("dashboard reports Zernio publishing as available", async () => {
-  assert.deepEqual((await dash()).body.publishing, { instagram: false, zernio: true, ai: false });
+  const { publishing } = (await dash()).body;
+  assert.equal(publishing.instagram, false);
+  assert.equal(publishing.zernio, true);
+  assert.equal(publishing.zernioSource, "site", "without its own key a workspace uses the site's");
+  assert.equal(publishing.canSaveKey, true);
 });
 
 test("syncing copies Zernio's video accounts and links the first ones to every streamer", async () => {
   const sync = await dash({ action: "syncZernio" });
   assert.equal(sync.status, 200, JSON.stringify(sync.body));
-  assert.match(sync.body.message, /Added from Zernio: Instagram @ig_clips, TikTok @tt_clips, YouTube @YT Clips/);
+  assert.match(sync.body.message, /Added Instagram @ig_clips, TikTok @tt_clips, YouTube @YT Clips/);
   const { body } = await dash();
   assert.deepEqual(body.accounts.map(a => [a.provider, a.platform, a.username, a.status]).sort(), [["zernio", "instagram", "ig_clips", "connected"], ["zernio", "tiktok", "tt_clips", "connected"], ["zernio", "youtube", "YT Clips", "connected"]], "LinkedIn is left out: it takes no vertical video");
   assert.equal(body.streamers[0].accounts.length, 3);
   assert.ok(!JSON.stringify(body).includes("sk_test"), "the API key never reaches the browser");
   const again = await dash({ action: "syncZernio" });
-  assert.equal(again.body.message, "Zernio accounts are up to date.");
+  assert.equal(again.body.message, "Your accounts are up to date.");
   assert.equal((await dash()).body.accounts.length, 3, "syncing twice adds nothing");
 });
 
@@ -174,8 +178,83 @@ test("removing an account in Clipflow unlinks it", async () => {
   const { body } = await dash();
   const yt = body.accounts.find(a => a.platform === "youtube");
   const removed = await dash({ action: "disconnect", id: yt.id });
-  assert.match(removed.body.message, /stays connected on Zernio/);
+  assert.match(removed.body.message, /Disconnected YouTube account @YT Clips/);
+  assert.ok(!(await fakeLog()).log.some(e => e.method === "DELETE" && e.path !== "/api/v1/accounts/acc-yt") && (await fakeLog()).log.some(e => e.method === "DELETE" && e.path === "/api/v1/accounts/acc-yt"), "disconnected on Zernio too");
   const after = (await dash()).body;
   assert.ok(!after.accounts.some(a => a.id === yt.id));
   assert.ok(!after.streamers[0].accounts.includes(yt.id));
+});
+
+test("a workspace's own Zernio key is checked, stored without ever being shown, and used for posting", async () => {
+  const wrong = await dash({ action: "zernioKey", key: "sk_not_a_real_key" });
+  assert.equal(wrong.status, 400);
+  assert.match(wrong.body.error, /didn't accept that key/);
+  const saved = await dash({ action: "zernioKey", key: "sk_mine_123456" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.match(saved.body.message, /^Connected to Zernio \(Dan\)\./);
+  const { body } = await dash();
+  assert.equal(body.publishing.zernioSource, "workspace");
+  assert.equal(body.publishing.zernioLabel, "Dan");
+  assert.ok(!JSON.stringify(body).includes("sk_mine_123456"), "the key never reaches the browser");
+  assert.ok(!("zernio_key_enc" in body.settings), "not even encrypted");
+  const { clip } = await addClip();
+  await cron(60_000);
+  const used = (await fakeLog()).log.filter(e => e.method === "POST" && e.path === "/api/v1/posts").at(-1);
+  assert.equal(used.auth, "sk_mine_123456", "posts go out with the workspace's key, not the site's");
+  assert.equal((await postsFor(clip.id)).instagram.state, "published");
+});
+
+test("connecting an account from Clipflow goes through the platform sign-in and links it to the streamer", async () => {
+  const start = await fetch(base + "/api/connections/zernio/start?platform=youtube&streamer=" + streamer.id, { headers: who, redirect: "manual" });
+  assert.equal(start.status, 302);
+  const cookie = start.headers.get("set-cookie").split(";")[0];
+  assert.equal(cookie, "zn_connect=" + streamer.id);
+  // The platform's sign-in page (fake) adds the account and sends the browser back with its id.
+  const signin = await fetch(start.headers.get("location"), { redirect: "manual" });
+  const callback = signin.headers.get("location");
+  assert.match(callback, /^http:\/\/127\.0\.0\.1:\d+\/api\/connections\/zernio\/callback\?connected=youtube&profileId=prof-1&accountId=acc-new-\d+&username=new_youtube$/);
+  const done = await fetch(callback, { headers: { ...who, cookie }, redirect: "manual" });
+  assert.match(done.headers.get("location"), /\/\?connected=youtube&account=new_youtube$/);
+  assert.match(done.headers.get("set-cookie"), /zn_connect=;.*Max-Age=0/, "the cookie is cleared");
+  const { body } = await dash();
+  const yt = body.accounts.find(a => a.username === "new_youtube");
+  assert.equal(yt.platform, "youtube");
+  assert.ok(body.streamers[0].accounts.includes(yt.id), "linked to the streamer it was started from");
+  assert.match(body.events[0].message, /Connected YouTube account @new_youtube/);
+});
+
+test("a cancelled sign-in returns with its reason and adds nothing", async () => {
+  const before = (await dash()).body.accounts.length;
+  const start = await fetch(base + "/api/connections/zernio/start?platform=tiktok", { headers: who, redirect: "manual" });
+  const signin = await fetch(start.headers.get("location") + "&deny=1", { redirect: "manual" });
+  const done = await fetch(signin.headers.get("location"), { headers: who, redirect: "manual" });
+  assert.match(decodeURIComponent(done.headers.get("location")), /connect_error=The user cancelled/);
+  assert.equal((await dash()).body.accounts.length, before);
+  const bad = await fetch(base + "/api/connections/zernio/start?platform=myspace", { headers: who, redirect: "manual" });
+  assert.match(decodeURIComponent(bad.headers.get("location")), /connect_error=That platform can't be connected/);
+});
+
+test("per-account options change how posts are sent", async () => {
+  const { body } = await dash();
+  const tt = body.accounts.find(a => a.platform === "tiktok"), yt = body.accounts.find(a => a.username === "new_youtube");
+  assert.deepEqual(tt.options, { tiktokMode: "reviewed", tiktokPrivacy: "PUBLIC_TO_EVERYONE", allowComments: true, youtubeVisibility: "public" }, "defaults");
+  assert.equal((await dash({ action: "accountOptions", id: tt.id, options: { tiktokMode: "direct", tiktokPrivacy: "SELF_ONLY", allowComments: false } })).status, 200);
+  assert.equal((await dash({ action: "accountOptions", id: yt.id, options: { youtubeVisibility: "unlisted" } })).status, 200);
+  assert.equal((await dash({ action: "accountOptions", id: yt.id, options: { youtubeVisibility: "secret" } })).status, 400, "unknown values are refused");
+  await control("/__mode?platform=tiktok&mode=published");
+  // Each account sends one post per minute, finishing earlier ones first, so give the queue a few minutes.
+  const sentAll = async (clipId, platforms) => { for (let i = 0; i < 8; i++) { await cron(61_000); const sent = await sentFor(clipId); if (platforms.every(p => sent[p])) return sent; } return sentFor(clipId); };
+  const { clip } = await addClip();
+  const sent = await sentAll(clip.id, ["tiktok", "youtube"]);
+  assert.deepEqual(sent.tiktok.params.tiktokSettings, { privacyLevel: "SELF_ONLY", allowComment: false, allowDuet: true, allowStitch: true, commercialContentType: "none", contentPreviewConfirmed: true, expressConsentGiven: true }, "direct mode publishes even an automatically approved clip");
+  assert.equal(sent.youtube.params.visibility, "unlisted");
+  assert.equal((await dash({ action: "accountOptions", id: tt.id, options: { tiktokMode: "drafts" } })).status, 200);
+  const second = await addClip();
+  assert.deepEqual((await sentAll(second.clip.id, ["tiktok"])).tiktok.params.tiktokSettings, { draft: true });
+});
+
+test("removing the workspace key falls back to the site's", async () => {
+  const removed = await dash({ action: "zernioKey", key: null });
+  assert.equal(removed.status, 200);
+  assert.equal((await dash()).body.publishing.zernioSource, "site");
 });

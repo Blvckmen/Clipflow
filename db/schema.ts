@@ -15,6 +15,9 @@ export const preferences=sqliteTable("preferences",{
  // Post captions written by Claude from each clip's transcript (when the site has an Anthropic API key), with
  // the owner's own guidance; caption_template is the fallback.
  aiCaptions:integer("ai_captions",{mode:"boolean"}).notNull().default(true),captionNotes:text("caption_notes").notNull().default(""),
+ // The workspace's own Zernio API key, entered in the dashboard (AES-GCM with TOKEN_KEY); null falls back to the
+ // site's ZERNIO_API_KEY. zernio_label is who the key belongs to, for display.
+ zernioKeyEnc:text("zernio_key_enc"),zernioLabel:text("zernio_label"),
 });
 export const events=sqliteTable("events",{id:text("id").primaryKey(),owner:text("owner").notNull(),message:text("message").notNull(),createdAt:text("created_at").notNull()},t=>[index("events_owner_created").on(t.owner,t.createdAt)]);
 // Only the SHA-256 of a worker token is stored; the plaintext is shown once on creation.
@@ -49,6 +52,8 @@ export const accounts=sqliteTable("accounts",{
  tokenEnc:text("token_enc").notNull(),tokenExpiresAt:text("token_expires_at").notNull(),tokenRefreshedAt:text("token_refreshed_at").notNull(),
  // connected | expired (needs reconnecting). Only clips approved after connected_at are published.
  status:text("status").notNull().default("connected"),connectedAt:text("connected_at").notNull(),lastError:text("last_error"),
+ // Per-account posting options set in the dashboard (JSON, see lib/account-options.ts); null uses the defaults.
+ options:text("options"),
 },t=>[uniqueIndex("accounts_owner_platform_external").on(t.owner,t.platform,t.externalId)]);
 // Which accounts post which streamer's clips. Only clips approved after the link was made are posted.
 export const streamerAccounts=sqliteTable("streamer_accounts",{

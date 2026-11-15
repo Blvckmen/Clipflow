@@ -1,16 +1,17 @@
 // Publishes approved clips to connected accounts. Runs from the Worker's once-a-minute cron trigger and does a
 // bounded amount of work per account per run, so a slow platform never holds up the rest.
 // Accounts come from one of two providers: Instagram connected directly (Instagram Login, token stored here), or
-// any platform connected on Zernio (one site-wide API key). Both share the queue, retries and daily limit below;
+// any platform connected through Zernio (the workspace's own key from the dashboard, or the site-wide one). Both share the queue, retries and daily limit below;
 // a provider adapter only knows how to start a post and how to check on one.
 import { decrypt, encrypt, signedMediaPath } from "./secure";
 import * as instagram from "./instagram";
 import * as zernio from "./zernio";
 import { defaultCaption } from "./clipflow";
 import { captionForPost, fillCaptions } from "./post-caption";
+import { readOptions, tiktokSettings } from "./account-options";
 
 type Env = Cloudflare.Env;
-type AccountRow = { id: string; owner: string; provider: string; platform: string; external_id: string; username: string; token_enc: string; token_expires_at: string; token_refreshed_at: string; connected_at: string; control: string | null; daily_limit: number | null; caption_template: string | null };
+type AccountRow = { id: string; owner: string; provider: string; platform: string; external_id: string; username: string; token_enc: string; token_expires_at: string; token_refreshed_at: string; connected_at: string; options: string | null; control: string | null; daily_limit: number | null; caption_template: string | null; zernio_key_enc: string | null };
 type PostRow = { id: string; clip_id: string; state: string; container_id: string | null; attempts: number; updated_at: string };
 type ClipInfo = { reviewed: boolean; streamer: string; platform: string };
 // What an adapter reports back: done, still going (check again later), or failed with a reason.
@@ -37,9 +38,17 @@ export function instagramConfig(env: Env): instagram.InstagramConfig | null {
   };
 }
 
+export const zernioApiUrl = (env: Env) => env.ZERNIO_API_URL || "https://zernio.com/api/v1";
+// The site-wide Zernio key (ZERNIO_API_KEY), used by workspaces that have not entered their own.
 export function zernioConfig(env: Env): zernio.ZernioConfig | null {
   if (!env.ZERNIO_API_KEY) return null;
-  return { apiKey: env.ZERNIO_API_KEY, apiUrl: env.ZERNIO_API_URL || "https://zernio.com/api/v1" };
+  return { apiKey: env.ZERNIO_API_KEY, apiUrl: zernioApiUrl(env) };
+}
+// A workspace's Zernio connection: its own key (entered in the dashboard, stored encrypted) or else the site's.
+export async function workspaceZernio(env: Env, keyEnc: string | null | undefined): Promise<(zernio.ZernioConfig & { source: "workspace" | "site" }) | null> {
+  if (keyEnc && env.TOKEN_KEY) return { apiKey: await decrypt(keyEnc, env.TOKEN_KEY), apiUrl: zernioApiUrl(env), source: "workspace" };
+  const site = zernioConfig(env);
+  return site && { ...site, source: "site" };
 }
 
 export function renderCaption(template: string, values: { streamer: string; platform: string }) {
@@ -51,11 +60,11 @@ export async function runPublisher(env: Env, now = Date.now()) {
   // Write captions for new clips first, so they can be read (and edited) before they post.
   await fillCaptions(env, now).catch(error => console.error("Caption writing failed:", error));
   if (!env.MEDIA_KEY || !env.PUBLIC_URL) return;
-  const ig = instagramConfig(env), zn = zernioConfig(env);
-  if (!ig && !zn) return;
-  const { results } = await env.DB.prepare("SELECT a.*, p.control, p.daily_limit, p.caption_template FROM accounts a LEFT JOIN preferences p ON p.owner=a.owner WHERE a.status='connected'").all<AccountRow>();
+  const ig = instagramConfig(env);
+  const { results } = await env.DB.prepare("SELECT a.*, p.control, p.daily_limit, p.caption_template, p.zernio_key_enc FROM accounts a LEFT JOIN preferences p ON p.owner=a.owner WHERE a.status='connected'").all<AccountRow>();
   for (const account of results) {
     try {
+      const zn = account.provider === "zernio" ? await workspaceZernio(env, account.zernio_key_enc) : null;
       const adapter = account.provider === "zernio" ? (zn && zernioAdapter(zn, account)) : (ig && await instagramAdapter(env, ig, account, now));
       if (adapter) await runAccount(env, adapter, account, now);
     } catch (error) {
@@ -96,7 +105,8 @@ async function instagramAdapter(env: Env, config: instagram.InstagramConfig, acc
   };
 }
 
-function zernioAdapter(config: zernio.ZernioConfig, account: AccountRow): Adapter {
+function zernioAdapter(config: zernio.ZernioConfig & { source: "workspace" | "site" }, account: AccountRow): Adapter {
+  const options = readOptions(account.options);
   const outcome = (post: zernio.ZernioPost): Outcome => {
     const result = zernio.platformResult(post);
     if (post.status === "published" || result?.status === "published")
@@ -114,15 +124,10 @@ function zernioAdapter(config: zernio.ZernioConfig, account: AccountRow): Adapte
       const body: Record<string, unknown> = { content: caption, publishNow: true, platforms: [platform], mediaItems: [{ type: "video", url: link, mimeType: "video/mp4" }] };
       if (account.platform === "youtube") {
         platform.platformSpecificData = { title: (caption.split("\n")[0].trim() || clip.streamer + " clip").slice(0, 100) };
-        body.visibility = "public";
+        body.visibility = options.youtubeVisibility;
       }
-      if (account.platform === "tiktok") {
-        // TikTok wants the creator to have seen and agreed to each post. A clip you approved in review counts;
-        // a clip approved automatically goes to your TikTok drafts instead, to finish in the app.
-        body.tiktokSettings = clip.reviewed
-          ? { privacyLevel: "PUBLIC_TO_EVERYONE", allowComment: true, allowDuet: true, allowStitch: true, commercialContentType: "none", contentPreviewConfirmed: true, expressConsentGiven: true }
-          : { draft: true };
-      }
+      // Publish directly or send to TikTok drafts, per the account's posting mode (see account-options.ts).
+      if (account.platform === "tiktok") body.tiktokSettings = tiktokSettings(options, clip.reviewed);
       // One key per attempt: a lost response is answered with the same post, while a retry after a definite
       // failure (automatic or by hand) is a fresh post. The attempt count separates automatic retries; updated_at,
       // set when a manual retry resets that count, separates those.
@@ -134,8 +139,8 @@ function zernioAdapter(config: zernio.ZernioConfig, account: AccountRow): Adapte
     },
     accountProblem(error) {
       if (!(error instanceof zernio.ZernioError)) return null;
-      if (error.keyInvalid) return { message: "Zernio refused the site's API key; replace ZERNIO_API_KEY and redeploy.", expire: false };
-      if (error.accountInvalid) return { message: "This account was disconnected on Zernio; reconnect it there, then sync accounts.", expire: true };
+      if (error.keyInvalid) return { message: config.source === "workspace" ? "Zernio refused your API key; enter a new one under Connections." : "Zernio refused the site's API key; enter your own under Connections.", expire: false };
+      if (error.accountInvalid) return { message: "This account was disconnected on Zernio; reconnect it under Connections.", expire: true };
       return null;
     },
   };

@@ -1,10 +1,12 @@
-// A local stand-in for the Zernio endpoints Clipflow uses (GET /accounts, POST /posts, GET /posts/:id), for
-// end-to-end tests. Like Zernio, it downloads each post's video URL itself and honours Idempotency-Key.
+// A local stand-in for the Zernio endpoints Clipflow uses (accounts, posts, key check, profiles, connect,
+// disconnect), for end-to-end tests. Like Zernio, it downloads each post's video URL itself and honours
+// Idempotency-Key. Several API keys are accepted (`keys`: key -> owner name); the log records which one each call used.
 // Control: GET /__log returns calls and posts; POST /__accounts sets the account list (JSON array);
-// POST /__mode?platform=..&mode=published|pending|fail chooses how posts to that platform turn out.
+// POST /__mode?platform=..&mode=published|pending|fail chooses how posts to that platform turn out;
+// GET /__authorize stands in for a platform's sign-in page: it adds the account and redirects back like Zernio.
 import { createServer } from "node:http";
 
-export function startFakeZernio({ port = 0, apiKey = "sk_test" } = {}) {
+export function startFakeZernio({ port = 0, apiKey = "sk_test", keys = { [apiKey]: "Test Owner" } } = {}) {
   const log = [], posts = new Map(), byKey = new Map(), modes = new Map();
   let accounts = [];
   const send = (res, status, body) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
@@ -13,11 +15,36 @@ export function startFakeZernio({ port = 0, apiKey = "sk_test" } = {}) {
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://fake"), path = url.pathname, body = req.method === "POST" ? await readBody(req) : "";
-    log.push({ method: req.method, path, idempotencyKey: req.headers["idempotency-key"] ?? null, at: Date.now() });
+    const auth = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+    log.push({ method: req.method, path, auth, idempotencyKey: req.headers["idempotency-key"] ?? null, at: Date.now() });
     if (path === "/__log") return send(res, 200, { log, posts: [...posts.values()] });
     if (path === "/__accounts") { accounts = JSON.parse(body); return send(res, 200, { ok: true }); }
     if (path === "/__mode") { modes.set(url.searchParams.get("platform"), url.searchParams.get("mode")); return send(res, 200, { ok: true }); }
-    if (req.headers.authorization !== "Bearer " + apiKey) return send(res, 401, { error: "Invalid API key", code: "unauthorized" });
+    if (path === "/__authorize") {
+      const platform = url.searchParams.get("platform"), back = new URL(url.searchParams.get("redirect"));
+      if (url.searchParams.get("deny")) { back.searchParams.set("error", "access_denied"); back.searchParams.set("platform", platform); back.searchParams.set("error_message", "The user cancelled"); }
+      else {
+        const account = { _id: "acc-new-" + (accounts.length + 1), platform, username: "new_" + platform, isActive: true };
+        accounts = [...accounts, account];
+        for (const [k, v] of Object.entries({ connected: platform, profileId: "prof-1", accountId: account._id, username: account.username })) back.searchParams.set(k, v);
+      }
+      res.writeHead(302, { location: back.href }); return res.end();
+    }
+    if (!keys[auth]) return send(res, 401, { error: "Invalid API key", code: "unauthorized" });
+
+    if (path === "/api/v1/auth/verify") return send(res, 200, { valid: true, name: keys[auth], authType: "api_key" });
+    if (path === "/api/v1/profiles" && req.method === "GET") return send(res, 200, { profiles: [{ _id: "prof-1", name: "Default", isDefault: true }] });
+    const connect = /^\/api\/v1\/connect\/([a-z]+)$/.exec(path);
+    if (connect && req.method === "GET") {
+      if (url.searchParams.get("profileId") !== "prof-1" || !/^https?:\/\//.test(url.searchParams.get("redirect_url") ?? "")) return send(res, 400, { error: "profileId and an absolute redirect_url are required", code: "INVALID_REDIRECT_URL" });
+      return send(res, 200, { authUrl: "http://127.0.0.1:" + server.address().port + "/__authorize?platform=" + connect[1] + "&redirect=" + encodeURIComponent(url.searchParams.get("redirect_url")), state: "st" });
+    }
+    const account = /^\/api\/v1\/accounts\/([^/]+)$/.exec(path);
+    if (account && req.method === "DELETE") {
+      const id = decodeURIComponent(account[1]);
+      if (!accounts.some(a => a._id === id)) return send(res, 404, { error: "Account not found", code: "not_found" });
+      accounts = accounts.filter(a => a._id !== id); return send(res, 200, { message: "Account disconnected" });
+    }
 
     if (path === "/api/v1/accounts" && req.method === "GET") return send(res, 200, { accounts });
     if (path === "/api/v1/posts" && req.method === "POST") {
