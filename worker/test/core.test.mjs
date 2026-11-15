@@ -41,6 +41,8 @@ test("plan only starts captures for streamers confirmed live", () => {
 test("channelUrl accepts channels and rejects non-channel pages", () => {
   assert.equal(channelUrl("https://www.twitch.tv/alpha"), "https://www.twitch.tv/alpha");
   assert.equal(channelUrl("https://youtube.com/@gamma"), "https://youtube.com/@gamma/live");
+  assert.equal(channelUrl("https://www.tiktok.com/@delta.live_1"), "https://www.tiktok.com/@delta.live_1/live");
+  for (const bad of ["https://www.tiktok.com/@a/video/123", "https://www.tiktok.com/delta", "https://www.tiktok.com/@a"]) assert.throws(() => channelUrl(bad), bad);
   for (const bad of ["http://twitch.tv/alpha", "https://twitch.tv/Following", "https://kick.com/downloads", "https://twitch.tv/a/b", "https://evil.com/alpha", "https://twitch.tv/alpha?x=1"])
     assert.throws(() => channelUrl(bad), bad);
 });

@@ -1,5 +1,5 @@
 // Read-only chat activity for highlight detection. Only Twitch is supported: its chat allows anonymous
-// read-only connections. Kick and YouTube need registered API apps, so they fall back to audio alone.
+// read-only connections. Kick, YouTube and TikTok need registered API apps, so they fall back to audio alone.
 const KEEP_MS = 10 * 60_000;
 
 export function twitchLogin(url) {

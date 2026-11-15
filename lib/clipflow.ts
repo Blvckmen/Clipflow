@@ -19,6 +19,12 @@ export function parseStreamer(input:string){
  }else if(host==="youtube.com"){
   platform="YouTube";if(parts.at(-1)==="live")parts.pop();
   if(!((parts.length===1&&/^@[\p{L}\p{N}_.-]{3,40}$/u.test(decodeURIComponent(parts[0])))||(parts.length===2&&parts[0]==="channel"&&/^UC[a-zA-Z0-9_-]{22}$/.test(parts[1]))))throw new Error("Use a YouTube @handle or /channel/ URL, not a video link.");
- }else throw new Error("Supported channel hosts: twitch.tv, youtube.com, and kick.com.");
+ }else if(host==="tiktok.com"||host==="m.tiktok.com"){
+  // TikTok LIVE is recorded from the profile's /live page; usernames are 2-24 letters, digits, "_" or ".".
+  platform="TikTok";if(parts.at(-1)==="live")parts.pop();
+  if(parts.length!==1||!/^@[a-zA-Z0-9_.]{2,24}$/.test(parts[0]))throw new Error("Use a TikTok profile URL like https://www.tiktok.com/@name, not a video link.");
+  parts[0]=parts[0].toLowerCase();
+  return {platform,url:"https://www.tiktok.com/"+parts[0],name:parts[0].slice(1)};
+ }else throw new Error("Supported channel hosts: twitch.tv, youtube.com, kick.com, and tiktok.com.");
  return {platform,url:"https://"+host+"/"+parts.join("/"),name:decodeURIComponent(parts.at(-1)!).replace(/^@/,"")};
 }

@@ -13,6 +13,10 @@ export function channelUrl(value) {
   } else if (host === "youtube.com") {
     if (!((p.length === 1 && /^@[\p{L}\p{N}_.-]{3,40}$/u.test(decodeURIComponent(p[0]))) || (p.length === 2 && p[0] === "channel" && /^UC[a-zA-Z0-9_-]{22}$/.test(p[1])))) throw new Error("Invalid YouTube channel");
     u.pathname = "/" + p.join("/") + "/live";
+  } else if (host === "tiktok.com") {
+    // streamlink's TikTok plugin reads the profile's live room.
+    if (p.length !== 1 || !/^@[a-zA-Z0-9_.]{2,24}$/.test(p[0])) throw new Error("Invalid TikTok profile");
+    u.pathname = "/" + p[0] + "/live";
   } else throw new Error("Unsupported channel host");
   return u.href;
 }

@@ -52,6 +52,18 @@ describe("dashboard", () => {
   test("rejects anonymous requests", async () => {
     assert.equal((await fetch(base + "/api/dashboard")).status, 401);
   });
+  test("TikTok profiles can be added and appear in the worker's config", async () => {
+    const handle = "apitt" + Date.now().toString(36);
+    const added = await dash({ action: "add", url: "https://www.tiktok.com/@" + handle.toUpperCase() + "/live" });
+    assert.equal(added.status, 200);
+    const row = (await dash()).body.streamers.find(s => s.id === added.body.streamerId);
+    assert.deepEqual([row.platform, row.url, row.name], ["TikTok", "https://www.tiktok.com/@" + handle, handle]);
+    assert.equal((await dash({ action: "add", url: "https://tiktok.com/@" + handle })).status, 409, "same profile, different spelling");
+    for (const bad of ["https://www.tiktok.com/@" + handle + "/video/7300000000000000000", "https://www.tiktok.com/foryou", "https://www.tiktok.com/@a"])
+      assert.equal((await dash({ action: "add", url: bad })).status, 400, bad);
+    await dash({ action: "remove", id: row.id });
+    await dash({ action: "control", control: "paused" });
+  });
   test("rejects invalid channel URLs and duplicates", async () => {
     assert.equal((await dash({ action: "add", url: "https://twitch.tv/directory" })).status, 400);
     assert.equal((await dash({ action: "add", url: "https://example.com/someone" })).status, 400);
