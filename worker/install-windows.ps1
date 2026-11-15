@@ -19,6 +19,8 @@ $atLogOn = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAM
 $watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5)
 $trigger = @($atLogOn, $watchdog)
 # Keep running on battery and with no time limit; the launcher itself restarts the worker.
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+# Priority 4 is normal. Task Scheduler's default (7) is below normal, which every child inherits (streamlink, ffmpeg,
+# Whisper): on a busy PC they are starved, live checks take minutes and renders time out.
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -Priority 4
 Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settings $settings -Description "Records live streams and makes Clipflow clips." -Force | Out-Null
 "Registered scheduled task '$name' (starts at sign-in and is restarted within 5 minutes if it stops). Start it now with: Start-ScheduledTask -TaskName '$name'"
