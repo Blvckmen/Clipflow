@@ -1,13 +1,14 @@
 "use client";
-// Publishing setup inside the dashboard: the workspace's Zernio key, buttons that connect each social platform
-// (through that platform's own sign-in), and per-account posting options. Nothing here needs a code change or a
-// redeploy.
+// Publishing setup inside the dashboard: the workspace's Zernio keys (each a separate Zernio account with its own
+// social accounts), buttons that connect each social platform (through that platform's own sign-in), and
+// per-account posting options. Nothing here needs a code change or a redeploy.
 import { useState, type ReactNode } from "react";
-import { Check, ExternalLink, KeyRound, Loader2, Plus, RefreshCw } from "lucide-react";
+import { Check, ExternalLink, KeyRound, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { tiktokModes, tiktokPrivacy, youtubeVisibility, type AccountOptions } from "../lib/account-options";
 
-export type Publishing = { zernio: boolean; zernioSource: "workspace" | "site" | null; zernioLabel: string | null; canSaveKey: boolean };
-export type ZernioAccount = { id: string; platform: string; username: string; options: AccountOptions };
+export type ZernioKey = { id: string; label: string; created_at: string; last_error: string | null; accounts: number };
+export type Publishing = { zernio: boolean; zernioSource: "workspace" | "site" | null; zernioKeys: ZernioKey[]; canSaveKey: boolean };
+export type ZernioAccount = { id: string; platform: string; username: string; options: AccountOptions; zernio_key_id: string | null };
 type Mutate = (body: unknown) => Promise<unknown>;
 
 // What can be connected, in the order shown. Ids are Zernio's platform names.
@@ -21,14 +22,19 @@ export const connectable: { id: string; name: string; note: string }[] = [
 ];
 
 export function ZernioPanel({ publishing, accounts, busy, mutate, brand, row }: { publishing: Publishing; accounts: ZernioAccount[]; busy: boolean; mutate: Mutate; brand: (name: string) => ReactNode; row: (a: ZernioAccount) => ReactNode }) {
-  const [editingKey, setEditingKey] = useState(false), [key, setKey] = useState("");
-  const keyForm = <form className="key-form" onSubmit={async e => { e.preventDefault(); if (await mutate({ action: "zernioKey", key })) { setKey(""); setEditingKey(false); } }}>
+  const keys = publishing.zernioKeys;
+  const [adding, setAdding] = useState(false), [key, setKey] = useState(""), [removing, setRemoving] = useState<string | null>(null), [target, setTarget] = useState("");
+  const into = keys.find(k => k.id === target) ?? keys[0];
+  const keyForm = <form className="key-form" onSubmit={async e => { e.preventDefault(); if (await mutate({ action: "addZernioKey", key })) { setKey(""); setAdding(false); } }}>
     <label>Zernio API key<input type="password" autoComplete="off" required minLength={10} placeholder="sk_…" value={key} onChange={e => setKey(e.target.value)} /></label>
-    <button className="primary" type="submit" disabled={busy || !publishing.canSaveKey}>{busy ? <Loader2 size={15} className="spin" /> : <Check size={15} />}Save key</button>
-    {editingKey && <button className="secondary" type="button" onClick={() => setEditingKey(false)}>Cancel</button>}
-    <small>Find it on <a href="https://zernio.com/dashboard" target="_blank" rel="noreferrer">zernio.com <ExternalLink size={11} /></a> under Settings → API keys. It is checked with Zernio and stored encrypted; it never reaches your browser again.</small>
+    <button className="primary" type="submit" disabled={busy || !publishing.canSaveKey}>{busy ? <Loader2 size={15} className="spin" /> : <Check size={15} />}Add key</button>
+    {keys.length > 0 && <button className="secondary" type="button" onClick={() => setAdding(false)}>Cancel</button>}
+    <small>Find it on <a href="https://zernio.com/dashboard" target="_blank" rel="noreferrer">zernio.com <ExternalLink size={11} /></a> under Settings → API keys. Each key is a separate Zernio account with its own connected accounts. Keys are checked with Zernio and stored encrypted; they never reach your browser again.</small>
     {!publishing.canSaveKey && <small className="engine-error">This site can&apos;t store keys yet: its TOKEN_KEY secret is missing (see DEPLOY.md).</small>}
   </form>;
+  // Accounts grouped by the key they were connected with (null: the site's shared key).
+  const groups = [...keys.map(k => ({ id: k.id as string | null, label: k.label })), { id: null, label: "This site's shared key" }]
+    .map(g => ({ ...g, accounts: accounts.filter(a => (a.zernio_key_id ?? null) === g.id) })).filter(g => g.accounts.length);
 
   return <section className="panel accounts-panel">
     <div className="panel-heading"><div><h2>Social accounts <span className="count">{accounts.length}</span></h2><p>Connect each account with its own sign-in. Each streamer posts only to the accounts you pick for it.</p></div>
@@ -36,16 +42,30 @@ export function ZernioPanel({ publishing, accounts, busy, mutate, brand, row }: 
 
     <div className="zernio-key">
       <KeyRound size={18} />
-      {publishing.zernio && !editingKey
-        ? <div className="zernio-key-line"><span>Posting through Zernio{publishing.zernioSource === "workspace" ? " as " + (publishing.zernioLabel ?? "your account") : " with this site's shared key"}.</span>
-          <button className="text-button" onClick={() => setEditingKey(true)}>{publishing.zernioSource === "workspace" ? "Change key" : "Use my own key"}</button>
-          {publishing.zernioSource === "workspace" && <button className="text-button" disabled={busy} onClick={() => void mutate({ action: "zernioKey", key: null })}>Remove key</button>}</div>
-        : <div><strong>Connect Zernio to post</strong><p className="muted">Zernio posts to TikTok, Instagram, YouTube and more for you, so there are no developer apps to set up. Create a free account, then paste its API key here.</p>{keyForm}</div>}
+      <div>
+        {keys.length > 0 && <><strong>Zernio keys <span className="count">{keys.length}</span></strong>
+          <div className="key-list">{keys.map(k => <div key={k.id} className="key-row">
+            <span><strong>{k.label}</strong><small className={k.last_error ? "engine-error" : "muted"}>{k.accounts} account{k.accounts === 1 ? "" : "s"}{k.last_error ? " · " + k.last_error : ""}</small></span>
+            {removing === k.id
+              ? <span className="key-confirm"><small>Remove this key and its {k.accounts} account{k.accounts === 1 ? "" : "s"} from Clipflow? They stay connected on Zernio.</small><button className="danger" disabled={busy} onClick={async () => { if (await mutate({ action: "removeZernioKey", id: k.id })) setRemoving(null); }}>Remove</button><button className="secondary" onClick={() => setRemoving(null)}>Cancel</button></span>
+              : <button className="icon-button" aria-label={"Remove key " + k.label} title="Remove key" disabled={busy} onClick={() => setRemoving(k.id)}><Trash2 size={15} /></button>}
+          </div>)}</div>
+          {adding ? keyForm : <button className="text-button add-key" onClick={() => setAdding(true)}><Plus size={14} />Add another Zernio key</button>}</>}
+        {!keys.length && (publishing.zernioSource === "site" && !adding
+          ? <div className="zernio-key-line"><span>Posting through Zernio with this site&apos;s shared key.</span><button className="text-button" onClick={() => setAdding(true)}>Add your own key</button></div>
+          : <><strong>Connect Zernio to post</strong><p className="muted">Zernio posts to TikTok, Instagram, YouTube and more for you, so there are no developer apps to set up. Create a free account, then paste its API key here. You can add more keys later.</p>{keyForm}</>)}
+      </div>
     </div>
 
-    {publishing.zernio && <div className="connect-grid">{connectable.map(p => <a key={p.id} className="connect-tile" href={"/api/connections/zernio/start?platform=" + p.id} target="_top">{brand(p.name)}<span><strong>{p.name}</strong><small>{p.note}</small></span><Plus size={15} /></a>)}</div>}
+    {publishing.zernio && <div className="connect-section">
+      {keys.length > 1 && <label className="connect-into">Add accounts under<select value={into?.id} onChange={e => setTarget(e.target.value)}>{keys.map(k => <option key={k.id} value={k.id}>{k.label} ({k.accounts})</option>)}</select></label>}
+      <div className="connect-grid">{connectable.map(p => <a key={p.id} className="connect-tile" href={"/api/connections/zernio/start?platform=" + p.id + (into ? "&key=" + into.id : "")} target="_top">{brand(p.name)}<span><strong>{p.name}</strong><small>{p.note}</small></span><Plus size={15} /></a>)}</div>
+    </div>}
 
-    {accounts.length > 0 && <div className="account-list">{accounts.map(row)}</div>}
+    {groups.map(g => <div key={g.id ?? "site"} className="account-group">
+      {(keys.length > 1 || (keys.length > 0 && g.id === null)) && <div className="account-group-title"><KeyRound size={13} />{g.label}</div>}
+      <div className="account-list">{g.accounts.map(row)}</div>
+    </div>)}
   </section>;
 }
 

@@ -15,8 +15,7 @@ export const preferences=sqliteTable("preferences",{
  // Post captions written by Claude from each clip's transcript (when the site has an Anthropic API key), with
  // the owner's own guidance; caption_template is the fallback.
  aiCaptions:integer("ai_captions",{mode:"boolean"}).notNull().default(true),captionNotes:text("caption_notes").notNull().default(""),
- // The workspace's own Zernio API key, entered in the dashboard (AES-GCM with TOKEN_KEY); null falls back to the
- // site's ZERNIO_API_KEY. zernio_label is who the key belongs to, for display.
+ // No longer used: the single Zernio key setting, moved to zernio_keys by migration 0011.
  zernioKeyEnc:text("zernio_key_enc"),zernioLabel:text("zernio_label"),
 });
 export const events=sqliteTable("events",{id:text("id").primaryKey(),owner:text("owner").notNull(),message:text("message").notNull(),createdAt:text("created_at").notNull()},t=>[index("events_owner_created").on(t.owner,t.createdAt)]);
@@ -54,7 +53,17 @@ export const accounts=sqliteTable("accounts",{
  status:text("status").notNull().default("connected"),connectedAt:text("connected_at").notNull(),lastError:text("last_error"),
  // Per-account posting options set in the dashboard (JSON, see lib/account-options.ts); null uses the defaults.
  options:text("options"),
+ // Zernio accounts: which of the workspace's Zernio keys this account belongs to (zernio_keys.id). Null means the
+ // site-wide ZERNIO_API_KEY.
+ zernioKeyId:text("zernio_key_id"),
 },t=>[uniqueIndex("accounts_owner_platform_external").on(t.owner,t.platform,t.externalId)]);
+// A workspace's Zernio API keys, added in the dashboard. Each key is a separate Zernio account with its own
+// connected social accounts. key_enc is AES-GCM with TOKEN_KEY; key_hash (SHA-256) stops the same key being added
+// twice; label is who the key belongs to, for display.
+export const zernioKeys=sqliteTable("zernio_keys",{
+ id:text("id").primaryKey(),owner:text("owner").notNull(),label:text("label").notNull(),keyEnc:text("key_enc").notNull(),keyHash:text("key_hash").notNull(),
+ createdAt:text("created_at").notNull(),lastError:text("last_error"),
+},t=>[uniqueIndex("zernio_keys_owner_hash").on(t.owner,t.keyHash),index("zernio_keys_owner").on(t.owner)]);
 // Which accounts post which streamer's clips. Only clips approved after the link was made are posted.
 export const streamerAccounts=sqliteTable("streamer_accounts",{
  streamerId:text("streamer_id").notNull(),accountId:text("account_id").notNull(),owner:text("owner").notNull(),createdAt:text("created_at").notNull(),

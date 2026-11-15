@@ -23,7 +23,7 @@ const renderPreview=(template?:string)=>(template||"").replace(/\{streamer\}/g,"
 function ReviewTag({review}:{review:Review}){return <span className={"tag "+(review==="approved"?"lime":review==="pending"?"amber":"")}>{review==="approved"?"Approved":review==="pending"?"Needs review":"Rejected"}</span>}
 type Engine={connected:boolean;lastSeen:string|null;tokenCreated:string|null;status:string;lastError:string|null;lastErrorAt:string|null};
 const ERROR_RECENT_MS=24*3600_000;
-type Account={id:string;provider:string;platform:string;username:string;status:string;connected_at:string;last_error:string|null;options:AccountOptions};
+type Account={id:string;provider:string;platform:string;username:string;status:string;connected_at:string;last_error:string|null;options:AccountOptions;zernio_key_id:string|null};
 // Display name of an account's platform, from Zernio's platform ids.
 const platformName=(platform:string)=>({instagram:"Instagram",tiktok:"TikTok",youtube:"YouTube",facebook:"Facebook",twitter:"X",threads:"Threads"} as Record<string,string>)[platform]??platform;
 type Post={id:string;clip_id:string;platform:string;account_id:string;account:string|null;state:"queued"|"processing"|"published"|"failed";permalink:string|null;error:string|null;attempts:number;created_at:string;published_at:string|null;streamer:string|null};

@@ -4,11 +4,15 @@
 // Control: GET /__log returns calls and posts; POST /__accounts sets the account list (JSON array);
 // POST /__mode?platform=..&mode=published|pending|fail chooses how posts to that platform turn out;
 // GET /__authorize stands in for a platform's sign-in page: it adds the account and redirects back like Zernio.
+// Keys listed in `isolated` are separate Zernio accounts: they see only the accounts connected with them, while the
+// other keys share the /__accounts list (and the accounts they connect).
 import { createServer } from "node:http";
 
-export function startFakeZernio({ port = 0, apiKey = "sk_test", keys = { [apiKey]: "Test Owner" } } = {}) {
+export function startFakeZernio({ port = 0, apiKey = "sk_test", keys = { [apiKey]: "Test Owner" }, isolated = [] } = {}) {
   const log = [], posts = new Map(), byKey = new Map(), modes = new Map();
   let accounts = [];
+  // Which accounts a key can see and use.
+  const visible = (a, auth) => isolated.includes(auth) ? a.key === auth : !isolated.includes(a.key);
   const send = (res, status, body) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
   const readBody = req => new Promise(r => { let b = ""; req.on("data", c => b += c); req.on("end", () => r(b)); });
   const view = p => ({ _id: p._id, status: p.status, platforms: [{ platform: p.platform, accountId: { _id: p.accountId }, status: p.platformStatus, ...(p.url && { platformPostUrl: p.url, platformPostId: "pp-" + p._id }), ...(p.errorMessage && { errorMessage: p.errorMessage }) }] });
@@ -24,7 +28,7 @@ export function startFakeZernio({ port = 0, apiKey = "sk_test", keys = { [apiKey
       const platform = url.searchParams.get("platform"), back = new URL(url.searchParams.get("redirect"));
       if (url.searchParams.get("deny")) { back.searchParams.set("error", "access_denied"); back.searchParams.set("platform", platform); back.searchParams.set("error_message", "The user cancelled"); }
       else {
-        const account = { _id: "acc-new-" + (accounts.length + 1), platform, username: "new_" + platform, isActive: true };
+        const account = { _id: "acc-new-" + (accounts.length + 1), platform, username: "new_" + platform + (url.searchParams.get("k") && isolated.includes(url.searchParams.get("k")) ? "_2" : ""), isActive: true, key: url.searchParams.get("k") };
         accounts = [...accounts, account];
         for (const [k, v] of Object.entries({ connected: platform, profileId: "prof-1", accountId: account._id, username: account.username })) back.searchParams.set(k, v);
       }
@@ -37,21 +41,21 @@ export function startFakeZernio({ port = 0, apiKey = "sk_test", keys = { [apiKey
     const connect = /^\/api\/v1\/connect\/([a-z]+)$/.exec(path);
     if (connect && req.method === "GET") {
       if (url.searchParams.get("profileId") !== "prof-1" || !/^https?:\/\//.test(url.searchParams.get("redirect_url") ?? "")) return send(res, 400, { error: "profileId and an absolute redirect_url are required", code: "INVALID_REDIRECT_URL" });
-      return send(res, 200, { authUrl: "http://127.0.0.1:" + server.address().port + "/__authorize?platform=" + connect[1] + "&redirect=" + encodeURIComponent(url.searchParams.get("redirect_url")), state: "st" });
+      return send(res, 200, { authUrl: "http://127.0.0.1:" + server.address().port + "/__authorize?platform=" + connect[1] + "&k=" + encodeURIComponent(auth) + "&redirect=" + encodeURIComponent(url.searchParams.get("redirect_url")), state: "st" });
     }
     const account = /^\/api\/v1\/accounts\/([^/]+)$/.exec(path);
     if (account && req.method === "DELETE") {
       const id = decodeURIComponent(account[1]);
-      if (!accounts.some(a => a._id === id)) return send(res, 404, { error: "Account not found", code: "not_found" });
+      if (!accounts.some(a => a._id === id && visible(a, auth))) return send(res, 404, { error: "Account not found", code: "not_found" });
       accounts = accounts.filter(a => a._id !== id); return send(res, 200, { message: "Account disconnected" });
     }
 
-    if (path === "/api/v1/accounts" && req.method === "GET") return send(res, 200, { accounts });
+    if (path === "/api/v1/accounts" && req.method === "GET") return send(res, 200, { accounts: accounts.filter(a => visible(a, auth)).map(({ key, ...a }) => a) });
     if (path === "/api/v1/posts" && req.method === "POST") {
       const key = req.headers["idempotency-key"];
       if (key && byKey.has(key)) return send(res, 200, { post: view(posts.get(byKey.get(key))), message: "Duplicate request" });
       const params = JSON.parse(body), target = params.platforms?.[0];
-      const account = accounts.find(a => a._id === target?.accountId);
+      const account = accounts.find(a => a._id === target?.accountId && visible(a, auth));
       if (!account || account.platform !== target.platform) return send(res, 400, { error: "Unknown account", code: "validation_error" });
       if (account.isActive === false) return send(res, 403, { error: "Account disconnected", code: "ACCOUNT_DISCONNECTED" });
       const media = params.mediaItems?.[0];

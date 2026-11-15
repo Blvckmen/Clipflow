@@ -1,7 +1,8 @@
 // Publishes approved clips to connected accounts. Runs from the Worker's once-a-minute cron trigger and does a
 // bounded amount of work per account per run, so a slow platform never holds up the rest.
 // Accounts come from one of two providers: Instagram connected directly (Instagram Login, token stored here), or
-// any platform connected through Zernio (the workspace's own key from the dashboard, or the site-wide one). Both share the queue, retries and daily limit below;
+// any platform connected through Zernio (each account posts with the workspace key it was connected with, or the
+// site-wide key). Both share the queue, retries and daily limit below;
 // a provider adapter only knows how to start a post and how to check on one.
 import { decrypt, encrypt, signedMediaPath } from "./secure";
 import * as instagram from "./instagram";
@@ -9,9 +10,10 @@ import * as zernio from "./zernio";
 import { defaultCaption } from "./clipflow";
 import { captionForPost, fillCaptions } from "./post-caption";
 import { readOptions, tiktokSettings } from "./account-options";
+import { keyConnection, siteConnection, zernioApiUrl, type Connection } from "./zernio-keys";
 
 type Env = Cloudflare.Env;
-type AccountRow = { id: string; owner: string; provider: string; platform: string; external_id: string; username: string; token_enc: string; token_expires_at: string; token_refreshed_at: string; connected_at: string; options: string | null; control: string | null; daily_limit: number | null; caption_template: string | null; zernio_key_enc: string | null };
+type AccountRow = { id: string; owner: string; provider: string; platform: string; external_id: string; username: string; token_enc: string; token_expires_at: string; token_refreshed_at: string; connected_at: string; options: string | null; control: string | null; daily_limit: number | null; caption_template: string | null; zernio_key_id: string | null; key_label: string | null; key_enc: string | null };
 type PostRow = { id: string; clip_id: string; state: string; container_id: string | null; attempts: number; updated_at: string };
 type ClipInfo = { reviewed: boolean; streamer: string; platform: string };
 // What an adapter reports back: done, still going (check again later), or failed with a reason.
@@ -38,17 +40,11 @@ export function instagramConfig(env: Env): instagram.InstagramConfig | null {
   };
 }
 
-export const zernioApiUrl = (env: Env) => env.ZERNIO_API_URL || "https://zernio.com/api/v1";
-// The site-wide Zernio key (ZERNIO_API_KEY), used by workspaces that have not entered their own.
+export { zernioApiUrl };
+// The site-wide Zernio key (ZERNIO_API_KEY), used by workspaces that have not added keys of their own.
 export function zernioConfig(env: Env): zernio.ZernioConfig | null {
-  if (!env.ZERNIO_API_KEY) return null;
-  return { apiKey: env.ZERNIO_API_KEY, apiUrl: zernioApiUrl(env) };
-}
-// A workspace's Zernio connection: its own key (entered in the dashboard, stored encrypted) or else the site's.
-export async function workspaceZernio(env: Env, keyEnc: string | null | undefined): Promise<(zernio.ZernioConfig & { source: "workspace" | "site" }) | null> {
-  if (keyEnc && env.TOKEN_KEY) return { apiKey: await decrypt(keyEnc, env.TOKEN_KEY), apiUrl: zernioApiUrl(env), source: "workspace" };
-  const site = zernioConfig(env);
-  return site && { ...site, source: "site" };
+  const site = siteConnection(env);
+  return site && { apiKey: site.apiKey, apiUrl: site.apiUrl };
 }
 
 export function renderCaption(template: string, values: { streamer: string; platform: string }) {
@@ -61,10 +57,11 @@ export async function runPublisher(env: Env, now = Date.now()) {
   await fillCaptions(env, now).catch(error => console.error("Caption writing failed:", error));
   if (!env.MEDIA_KEY || !env.PUBLIC_URL) return;
   const ig = instagramConfig(env);
-  const { results } = await env.DB.prepare("SELECT a.*, p.control, p.daily_limit, p.caption_template, p.zernio_key_enc FROM accounts a LEFT JOIN preferences p ON p.owner=a.owner WHERE a.status='connected'").all<AccountRow>();
+  const { results } = await env.DB.prepare("SELECT a.*, p.control, p.daily_limit, p.caption_template, k.label AS key_label, k.key_enc FROM accounts a LEFT JOIN preferences p ON p.owner=a.owner LEFT JOIN zernio_keys k ON k.id=a.zernio_key_id AND k.owner=a.owner WHERE a.status='connected'").all<AccountRow>();
   for (const account of results) {
     try {
-      const zn = account.provider === "zernio" ? await workspaceZernio(env, account.zernio_key_enc) : null;
+      // An account connected with a workspace key posts with that key; one from the site key, with the site key.
+      const zn = account.provider !== "zernio" ? null : account.zernio_key_id ? (account.key_enc ? await keyConnection(env, { id: account.zernio_key_id, label: account.key_label ?? "", key_enc: account.key_enc }) : null) : siteConnection(env);
       const adapter = account.provider === "zernio" ? (zn && zernioAdapter(zn, account)) : (ig && await instagramAdapter(env, ig, account, now));
       if (adapter) await runAccount(env, adapter, account, now);
     } catch (error) {
@@ -105,7 +102,7 @@ async function instagramAdapter(env: Env, config: instagram.InstagramConfig, acc
   };
 }
 
-function zernioAdapter(config: zernio.ZernioConfig & { source: "workspace" | "site" }, account: AccountRow): Adapter {
+function zernioAdapter(config: Connection, account: AccountRow): Adapter {
   const options = readOptions(account.options);
   const outcome = (post: zernio.ZernioPost): Outcome => {
     const result = zernio.platformResult(post);
@@ -139,7 +136,7 @@ function zernioAdapter(config: zernio.ZernioConfig & { source: "workspace" | "si
     },
     accountProblem(error) {
       if (!(error instanceof zernio.ZernioError)) return null;
-      if (error.keyInvalid) return { message: config.source === "workspace" ? "Zernio refused your API key; enter a new one under Connections." : "Zernio refused the site's API key; enter your own under Connections.", expire: false };
+      if (error.keyInvalid) return { message: config.keyId ? "Zernio refused the key \"" + config.label + "\"; add it again under Connections." : "Zernio refused the site's shared key; add your own under Connections.", expire: false };
       if (error.accountInvalid) return { message: "This account was disconnected on Zernio; reconnect it under Connections.", expire: true };
       return null;
     },
