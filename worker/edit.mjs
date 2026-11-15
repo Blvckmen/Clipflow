@@ -206,7 +206,9 @@ const fmt = n => String(Math.round(n * 1000) / 1000);
 // directory (absolute Windows paths break filter syntax), or null when there is nothing to draw.
 export function filterGraph(edit, { width, height }, subtitles) {
   const { w, h, x, y } = layout(edit.frame, width, height), l = edit.look;
-  const look = [l.brightness !== 1 && `colorchannelmixer=rr=${fmt(l.brightness)}:gg=${fmt(l.brightness)}:bb=${fmt(l.brightness)}`, (l.contrast !== 1 || l.saturation !== 1) && `eq=contrast=${fmt(l.contrast)}:saturation=${fmt(l.saturation)}`].filter(Boolean).join(",");
+  // Brightness scales luma above video black (16), like the preview's CSS brightness(), through a lookup table:
+  // colorchannelmixer did the same per pixel in floating point and made renders about four times slower.
+  const look = [l.brightness !== 1 && `lutyuv=y=clip(16+(val-16)*${fmt(l.brightness)}\\,0\\,255)`, (l.contrast !== 1 || l.saturation !== 1) && `eq=contrast=${fmt(l.contrast)}:saturation=${fmt(l.saturation)}`].filter(Boolean).join(",");
   const src = "[0:v]" + (look ? look + "," : "");
   const parts = [];
   if (edit.frame.mode === "blur") {

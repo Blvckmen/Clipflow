@@ -98,7 +98,8 @@ test("filterGraph frames, adjusts colour, burns subtitles and draws the progress
   assert.match(blur, /^\[0:v\]split\[a\]\[b\];\[a\]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,.*boxblur/);
   assert.match(blur, /\[b\]scale=720:406\[fg\];\[bg\]\[fg\]overlay=0:437\[v0\];\[v0\]subtitles=clip\.ass\[v1\];\[v1\]format=yuv420p,setsar=1\[vout\]$/);
   const crop = filterGraph(edit({ frame: { mode: "crop", zoom: 1, x: 0, y: 0 }, look: { brightness: 1.2, contrast: 1.1, saturation: 1 }, progress: { on: true, color: "#ff0000" } }), { width: 1920, height: 1080 }, null);
-  assert.match(crop, /^color=c=black:s=720x1280:r=30\[bg\];\[0:v\]colorchannelmixer=rr=1\.2:gg=1\.2:bb=1\.2,eq=contrast=1\.1:saturation=1,scale=2276:1280\[fg\]/);
+  assert.match(crop, /^color=c=black:s=720x1280:r=30\[bg\];\[0:v\]lutyuv=y=clip\(16\+\(val-16\)\*1\.2\\,0\\,255\),eq=contrast=1\.1:saturation=1,scale=2276:1280\[fg\]/);
+  assert.doesNotMatch(crop, /colorchannelmixer/, "the slow per-pixel mixer is not used");
   assert.match(crop, /color=c=0xff0000:s=720x10:r=30\[bar\];\[v0\]\[bar\]overlay=x='-w\+w\*t\/29':y=main_h-10:eval=frame:shortest=1\[v2\];\[v2\]format=yuv420p/);
   assert.doesNotMatch(crop, /subtitles/);
 });
