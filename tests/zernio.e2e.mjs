@@ -44,7 +44,7 @@ const postsFor = async clipId => Object.fromEntries((await dash()).body.posts.fi
 const sentFor = async clipId => Object.fromEntries((await fakeLog()).posts.filter(p => p.params.mediaItems[0].url.includes(clipId)).map(p => [p.platform, p]));
 
 before(async () => {
-  fake = await startFakeZernio({ keys: { sk_test: "Site Owner", sk_mine_123456: "Dan", sk_second_7890: "Dan" }, isolated: ["sk_second_7890"] });
+  fake = await startFakeZernio({ isolated: ["sk_second_7890", "sk_full_1111"], keys: { sk_test: "Site Owner", sk_mine_123456: "Dan", sk_second_7890: "Dan", sk_full_1111: "Full Owner" }, limits: { sk_full_1111: 0 } });
   const vars = { ENABLE_TEST_CRON: "1", ZERNIO_API_KEY: "sk_test", ZERNIO_API_URL: "http://127.0.0.1:" + fake.port + "/api/v1", TOKEN_KEY: randomBytes(32).toString("base64"), MEDIA_KEY: randomBytes(32).toString("base64"), PUBLIC_URL: base };
   dev = spawn(process.execPath, ["--import", "./scripts/sites-env.mjs", "./node_modules/wrangler/bin/wrangler.js", "dev", "--config", "dist/server/wrangler.json", "--local", "--persist-to", ".wrangler/state", "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", "0", ...Object.entries(vars).flatMap(([k, v]) => ["--var", k + ":" + v])], { cwd: root, stdio: "ignore", env: { ...process.env, CI: "true" } });
   for (let i = 0; i < 90; i++) { try { await fetch(base + "/api/worker/config"); break; } catch { await sleep(1000); } }
@@ -279,6 +279,14 @@ test("a second Zernio key adds a separate set of accounts that post with their o
   for (let i = 0; i < 4 && !(await sentFor(clip.id)).tiktok; i++) await cron(61_000);
   const post = (await fakeLog()).log.filter(e => e.method === "POST" && e.path === "/api/v1/posts").at(-1);
   assert.equal(post.auth, "sk_second_7890");
+});
+
+test("a full Zernio account says so, and how to make room", async () => {
+  assert.equal((await dash({ action: "addZernioKey", key: "sk_full_1111" })).status, 200);
+  const full = (await dash()).body.publishing.zernioKeys.find(k => k.label === "Full Owner");
+  const start = await fetch(base + "/api/connections/zernio/start?platform=tiktok&key=" + full.id, { headers: who, redirect: "manual" });
+  assert.match(decodeURIComponent(start.headers.get("location")), /connect_error=The Zernio account Full Owner is full: its free plan holds 2 social accounts\. Add a payment method .* or add another Zernio key/);
+  assert.equal((await dash({ action: "removeZernioKey", id: full.id })).status, 200);
 });
 
 test("removing a key removes its accounts; the others keep posting", async () => {

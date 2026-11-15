@@ -31,6 +31,12 @@ export async function GET(request:Request){
   }});
  }catch(error){
   console.error("Zernio connect failed",error);
-  return back(error instanceof ZernioError&&error.keyInvalid?"Zernio refused the key "+config.label+". Remove it and add a new one under Connections.":"Couldn't start connecting "+VIDEO_PLATFORMS[platform]+". Please try again.");
+  if(error instanceof ZernioError){
+   if(error.keyInvalid)return back("Zernio refused the key "+config.label+". Remove it and add a new one under Connections.");
+   // Say why, and the two ways out: pay on Zernio, or connect under another (free) Zernio key.
+   if(error.accountLimit)return back("The Zernio account "+config.label+" is full: its free plan holds 2 social accounts. Add a payment method at zernio.com → Billing, or add another Zernio key under Connections and connect "+VIDEO_PLATFORMS[platform]+" under that key.");
+   return back("Couldn't start connecting "+VIDEO_PLATFORMS[platform]+": "+error.message.replace(/^Zernio: /,"").slice(0,200));
+  }
+  return back("Couldn't start connecting "+VIDEO_PLATFORMS[platform]+". Please try again.");
  }
 }

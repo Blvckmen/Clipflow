@@ -8,7 +8,7 @@
 // other keys share the /__accounts list (and the accounts they connect).
 import { createServer } from "node:http";
 
-export function startFakeZernio({ port = 0, apiKey = "sk_test", keys = { [apiKey]: "Test Owner" }, isolated = [] } = {}) {
+export function startFakeZernio({ port = 0, apiKey = "sk_test", keys = { [apiKey]: "Test Owner" }, isolated = [], limits = {} } = {}) {
   const log = [], posts = new Map(), byKey = new Map(), modes = new Map();
   let accounts = [];
   // Which accounts a key can see and use.
@@ -40,6 +40,8 @@ export function startFakeZernio({ port = 0, apiKey = "sk_test", keys = { [apiKey
     if (path === "/api/v1/profiles" && req.method === "GET") return send(res, 200, { profiles: [{ _id: "prof-1", name: "Default", isDefault: true }] });
     const connect = /^\/api\/v1\/connect\/([a-z]+)$/.exec(path);
     if (connect && req.method === "GET") {
+      // Like Zernio's free plan: a key with a limit can't connect more accounts than that.
+      if (limits[auth] !== undefined && accounts.filter(a => visible(a, auth)).length >= limits[auth]) return send(res, 402, { error: "Add a payment method to connect more than " + limits[auth] + " accounts.", code: "PAYMENT_REQUIRED", reason: "free_tier_exceeded" });
       if (url.searchParams.get("profileId") !== "prof-1" || !/^https?:\/\//.test(url.searchParams.get("redirect_url") ?? "")) return send(res, 400, { error: "profileId and an absolute redirect_url are required", code: "INVALID_REDIRECT_URL" });
       return send(res, 200, { authUrl: "http://127.0.0.1:" + server.address().port + "/__authorize?platform=" + connect[1] + "&k=" + encodeURIComponent(auth) + "&redirect=" + encodeURIComponent(url.searchParams.get("redirect_url")), state: "st" });
     }

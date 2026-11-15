@@ -16,6 +16,8 @@ export class ZernioError extends Error {
   get accountInvalid() { return this.code === "ACCOUNT_DISCONNECTED" || this.code === "ACCOUNT_NOT_ENABLED_FOR_POSTING"; }
   // The same Idempotency-Key is still being processed; ask again shortly.
   get inFlight() { return this.status === 409 && this.code === "idempotency_conflict"; }
+  // The Zernio account has no room for another social account (the free tier holds 2) without a payment method.
+  get accountLimit() { return this.status === 402 || this.code === "PAYMENT_REQUIRED"; }
 }
 
 async function call<T>(config: ZernioConfig, path: string, init: RequestInit & { idempotencyKey?: string } = {}): Promise<{ status: number; body: T }> {
