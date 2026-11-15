@@ -7,18 +7,29 @@ import { fileURLToPath } from "node:url";
 import { channelUrl, clipHash, probeResult } from "./core.mjs";
 import { pickWindow, snapToSentences } from "./highlights.mjs";
 import { defaultEdit, defaultStyle, normalizeStyle } from "./edit.mjs";
-import { renderClip, videoInfo } from "./render.mjs";
+import { encodeTimeout, renderClip, videoInfo } from "./render.mjs";
 const run=promisify(execFile);
 export const streamlink=process.env.STREAMLINK||"streamlink";
 const python=process.env.PYTHON||"python", script=name=>fileURLToPath(new URL("./"+name,import.meta.url));
 // Seconds of extra footage kept either side of the chosen moment, so the editor can widen the trim.
 export const SOURCE_PAD=6;
-// Asks streamlink whether the channel has playable streams, without downloading any media.
+// Asks streamlink whether the channel has playable streams, without downloading any media. A Twitch check takes
+// 10-20 seconds and can take much longer on a slow connection or a busy machine, so it gets a generous limit.
+export const PROBE_TIMEOUT_MS=90_000;
 export async function probeLive(url,signal) {
-  let stdout;
-  try { ({stdout}=await run(streamlink,["--json","--http-timeout","15",channelUrl(url)],{signal,timeout:45_000,windowsHide:true,maxBuffer:1<<20})); }
-  catch (error) { stdout=error.stdout; }  // streamlink exits 1 for offline channels but still prints JSON.
-  try { return probeResult(JSON.parse(stdout||"null")); } catch { return probeResult(null); }
+  let stdout,failure=null;
+  try { ({stdout}=await run(streamlink,["--json","--http-timeout","20",channelUrl(url)],{signal,timeout:PROBE_TIMEOUT_MS,windowsHide:true,maxBuffer:1<<20})); }
+  catch (error) {
+    stdout=error.stdout;  // streamlink exits 1 for offline channels but still prints JSON.
+    failure=error.killed||error.name==="AbortError"?"streamlink took longer than "+PROBE_TIMEOUT_MS/1000+"s"
+     :error.code==="ENOENT"?"streamlink not found ("+streamlink+"); set STREAMLINK to its full path"
+     :String(error.stderr||"").trim().split(/\r?\n/).pop()||error.message||null;
+  }
+  let result;
+  try { result=probeResult(JSON.parse(stdout||"null")); } catch { result=probeResult(null); }
+  // Say why there was no answer, rather than only that there wasn't one.
+  if(result.status==="error"&&!stdout&&failure)result.message=failure.slice(0,300);
+  return result;
 }
 // Transcript words inside [from, to] of the window, shifted so 0 is `from`: [[start, end, text], ...].
 export function sourceWords(segments,from,to) {
@@ -61,7 +72,7 @@ export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infi
     const {start,end}=snapToSentences(first,first+duration,segments,{minLen:Math.max(15,duration-8),maxLen:Math.min(90,duration+8),total});
     const from=Math.max(0,start-SOURCE_PAD), to=Math.min(total,end+SOURCE_PAD);
     // Frequent keyframes keep seeking in the editor responsive.
-    await command("ffmpeg",["-hide_banner","-loglevel","error","-y","-ss",String(from),"-i",raw,"-t",String(to-from),"-vf","scale=1280:1280:force_original_aspect_ratio=decrease:force_divisible_by=2","-c:v","libx264","-preset","veryfast","-crf","23","-maxrate","3000k","-bufsize","6000k","-g","30","-c:a","aac","-b:a","128k","-movflags","+faststart",source],{signal}).done;
+    await command("ffmpeg",["-hide_banner","-loglevel","error","-y","-ss",String(from),"-i",raw,"-t",String(to-from),"-vf","scale=1280:1280:force_original_aspect_ratio=decrease:force_divisible_by=2","-c:v","libx264","-preset","veryfast","-crf","23","-maxrate","3000k","-bufsize","6000k","-g","30","-c:a","aac","-b:a","128k","-movflags","+faststart",source],{signal,timeout:encodeTimeout(to-from)}).done;
     const info=await videoInfo(source,signal);
     const words=sourceWords(segments,from,to);
     let base=null;

@@ -10,6 +10,9 @@ import { buildAss, filterGraph, needsSubtitles } from "./edit.mjs";
 const run = promisify(execFile);
 
 export const MAX_CLIP_BYTES = 32 * 1024 * 1024;
+// How long an encode of `seconds` of video may take. A busy older laptop encodes 720p at about a third of real
+// time, so a fixed limit cuts long clips off; allow 20s per second of video, and never less than 5 minutes.
+export const encodeTimeout = seconds => Math.max(300_000, Math.ceil(seconds) * 20_000);
 
 export async function videoInfo(file, signal) {
   try {
@@ -29,7 +32,7 @@ export async function renderClip(source, { edit, words, width, height }, out, si
     await command("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-ss", String(edit.trim.start), "-t", String(length), "-i", source,
       "-filter_complex", filterGraph(edit, { width, height }, subtitles), "-map", "[vout]", "-map", "0:a?",
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-maxrate", "2500k", "-bufsize", "5000k", "-r", "30",
-      "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", basename(out)], { signal, cwd: dir }).done;
+      "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", basename(out)], { signal, cwd: dir, timeout: encodeTimeout(length) }).done;
   } finally { if (subtitles) await rm(join(dir, ass), { force: true }); }
   const size = (await stat(out)).size;
   if (size < 1024 || size > MAX_CLIP_BYTES) throw new Error("Rendered clip size outside allowed range (" + size + " bytes)");

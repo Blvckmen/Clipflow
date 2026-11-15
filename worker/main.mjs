@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { Store, allowed, channelUrl, dueForProbe, plan, retryDelay, validateControl } from "./core.mjs";
 import { chatSpike, perSecond } from "./highlights.mjs";
 import { openChat } from "./chat.mjs";
-import { probeLive, processWindow, streamlink } from "./media.mjs";
+import { PROBE_TIMEOUT_MS, probeLive, processWindow, streamlink } from "./media.mjs";
 import { normalizeEdit } from "./edit.mjs";
 import { renderClip, videoInfo } from "./render.mjs";
 import { Recorder } from "./recorder.mjs";
@@ -31,6 +31,9 @@ const store = new Store(dataDir);
 const sessions = new Map(), blockedUntil = new Map(), failures = new Map();
 // streamer id -> { status: live|recording|offline|error, checkedAt (ms), title }; `unreported` holds ids changed since the last status post.
 const live = new Map(), unreported = new Set();
+// streamer id -> live checks failed in a row. A failed check is retried on the next cycle (POLL_SECONDS) rather
+// than after the full LIVE_CHECK_SECONDS.
+const probeErrors = new Map(), PROBE_ERRORS_SHOWN = 3;
 // CPU-heavy work, handled one at a time: extracted windows to turn into clips, and re-renders requested from the
 // dashboard editor ({ kind: "render", id, rev, edit, words, source }).
 const jobs = [];
@@ -61,11 +64,25 @@ async function probe(streamers) {
   const queue = [...streamers];
   await Promise.all(Array.from({ length: Math.min(probeConcurrency, queue.length) }, async () => {
     for (let s; (s = queue.shift()) && !stopping;) {
-      const result = await probeLive(s.url, AbortSignal.timeout(60_000)).catch(error => ({ status: "error", title: null, message: error.message }));
-      const before = live.get(s.id)?.status;
+      const result = await probeLive(s.url, AbortSignal.timeout(PROBE_TIMEOUT_MS + 10_000)).catch(error => ({ status: "error", title: null, message: error.message }));
+      const prev = live.get(s.id), before = prev?.status;
+      if (result.status === "error") {
+        // One slow or garbled answer proves nothing: keep the last known status and ask again shortly. Only a run
+        // of failures is shown as "Check failed".
+        const count = (probeErrors.get(s.id) ?? 0) + 1;
+        probeErrors.set(s.id, count);
+        if (count < PROBE_ERRORS_SHOWN) {
+          live.set(s.id, { status: before ?? "error", title: prev?.title ?? null, checkedAt: Date.now() - liveCheckMs });
+          console.warn("Live check for " + s.url + " had no answer (" + result.message + "); trying again next cycle");
+          continue;
+        }
+        setLive(s.id, "error");
+        problem("Live check failed " + count + " times in a row for " + s.url + ": " + result.message);
+        continue;
+      }
+      probeErrors.delete(s.id);
       setLive(s.id, result.status, result.title);
-      if (result.status === "error") problem("Live check failed for " + s.url + ": " + result.message);
-      else if (before !== result.status) console.log("Live check:", s.url, "is", result.status + (result.title ? " (" + result.title + ")" : ""));
+      if (before !== result.status) console.log("Live check:", s.url, "is", result.status + (result.title ? " (" + result.title + ")" : ""));
     }
   }));
 }
