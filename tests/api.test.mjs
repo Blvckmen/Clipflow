@@ -488,6 +488,27 @@ describe("split-screen backgrounds", () => {
     assert.deepEqual([job.edit.frame.mode, job.edit.captions.y], ["split", 0.5]);
     await dash({ action: "deleteClip", id: clip.id });
   });
+  test("background lengths are recorded, and other clips are offered with theirs", async () => {
+    const timed = await fetch(base + "/api/backgrounds", { method: "POST", headers: { cookie, "content-type": "video/mp4", "x-file-name": "Long%20loop.mp4", "x-duration": "62.345" }, body: Buffer.alloc(4000, 1) });
+    const long = (await timed.json()).backgrounds.find(b => b.name === "Long loop");
+    assert.equal(long.duration, 62.35);
+    // A video uploaded before lengths were recorded gets one from Settings, once.
+    assert.equal(bg.duration ?? null, null);
+    assert.equal((await dash({ action: "backgroundLength", id: bg.id, duration: 30 })).status, 200);
+    assert.equal((await dash({ action: "backgroundLength", id: bg.id, duration: 99 })).status, 200);
+    const config = await (await worker("/api/worker/config")).json();
+    assert.equal(config.backgrounds.find(b => b.id === bg.id).duration, 30, "an existing length isn't overwritten");
+    // Clips that can play underneath another one: those with a stored source, never the clip itself.
+    const source = Buffer.alloc(9000, 5), edit = defaultEdit(defaultStyle(), { trimStart: 6, trimEnd: 36 });
+    const make = async () => { const { clip } = await reportClip(Buffer.alloc(5000, 4), { edit, transcript: [], source: { width: 1920, height: 1080, duration: 42, sha: sha256(source), size: source.length } }); await worker("/api/worker/clips/" + clip.id + "/source", { method: "PUT", headers: { "content-type": "video/mp4" }, body: source }); return clip; };
+    const a = await make(), b = await make();
+    const offered = await (await fetch(base + "/api/backgrounds?for=" + a.id, { headers: { cookie } })).json();
+    assert.ok(offered.clips.some(c => c.id === b.id && c.duration === 42), "the other clip, by its source length");
+    assert.ok(!offered.clips.some(c => c.id === a.id), "not itself");
+    assert.equal((await fetch(base + "/api/backgrounds", { headers: { cookie } }).then(r => r.json())).clips, undefined, "only when asked");
+    await dash({ action: "bulkClips", ids: [a.id, b.id], op: "delete" });
+    await dash({ action: "deleteBackground", id: long.id });
+  });
   test("deleting a background removes it everywhere", async () => {
     assert.equal((await dash({ action: "deleteBackground", id: bg.id })).status, 200);
     assert.equal((await dash()).body.backgrounds.some(b => b.id === bg.id), false);

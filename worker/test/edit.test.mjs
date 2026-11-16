@@ -117,5 +117,7 @@ test("split screen: the stream covers the top half and a background video the bo
   assert.match(filterGraph(edit, { width: 1920, height: 1080 }, null), /boxblur/, "no background video: blurred fill instead");
   assert.equal(normalizeStyle({ frame: { mode: "split", background: "0b5A6acf-19ee-570a-9e28-aaf4c6c5765c" } }).frame.background, "0b5a6acf-19ee-570a-9e28-aaf4c6c5765c");
   assert.throws(() => normalizeStyle({ frame: { mode: "split", background: "../etc/passwd" } }), /Background video/);
+  assert.equal(normalizeStyle({ frame: { mode: "split", background: "clip:0b5a6acf-19ee-570a-9e28-aaf4c6c5765c" } }).frame.background, "clip:0b5a6acf-19ee-570a-9e28-aaf4c6c5765c", "a gallery clip");
+  assert.throws(() => normalizeStyle({ frame: { mode: "split", background: "clip:../x" } }));
   assert.equal(normalizeStyle({ frame: { mode: "fit" } }).frame.background, null, "older styles get no background");
 });

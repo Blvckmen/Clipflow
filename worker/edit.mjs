@@ -12,8 +12,9 @@
 export const W = 720, H = 1280;
 export const FONTS = ["Arial", "Impact", "Verdana", "Trebuchet MS", "Georgia", "Comic Sans MS", "DejaVu Sans"];
 // "split": the stream fills the top half and a looping background video (from the workspace's library) the bottom
-// half. frame.background is that video's id, or null to let the worker pick one for the clip (the same one each
-// time it renders that clip).
+// half. frame.background is a library video's id, "clip:<id>" for another gallery clip, or null to let the worker
+// pick a library video for the clip (the same one each time it renders that clip). Only videos at least as long as
+// the clip are used; longer ones are cut to its length.
 export const FRAMINGS = ["blur", "crop", "fit", "split"];
 export const ANIMATIONS = ["none", "pop", "karaoke", "word"];
 export const MIN_CLIP = 5, MAX_CLIP = 90;
@@ -50,7 +51,8 @@ const color = (v, name) => { if (typeof v !== "string" || !/^#[0-9a-f]{6}$/i.tes
 const pick = (v, list, name) => { if (!list.includes(v)) fail(name + " is not a supported value"); return v; };
 const text = (v, max, name) => { if (typeof v !== "string") fail(name + " must be text"); return v.replace(/[\r\n]+/g, " ").replace(/[{}\\]/g, "").slice(0, max); };
 const obj = (v, name) => { if (!v || typeof v !== "object" || Array.isArray(v)) fail(name + " is missing"); return v; };
-const ref = (v, name) => { if (v === null || v === undefined) return null; if (typeof v !== "string" || !/^[0-9a-f-]{36}$/i.test(v)) fail(name + " is not valid"); return v.toLowerCase(); };
+// A background video: a library video's id, or "clip:<id>" for another clip from the gallery.
+const ref = (v, name) => { if (v === null || v === undefined) return null; if (typeof v !== "string" || !/^(clip:)?[0-9a-f-]{36}$/i.test(v)) fail(name + " is not valid"); return v.toLowerCase(); };
 
 // Validates a style from an untrusted client (or an older saved one), filling any missing part from the defaults.
 export function normalizeStyle(input, base = defaultStyle()) {

@@ -40,6 +40,8 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("bulkClips"),ids:clipIds,op:z.enum(["approve","reject","pending","delete","captionsOn","captionsOff","frame"]),frame:z.enum(["blur","crop","fit","split"]).optional()}),
  // Removes a split-screen background video from the library (clips using it switch to another one).
  z.object({action:z.literal("deleteBackground"),id:z.string().uuid()}),
+ // A library video's length, measured in the browser for videos uploaded before lengths were recorded.
+ z.object({action:z.literal("backgroundLength"),id:z.string().uuid(),duration:z.number().positive().max(36000)}),
  // Re-reads the accounts under every Zernio key of the workspace (new ones added, removed ones marked).
  z.object({action:z.literal("syncZernio")}),
  // Turns subtitles off (or on) in every editable clip's edit and queues a re-render. "unposted" leaves clips that
@@ -82,7 +84,7 @@ export async function GET(){
   const keys=(await listKeys(db,owner)).map(k=>({id:k.id,label:k.label,created_at:k.created_at,last_error:k.last_error,accounts:a.results.filter(x=>x.zernio_key_id===k.id).length}));
   const site=!keys.length&&!!siteConnection(env);
   const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,style:parse(p.style)}:{...defaults,style:null};
-  return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(x=>({...x,captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored})),storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,analytics:await analyticsSummary(db,owner),
+  return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(x=>({...x,captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored})),storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,duration,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,analytics:await analyticsSummary(db,owner),
    // Whole-stream recordings (their heat strips load with GET /api/recordings/<id>) and clips asked for from them.
    recordings:(await db.prepare("SELECT r.id,r.streamer_id,s.name AS streamer,r.title,r.started_at,r.ended_at,r.duration,r.size,r.state,r.error,r.preview_key IS NOT NULL AS preview,r.upload_id IS NOT NULL AS uploading,r.expires_at FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.owner=? ORDER BY r.started_at DESC LIMIT 100").bind(owner).all<Record<string,unknown>>()).results.map(x=>({...x,preview:!!x.preview,uploading:!!x.uploading})),
    recordingRequests:(await db.prepare("SELECT id,recording_id,kind,start,end,count,state,error,clips,created_at,updated_at FROM recording_requests WHERE owner=? ORDER BY created_at DESC LIMIT 200").bind(owner).all()).results,
@@ -293,6 +295,11 @@ export async function POST(request:Request){
     message=(k?what+clips(k)+". The worker re-renders them over the next few minutes; queued posts wait for the new version.":"No clips changed.")
      +(skipped?" "+clips(skipped)+" left as they were (already like that"+(needsWords?", no transcript":"")+", or can't be edited).":"");
    }
+  }
+  if(payload.action==="backgroundLength"){
+   // Quiet bookkeeping: no activity entry, and only fills in a length that isn't known yet.
+   await db.prepare("UPDATE backgrounds SET duration=? WHERE id=? AND owner=? AND duration IS NULL").bind(Math.round(payload.duration*100)/100,payload.id,owner).run();
+   return Response.json({ok:true,message:""});
   }
   if(payload.action==="deleteBackground"){
    const row=await db.prepare("SELECT key,name FROM backgrounds WHERE id=? AND owner=?").bind(payload.id,owner).first<{key:string;name:string}>();

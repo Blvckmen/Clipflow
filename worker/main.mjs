@@ -476,11 +476,16 @@ async function pruneRecordings() {
 // clip isn't split screen or the library is empty; a background that can't be fetched falls back to the blurred
 // fill rather than failing the clip.
 async function backgroundFor(edit, clipId) {
-  const entry = chooseBackground(edit, clipId, config?.backgrounds);
+  const entry = chooseBackground(edit, clipId, config?.backgrounds, edit.trim.end - edit.trim.start);
   if (!entry) return null;
   try {
-    const path = await localBackground(dataDir, entry, async id => {
-      const response = await api("/api/worker/backgrounds/" + id, { timeout: 300_000 });
+    const path = await localBackground(dataDir, entry, async e => {
+      // Another gallery clip: its unframed source, from this worker if it still has it, else from the dashboard.
+      if (e.kind === "clip") {
+        const local = store.get(e.clip), file = local && join(dirname(local.path), "source.mp4");
+        if (file && await access(file).then(() => true, () => false)) return readFile(file);
+      }
+      const response = await api(e.kind === "clip" ? "/api/worker/clips/" + e.clip + "/source" : "/api/worker/backgrounds/" + e.id, { timeout: 300_000 });
       if (!response.ok) throw new Error("HTTP " + response.status);
       return Buffer.from(await response.arrayBuffer());
     });

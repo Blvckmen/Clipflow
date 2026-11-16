@@ -19,6 +19,15 @@ test("a clip keeps the same background each render, unless one was chosen", () =
   assert.equal(chooseBackground(split(null), "clip-a", []), null, "empty library: no background");
 });
 
+test("only backgrounds at least as long as the clip are picked; gallery clips can be chosen", () => {
+  const timed = [{ ...lib[0], duration: 20 }, { ...lib[1], duration: 60 }, { ...lib[2] }];
+  for (let i = 0; i < 30; i++) assert.notEqual(chooseBackground(split(null), "c" + i, timed, 45)?.id, lib[0].id, "the 20s video is too short for a 45s clip");
+  assert.equal(chooseBackground(split(lib[0].id), "c", timed, 45).id === lib[0].id, false, "even when chosen, a too-short video isn't used");
+  assert.equal(chooseBackground(split(null), "c", [{ ...lib[0], duration: 10 }], 45), null, "nothing long enough: blurred fill");
+  const fromGallery = chooseBackground(split("clip:" + lib[1].id), "c", [], 45);
+  assert.deepEqual(fromGallery, { id: "clip:" + lib[1].id, kind: "clip", clip: lib[1].id, size: null });
+});
+
 test("the start point leaves room for the whole clip", () => {
   for (let i = 0; i < 50; i++) { const s = backgroundStart("c" + i, 60, 45); assert.ok(s >= 0 && s <= 15, String(s)); }
   assert.equal(backgroundStart("c", 20, 45), 0, "shorter than the clip: start at the beginning and loop");
@@ -34,6 +43,11 @@ test("backgrounds are downloaded once and fetched again only if the library's co
   await localBackground(dir, entry, fetchFile);
   assert.equal(fetches, 1, "cached");
   await assert.rejects(localBackground(dir, { ...entry, size: 9 }, fetchFile), /incompletely/, "a size mismatch is refused, not cached");
+  const clipEntry = { id: "clip:" + lib[1].id, kind: "clip", clip: lib[1].id, size: null };
+  const clipFile = await localBackground(dir, clipEntry, fetchFile);
+  assert.match(clipFile, /clip-22222222/);
+  await localBackground(dir, clipEntry, fetchFile);
+  assert.equal(fetches, 3, "a gallery clip's source is fetched once too");
 });
 
 test("the library list from the dashboard is checked", () => {

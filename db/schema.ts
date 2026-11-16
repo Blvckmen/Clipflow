@@ -1,4 +1,4 @@
-import { integer, primaryKey, sqliteTable, text, uniqueIndex, index } from "drizzle-orm/sqlite-core";
+import { integer, primaryKey, real, sqliteTable, text, uniqueIndex, index } from "drizzle-orm/sqlite-core";
 export const streamers = sqliteTable("streamers", {
  id:text("id").primaryKey(),owner:text("owner").notNull(),name:text("name").notNull(),url:text("url").notNull(),platform:text("platform").notNull(),status:text("status").notNull().default("armed"),createdAt:text("created_at").notNull(),
  // Reported by the worker: live, recording, offline, or error.
@@ -117,4 +117,6 @@ export const recordingRequests=sqliteTable("recording_requests",{
 export const backgrounds=sqliteTable("backgrounds",{
  id:text("id").primaryKey(),owner:text("owner").notNull(),name:text("name").notNull(),key:text("key").notNull(),size:integer("size").notNull(),
  contentType:text("content_type").notNull(),createdAt:text("created_at").notNull(),
+ // Length in seconds, measured by the browser that uploaded it (or later in Settings); null until known.
+ duration:real("duration"),
 },t=>[index("backgrounds_owner").on(t.owner)]);

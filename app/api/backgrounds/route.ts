@@ -4,10 +4,16 @@ export const dynamic="force-dynamic";
 // The workspace's split-screen background videos. Upload: POST the MP4 as the request body, its name in
 // x-file-name. Cloudflare takes request bodies up to 100 MB, so files are capped a little below that.
 const MAX_BACKGROUND_BYTES=95*1024*1024, MAX_BACKGROUNDS=20;
-const list=(owner:string)=>database().prepare("SELECT id,name,size,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all();
-export async function GET(){
+const list=(owner:string)=>database().prepare("SELECT id,name,size,duration,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all();
+// ?for=<clip id>: also the gallery clips that can play under that clip (another clip's unframed source), with their
+// lengths so the editor offers only ones at least as long.
+export async function GET(request:Request){
  const user=await currentUser();if(!user)return Response.json({error:"Sign in first."},{status:401});
- return Response.json({backgrounds:(await list(user.userId)).results},{headers:{"Cache-Control":"private, no-store"}});
+ const forClip=new URL(request.url).searchParams.get("for");
+ const clips=forClip?(await database().prepare(`SELECT c.id,s.name AS streamer,c.created_at,coalesce(json_extract(c.source_meta,'$.duration'),c.duration) AS duration
+   FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner
+   WHERE c.owner=? AND c.id!=? AND c.source_key IS NOT NULL ORDER BY c.created_at DESC LIMIT 100`).bind(user.userId,forClip).all()).results:undefined;
+ return Response.json({backgrounds:(await list(user.userId)).results,...(clips&&{clips})},{headers:{"Cache-Control":"private, no-store"}});
 }
 export async function POST(request:Request){
  const user=await currentUser();if(!user)return Response.json({error:"Sign in first."},{status:401});
@@ -25,9 +31,11 @@ export async function POST(request:Request){
  // Stream straight into R2; the declared length is checked against what arrives.
  const stored=await store.put(key,request.body,{httpMetadata:{contentType:"video/mp4"}});
  if(!stored||stored.size!==size){await store.delete(key);return Response.json({error:"The upload was incomplete. Please try again."},{status:400});}
+ // The uploading browser reads the video's length and sends it along.
+ const seconds=Number(request.headers.get("x-duration")),duration=Number.isFinite(seconds)&&seconds>0&&seconds<36000?Math.round(seconds*100)/100:null;
  const iso=new Date().toISOString();
  await db.batch([
-  db.prepare("INSERT INTO backgrounds (id,owner,name,key,size,content_type,created_at) VALUES (?,?,?,?,?,?,?)").bind(id,owner,name,key,size,type,iso),
+  db.prepare("INSERT INTO backgrounds (id,owner,name,key,size,content_type,created_at,duration) VALUES (?,?,?,?,?,?,?,?)").bind(id,owner,name,key,size,type,iso,duration),
   db.prepare("INSERT INTO events (id,owner,message,created_at) VALUES (?,?,?,?)").bind(crypto.randomUUID(),owner,"Added background video "+name+" to the split-screen library.",iso),
  ]);
  return Response.json({ok:true,message:"Added "+name+" to your background library.",backgrounds:(await list(owner)).results});
