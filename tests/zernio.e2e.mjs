@@ -136,6 +136,33 @@ test("a clip you approve yourself posts to TikTok directly, with consent given",
   await dash({ action: "control", control: "running" });
 });
 
+test("a post held by TikTok's daily limit waits for it, without timing out, retrying or starting others", async () => {
+  // Past a full day, so the posts here no longer count towards later tests' daily limits.
+  const until = new Date(clock + 25 * 3600_000).toISOString();
+  await control("/__mode?platform=tiktok&mode=held&until=" + until);
+  const first = (await addClip()).clip;
+  await cron(60_000);
+  let { tiktok } = await postsFor(first.id);
+  assert.equal(tiktok.state, "processing");
+  assert.match(tiktok.error, /daily posting limit/);
+  const second = (await addClip()).clip;
+  await cron(61_000); await cron(61_000);
+  assert.equal((await postsFor(second.id)).tiktok.state, "queued", "nothing else starts while a post is held");
+  // Hours later, before the hold ends: still waiting, not timed out or sent again.
+  await cron(3 * 3600_000);
+  ({ tiktok } = await postsFor(first.id));
+  assert.deepEqual([tiktok.state, tiktok.attempts], ["processing", 0]);
+  assert.equal(Object.values((await fakeLog()).posts).filter(p => p.platform === "tiktok" && p.params.mediaItems[0].url.includes(first.id)).length, 1, "sent to Zernio once");
+  // Once the hold is over it goes out, and the next one starts.
+  await control("/__release"); await control("/__mode?platform=tiktok&mode=pending");
+  await cron(Date.parse(until) - clock + 120_000);
+  ({ tiktok } = await postsFor(first.id));
+  assert.equal(tiktok.state, "published");
+  await cron(61_000);
+  assert.notEqual((await postsFor(second.id)).tiktok.state, "queued");
+  await cron(61_000); await cron(61_000);
+});
+
 test("a rejected post is retried with a fresh key, then marked failed and can be retried by hand", async () => {
   await control("/__mode?platform=youtube&mode=fail");
   const { clip } = await addClip();

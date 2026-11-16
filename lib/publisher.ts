@@ -19,7 +19,8 @@ type AccountRow = { id: string; owner: string; provider: string; platform: strin
 type PostRow = { id: string; clip_id: string; state: string; container_id: string | null; attempts: number; updated_at: string };
 type ClipInfo = { reviewed: boolean; streamer: string; platform: string };
 // What an adapter reports back: done, still going (check again later), or failed with a reason.
-type Outcome = { state: "published"; mediaId: string | null; permalink: string | null; externalId?: string } | { state: "processing"; containerId: string } | { state: "failed"; message: string } | { state: "wait" };
+type Outcome = { state: "published"; mediaId: string | null; permalink: string | null; externalId?: string } | { state: "processing"; containerId: string; until?: string; note?: string } | { state: "failed"; message: string } | { state: "wait"; until?: string; note?: string };
+// A post the platform is holding (its own daily posting limit): `until` is when it goes out, `note` says why.
 type Adapter = {
   timeoutMs: number; linkTtlMs: number;
   start(post: PostRow, link: string, caption: string, clip: ClipInfo): Promise<Outcome>;
@@ -31,6 +32,9 @@ type Adapter = {
 const CHECK_EVERY_MS = 60_000;   // Instagram recommends checking a container about once a minute
 const MAX_ATTEMPTS = 3;
 const REFRESH_WITHIN_MS = 10 * 24 * 3600_000;
+// Posts a platform accepts per account per rolling day through its API, whatever the workspace limit says. More
+// than that are held by the platform (and Zernio) until the next day.
+const PLATFORM_DAILY: Record<string, number> = { tiktok: 15 };
 
 export function instagramConfig(env: Env): instagram.InstagramConfig | null {
   if (!env.INSTAGRAM_APP_ID || !env.INSTAGRAM_APP_SECRET || !env.TOKEN_KEY) return null;
@@ -116,8 +120,10 @@ function zernioAdapter(config: Connection, account: AccountRow): Adapter {
       return { state: "published", mediaId: result?.platformPostId ?? null, permalink: result?.platformPostUrl ?? null, externalId: post._id };
     if (post.status === "failed" || post.status === "partial" || post.status === "cancelled" || result?.status === "failed")
       return { state: "failed", message: zernio.platformError(post) };
-    // scheduled / publishing / pending: Zernio is still working on it (it retries transient errors itself).
-    return { state: "processing", containerId: post._id };
+    // scheduled / publishing / pending: Zernio is still working on it (it retries transient errors itself), or
+    // holding it until the platform's daily limit resets.
+    const until = zernio.heldUntil(post);
+    return until ? { state: "processing", containerId: post._id, until, note: "Waiting for " + (zernio.VIDEO_PLATFORMS[account.platform] ?? account.platform) + "'s daily posting limit to reset; goes out after " + until.slice(0, 16).replace("T", " ") + " UTC." } : { state: "processing", containerId: post._id };
   };
   return {
     // Zernio may retry a transient failure itself later, so the video link stays valid for a day.
@@ -138,7 +144,7 @@ function zernioAdapter(config: Connection, account: AccountRow): Adapter {
     },
     async check(post) {
       const result = outcome(await zernio.getPost(config, post.container_id!));
-      return result.state === "processing" ? { state: "wait" } : result;
+      return result.state === "processing" ? { state: "wait", until: result.until, note: result.note } : result;
     },
     accountProblem(error) {
       if (!(error instanceof zernio.ZernioError)) return null;
@@ -174,7 +180,7 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
       // The Zernio post id (when there is one) is kept to match the post's analytics later.
       await db.prepare("UPDATE posts SET state='published',media_id=?,permalink=?,container_id=coalesce(?,container_id),error=NULL,published_at=?,updated_at=? WHERE id=?").bind(result.mediaId, result.permalink, result.externalId ?? null, iso, iso, post.id).run();
     else if (result.state === "processing")
-      await db.prepare("UPDATE posts SET state='processing',container_id=?,next_attempt_at=?,updated_at=? WHERE id=?").bind(result.containerId, new Date(now + CHECK_EVERY_MS).toISOString(), iso, post.id).run();
+      await db.prepare("UPDATE posts SET state='processing',container_id=?,next_attempt_at=?,error=?,updated_at=? WHERE id=?").bind(result.containerId, result.until ? new Date(Date.parse(result.until) + CHECK_EVERY_MS).toISOString() : new Date(now + CHECK_EVERY_MS).toISOString(), result.note ?? null, iso, post.id).run();
     else if (result.state === "failed") await fail(post, result.message);
   };
   const handle = async (post: PostRow, error: unknown) => {
@@ -189,11 +195,16 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
     try {
       const result = await adapter.check(processing);
       if (result.state !== "wait") await apply(processing, result);
+      // Held by the platform until a known time: not stuck, so it is checked again then rather than timed out.
+      else if (result.until) await db.prepare("UPDATE posts SET next_attempt_at=?,error=?,updated_at=? WHERE id=?").bind(new Date(Math.max(now + CHECK_EVERY_MS, Date.parse(result.until) + CHECK_EVERY_MS)).toISOString(), result.note ?? null, iso, processing.id).run();
       else if (now - Date.parse(processing.updated_at) > adapter.timeoutMs) await fail(processing, "The platform took too long to process the video.");
       else await db.prepare("UPDATE posts SET next_attempt_at=? WHERE id=?").bind(new Date(now + CHECK_EVERY_MS).toISOString(), processing.id).run();
     } catch (error) { await handle(processing, error); }
     return;
   }
+
+  // One post in flight per account: one being processed or held, even if it isn't due for a check yet, comes first.
+  if (await db.prepare("SELECT 1 FROM posts WHERE account_id=? AND state='processing' LIMIT 1").bind(account.id).first()) return;
 
   // 2. Otherwise start the oldest queued post, within the daily limit.
   const queued = await db.prepare("SELECT id,clip_id,state,container_id,attempts,updated_at FROM posts WHERE account_id=? AND state='queued' AND next_attempt_at<=? ORDER BY created_at LIMIT 1").bind(account.id, iso).first<PostRow>();
@@ -208,7 +219,7 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   if (clip.render_state === "queued") return;
   const since = new Date(now - 24 * 3600_000).toISOString();
   const today = await db.prepare("SELECT count(*) AS n FROM posts WHERE account_id=? AND state='published' AND published_at>=?").bind(account.id, since).first<{ n: number }>();
-  if ((today?.n ?? 0) >= (account.daily_limit ?? 5)) return;
+  if ((today?.n ?? 0) >= Math.min(account.daily_limit ?? 5, PLATFORM_DAILY[account.platform] ?? Infinity)) return;
   try {
     const link = env.PUBLIC_URL!.replace(/\/$/, "") + await signedMediaPath(queued.clip_id, now + adapter.linkTtlMs, env.MEDIA_KEY!);
     const info = { reviewed: !!clip.reviewed_at, streamer: clip.name ?? "a streamer", platform: clip.platform ?? "stream" };

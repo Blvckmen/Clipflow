@@ -86,6 +86,15 @@ export async function listAnalytics(config: ZernioConfig, page: number, limit = 
 
 // The one platform result for this post (Clipflow sends a single account per post).
 export function platformResult(post: ZernioPost) { return post.platforms?.[0]; }
+// When the platform's own posting limit is reached (TikTok: 15 a day through its API), Zernio accepts the post and
+// holds it, saying when it will go out: "... will publish automatically after 2026-11-17T04:05:10.124Z." That time
+// (ISO), or null when the post isn't being held.
+export function heldUntil(post: ZernioPost) {
+  const p = platformResult(post), text = p?.errorMessage || p?.error || "";
+  if (p?.status === "published" || p?.status === "failed") return null;
+  const at = /publish automatically after (\d{4}-\d\d-\d\dT[\d:.]+Z)/i.exec(text)?.[1];
+  return at && Number.isFinite(Date.parse(at)) ? new Date(at).toISOString() : null;
+}
 export function platformError(post: ZernioPost) {
   const p = platformResult(post);
   return p?.errorMessage || p?.error || "Zernio reported the post as " + post.status + ".";

@@ -2,14 +2,15 @@
 // disconnect), for end-to-end tests. Like Zernio, it downloads each post's video URL itself and honours
 // Idempotency-Key. Several API keys are accepted (`keys`: key -> owner name); the log records which one each call used.
 // Control: GET /__log returns calls and posts; POST /__accounts sets the account list (JSON array);
-// POST /__mode?platform=..&mode=published|pending|fail chooses how posts to that platform turn out;
+// POST /__mode?platform=..&mode=published|pending|fail|held chooses how posts to that platform turn out (held: the
+// platform's daily limit is reached, so the post waits until `until`; POST /__release lets held posts go out);
 // GET /__authorize stands in for a platform's sign-in page: it adds the account and redirects back like Zernio.
 // Keys listed in `isolated` are separate Zernio accounts: they see only the accounts connected with them, while the
 // other keys share the /__accounts list (and the accounts they connect).
 import { createServer } from "node:http";
 
 export function startFakeZernio({ port = 0, apiKey = "sk_test", keys = { [apiKey]: "Test Owner" }, isolated = [], limits = {} } = {}) {
-  const log = [], posts = new Map(), byKey = new Map(), modes = new Map();
+  const log = [], posts = new Map(), byKey = new Map(), modes = new Map(), holds = new Map();
   let accounts = [];
   // Which accounts a key can see and use.
   const visible = (a, auth) => isolated.includes(auth) ? a.key === auth : !isolated.includes(a.key);
@@ -23,7 +24,8 @@ export function startFakeZernio({ port = 0, apiKey = "sk_test", keys = { [apiKey
     log.push({ method: req.method, path, auth, idempotencyKey: req.headers["idempotency-key"] ?? null, at: Date.now() });
     if (path === "/__log") return send(res, 200, { log, posts: [...posts.values()] });
     if (path === "/__accounts") { accounts = JSON.parse(body); return send(res, 200, { ok: true }); }
-    if (path === "/__mode") { modes.set(url.searchParams.get("platform"), url.searchParams.get("mode")); return send(res, 200, { ok: true }); }
+    if (path === "/__mode") { modes.set(url.searchParams.get("platform"), url.searchParams.get("mode")); holds.set(url.searchParams.get("platform"), url.searchParams.get("until")); return send(res, 200, { ok: true }); }
+    if (path === "/__release") { for (const p of posts.values()) if (p.held) p.held = false; return send(res, 200, { ok: true }); }
     if (path === "/__authorize") {
       const platform = url.searchParams.get("platform"), back = new URL(url.searchParams.get("redirect"));
       if (url.searchParams.get("deny")) { back.searchParams.set("error", "access_denied"); back.searchParams.set("platform", platform); back.searchParams.set("error_message", "The user cancelled"); }
@@ -68,6 +70,7 @@ export function startFakeZernio({ port = 0, apiKey = "sk_test", keys = { [apiKey
       const post = { _id: id, platform: target.platform, accountId: target.accountId, params, fetchStatus: video.status, bytes, checks: 0 };
       if (!video.ok || bytes < 1024 || mode === "fail") Object.assign(post, { status: "failed", platformStatus: "failed", errorMessage: video.ok ? "Video rejected by platform" : "Media could not be fetched" });
       else if (mode === "pending") Object.assign(post, { status: "scheduled", platformStatus: "pending" });
+      else if (mode === "held") Object.assign(post, { status: "publishing", platformStatus: "pending", held: true, errorMessage: "TikTok allows 15 video posts per account per day through the Business API. This post is queued and will publish automatically after " + holds.get(target.platform) + "." });
       else Object.assign(post, { status: "published", platformStatus: "published", url: "https://example.test/" + target.platform + "/" + id });
       posts.set(id, post); if (key) byKey.set(key, id);
       return send(res, post.status === "published" ? 201 : 207, { post: view(post), message: "ok" });
@@ -85,6 +88,7 @@ export function startFakeZernio({ port = 0, apiKey = "sk_test", keys = { [apiKey
       const post = posts.get(decodeURIComponent(one[1]));
       if (!post) return send(res, 404, { error: "Post not found", code: "not_found" });
       // A pending post finishes on its second check, like a platform that takes a little while.
+      if (post.status === "publishing" && !post.held) Object.assign(post, { status: "published", platformStatus: "published", errorMessage: undefined, url: "https://example.test/" + post.platform + "/" + post._id });
       if (post.status === "scheduled" && ++post.checks >= 2) Object.assign(post, { status: "published", platformStatus: "published", url: "https://example.test/" + post.platform + "/" + post._id });
       return send(res, 200, { post: view(post) });
     }
