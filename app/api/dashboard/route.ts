@@ -30,6 +30,8 @@ const actionSchema=z.discriminatedUnion("action",[
  // `platform` is the pre-multi-account form: it disconnects that platform's only account.
  z.object({action:z.literal("disconnect"),id:z.string().uuid().optional(),platform:z.enum(["instagram"]).optional()}),
  z.object({action:z.literal("retryPost"),id:z.string().min(1).max(64)}),
+ // The owner posted a clip themselves (e.g. in the TikTok app): record it, so it isn't also posted there automatically.
+ z.object({action:z.literal("markPosted"),id:z.string().uuid(),accountId:z.string().uuid()}),
  // Posts a clip's current version to the chosen accounts now: its first post, or again after an edit.
  // draft: send to the accounts' TikTok drafts (to finish in the app) instead of publishing; TikTok accounts only.
  z.object({action:z.literal("postClip"),id:z.string().uuid(),accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)]),draft:z.boolean().optional()}),
@@ -298,6 +300,20 @@ export async function POST(request:Request){
    await bucket()?.delete(row.key);
    statements.push(db.prepare("DELETE FROM backgrounds WHERE id=? AND owner=?").bind(payload.id,owner));
    message="Removed "+row.name+" from the background library. Split-screen clips that used it get another one when they are next rendered.";
+  }
+  if(payload.action==="markPosted"){
+   const clip=await db.prepare("SELECT c.review,s.name FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(payload.id,owner).first<{review:string;name:string|null}>();
+   if(!clip)return Response.json({error:"Clip not found."},{status:404});
+   const account=await db.prepare("SELECT username,platform FROM accounts WHERE id=? AND owner=?").bind(payload.accountId,owner).first<{username:string;platform:string}>();
+   if(!account)return Response.json({error:"That account is not connected."},{status:404});
+   const {results:existing}=await db.prepare("SELECT id,state,round FROM posts WHERE clip_id=? AND account_id=?").bind(payload.id,payload.accountId).all<{id:string;state:string;round:number}>();
+   if(existing.some(p=>p.state==="processing"))return Response.json({error:"Clipflow is already sending this clip to @"+account.username+" (the platform may be holding it). It will finish on its own."},{status:409});
+   const waiting=existing.find(p=>p.state==="queued"||p.state==="failed");
+   // A post waiting in the queue becomes the posted one; otherwise the hand-made post is recorded as a new round.
+   if(waiting)statements.push(db.prepare("UPDATE posts SET state='published',published_at=?,updated_at=?,error=NULL,container_id=NULL,media_id=NULL,permalink=NULL WHERE id=?").bind(iso,iso,waiting.id));
+   else statements.push(db.prepare("INSERT INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at,published_at,round) VALUES (lower(hex(randomblob(16))),?,?,?,?,'published',?,?,?,?,?)").bind(owner,payload.id,account.platform,payload.accountId,iso,iso,iso,iso,existing.length?Math.max(...existing.map(p=>p.round))+1:0));
+   if(clip.review!=="approved")statements.push(db.prepare("UPDATE clips SET review='approved',reviewed_at=? WHERE id=? AND owner=?").bind(iso,payload.id,owner));
+   message="Marked "+(clip.name?clip.name+"'s clip":"the clip")+" as posted to "+(VIDEO_PLATFORMS[account.platform]??account.platform)+" @"+account.username+(waiting?"; it's out of the queue.":".");
   }
   if(payload.action==="retryPost"){
    const post=await db.prepare("SELECT state FROM posts WHERE id=? AND owner=?").bind(payload.id,owner).first<{state:string}>();

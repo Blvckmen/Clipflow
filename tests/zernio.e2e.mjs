@@ -391,6 +391,28 @@ test("an account's own daily limit and spacing pace its posts", async () => {
   await dash({ action: "control", control: "running" });
 });
 
+test("a clip posted by hand in the TikTok app can be marked as posted, and is then not sent automatically", async () => {
+  const tt = (await dash()).body.accounts.find(a => a.platform === "tiktok");
+  await dash({ action: "settings", settings: { ...settings, mode: "review" } });
+  await dash({ action: "control", control: "running" });
+  const { clip } = await addClip();
+  // Queued for TikTok, then posted by hand before Clipflow got to it.
+  assert.equal((await dash({ action: "postClip", id: clip.id, accounts: [tt.id] })).status, 200);
+  const marked = await dash({ action: "markPosted", id: clip.id, accountId: tt.id });
+  assert.equal(marked.status, 200, JSON.stringify(marked.body));
+  assert.match(marked.body.message, /Marked .* as posted to TikTok @tt_clips; it's out of the queue\./);
+  await cron(61_000); await cron(61_000);
+  const rows = (await dash()).body.posts.filter(p => p.clip_id === clip.id && p.platform === "tiktok");
+  assert.deepEqual(rows.map(p => p.state), ["published"], "one post, recorded as published");
+  assert.equal((await sentFor(clip.id)).tiktok, undefined, "never sent to Zernio");
+  // Posting it by hand again records another one.
+  assert.equal((await dash({ action: "markPosted", id: clip.id, accountId: tt.id })).status, 200);
+  assert.equal((await dash()).body.posts.filter(p => p.clip_id === clip.id && p.platform === "tiktok").length, 2);
+  assert.equal((await dash({ action: "markPosted", id: clip.id, accountId: randomUUID() })).status, 404);
+  await dash({ action: "settings", settings });
+  await dash({ action: "control", control: "running" });
+});
+
 test("analytics: published posts get their views and likes from Zernio about hourly", async () => {
   const calls = async () => (await fakeLog()).log.filter(e => e.path === "/api/v1/analytics").length;
   await cron(61 * 60_000);  // more than an hour on: due for a read
@@ -400,7 +422,8 @@ test("analytics: published posts get their views and likes from Zernio about hou
   assert.equal(await calls(), after, "not again within the hour");
   const { analytics, posts } = (await dash()).body;
   // Posts of an account removed earlier can't be read any more; the rest all can.
-  const published = posts.filter(p => p.state === "published" && p.account);
+  // Posts made by hand (marked as posted) have no Zernio record to read numbers from; the rest all do.
+  const published = posts.filter(p => p.state === "published" && p.account && p.permalink);
   assert.ok(published.length > 0);
   assert.ok(published.every(p => p.views === 1000 && p.likes === 50), "every published post is matched to its numbers");
   assert.ok(analytics.totals.measured >= published.length);

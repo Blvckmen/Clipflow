@@ -266,3 +266,13 @@ th.num{text-align:right}
 /* Post dialog: Post and Save to TikTok drafts side by side */
 .post-buttons{display:flex;gap:10px;flex-wrap:wrap}
 .post-buttons>button{flex:1 1 200px}
+/* Post dialog: post it yourself in the TikTok app */
+.share-clip{margin-top:18px;border-top:1px solid var(--border);padding-top:16px;display:flex;flex-direction:column;gap:10px}
+.share-head{display:flex;gap:10px;align-items:flex-start}
+.share-head>svg{color:var(--lime);margin-top:3px;flex-shrink:0}
+.share-head strong{font-size:14px;display:block}
+.share-head small{font-size:12px}
+.share-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.share-mark{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px;color:#c9d3de;background:#1a2216;border:1px solid #33472a;border-radius:7px;padding:10px 12px}
+.share-mark span{flex-basis:100%}
+.share-mark select{font-size:13px;padding:6px 8px}
