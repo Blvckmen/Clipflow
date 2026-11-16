@@ -6,7 +6,8 @@
 //   { v, trim:{start,end}, frame:{mode,zoom,x,y,background}, look:{brightness,contrast,saturation},
 //     captions:{on,preset,font,size,color,highlight,outline,outlineColor,box,boxColor,uppercase,animation,words,y,mask},
 //     hook:{text,seconds,color,bg}, progress:{on,color}, words?:[[start,end,text],...] }
-// A *style* is the reusable part of an edit (everything except trim, hook text and words). Each streamer can have
+// A *style* is the reusable part of an edit (everything except trim, hook text and words; it includes how long the
+// hook stays up). Hook seconds at or past the clip's length keep the hook up for the whole clip. Each streamer can have
 // its own style, so every new clip from that streamer comes out with that streamer's look.
 
 export const W = 720, H = 1280;
@@ -18,6 +19,8 @@ export const FONTS = ["Arial", "Impact", "Verdana", "Trebuchet MS", "Georgia", "
 export const FRAMINGS = ["blur", "crop", "fit", "split"];
 export const ANIMATIONS = ["none", "pop", "karaoke", "word"];
 export const MIN_CLIP = 5, MAX_CLIP = 90;
+// How long a hook title stays up unless the look says otherwise; up to the whole clip.
+export const DEFAULT_HOOK_SECONDS = 5;
 
 // Caption looks. Picking a preset copies its values; every value can then be changed on its own.
 export const PRESETS = {
@@ -37,7 +40,7 @@ export function defaultStyle({ framing = "blur", captions = true } = {}) {
     look: { brightness: 1, contrast: 1, saturation: 1 },
     // Split screen puts captions on the seam between the two videos.
     captions: { on: !!captions, preset: "bold", ...preset, y: framing === "split" ? 0.5 : 0.72, mask: false },
-    hook: { color: "#111111", bg: "#ffffff" },
+    hook: { color: "#111111", bg: "#ffffff", seconds: DEFAULT_HOOK_SECONDS },
     progress: { on: false, color: "#bcfa76" },
   };
 }
@@ -68,20 +71,20 @@ export function normalizeStyle(input, base = defaultStyle()) {
       outline: int(c.outline, 0, 12, "Outline"), outlineColor: color(c.outlineColor, "Outline colour"), box: bool(c.box, "Caption box"), boxColor: color(c.boxColor, "Box colour"),
       uppercase: bool(c.uppercase, "Uppercase"), animation: pick(c.animation, ANIMATIONS, "Animation"), words: int(c.words, 1, 8, "Words per line"), y: num(c.y, 0.08, 0.95, "Caption position"), mask: bool(c.mask, "Profanity filter"),
     },
-    hook: { color: color(h.color, "Hook text colour"), bg: color(h.bg, "Hook background") },
+    hook: { color: color(h.color, "Hook text colour"), bg: color(h.bg, "Hook background"), seconds: num(h.seconds ?? DEFAULT_HOOK_SECONDS, 1, MAX_CLIP, "Hook length") },
     progress: { on: bool(p.on, "Progress bar"), color: color(p.color, "Progress bar colour") },
   };
 }
 
 export function styleOf(edit) {
   const { frame, look, captions, hook, progress } = edit;
-  return { frame, look, captions, hook: { color: hook.color, bg: hook.bg }, progress };
+  return { frame, look, captions, hook: { color: hook.color, bg: hook.bg, seconds: hook.seconds }, progress };
 }
 
 // A first edit for a freshly captured clip: the chosen moment, in the streamer's (or workspace's) style.
 export function defaultEdit(style, { trimStart, trimEnd }) {
   const s = normalizeStyle(style ?? defaultStyle());
-  return { v: 1, trim: { start: round(trimStart), end: round(trimEnd) }, ...s, hook: { text: "", seconds: 3, ...s.hook } };
+  return { v: 1, trim: { start: round(trimStart), end: round(trimEnd) }, ...s, hook: { text: "", ...s.hook } };
 }
 
 // Validates a whole edit against the clip's source length. Throws EditError with a readable message.
@@ -93,7 +96,7 @@ export function normalizeEdit(input, { duration }) {
   if (end - start > MAX_CLIP + 0.01) fail("A clip can be at most " + MAX_CLIP + " seconds long");
   const style = normalizeStyle(e);
   const hook = obj(e.hook ?? {}, "Hook");
-  const out = { v: 1, trim: { start: round(start), end: round(end) }, ...style, hook: { text: text(hook.text ?? "", 90, "Hook text").trim(), seconds: num(hook.seconds ?? 3, 1, 10, "Hook length"), ...style.hook } };
+  const out = { v: 1, trim: { start: round(start), end: round(end) }, ...style, hook: { ...style.hook, text: text(hook.text ?? "", 90, "Hook text").trim(), seconds: num(hook.seconds ?? style.hook.seconds, 1, MAX_CLIP, "Hook length") } };
   if (e.words !== undefined) out.words = normalizeWords(e.words, total);
   return out;
 }

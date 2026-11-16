@@ -364,7 +364,8 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
             {hookNote && <p className="hint" role="status">{hookNote}</p>}
             <label className="wide">Hook title <small>Shown at the top for the first seconds, to stop the scroll</small><input maxLength={90} placeholder="e.g. He did NOT see that coming" value={edit.hook.text} onChange={e => set("hook", { text: e.target.value })} /></label>
             <div className="control-grid">
-              <label>Hook length <span>{edit.hook.seconds}s</span><input type="range" min={1} max={10} step={0.5} value={edit.hook.seconds} onChange={e => set("hook", { seconds: Number(e.target.value) })} /></label>
+              <label>Hook length <span>{edit.hook.seconds >= len ? "Whole clip" : edit.hook.seconds + "s"}</span><input type="range" min={1} max={Math.max(1, Math.min(30, Math.floor(len)))} step={0.5} value={Math.min(edit.hook.seconds, Math.max(1, Math.min(30, Math.floor(len))))} disabled={edit.hook.seconds >= len} onChange={e => set("hook", { seconds: Number(e.target.value) })} />
+                <span className="check-inline"><input type="checkbox" checked={edit.hook.seconds >= len} onChange={e => set("hook", { seconds: e.target.checked ? 90 : 5 })} />Keep for the whole clip</span></label>
               <label className="color">Hook text<input type="color" value={edit.hook.color} onChange={e => set("hook", { color: e.target.value })} /></label>
               <label className="color">Hook background<input type="color" value={edit.hook.bg} onChange={e => set("hook", { bg: e.target.value })} /></label>
             </div>

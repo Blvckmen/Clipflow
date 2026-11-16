@@ -1,4 +1,4 @@
-﻿import { test } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { applyAutomaticHook, generateHook } from '../hooks.mjs';
 import { defaultEdit, defaultStyle, normalizeEdit, buildAss, needsSubtitles } from '../edit.mjs';
@@ -15,11 +15,11 @@ test('generates the hook before rendering and retains editable styling', () => {
   assert.equal(original.hook.text,'');
   assert.equal(result.hook.text,'How did that ball go in?');
   assert.equal(result.hook.bg,'#123456');
-  assert.ok(result.hook.seconds>=3 && result.hook.seconds<=6);
+  assert.equal(result.hook.seconds,5,'the look sets the hook length (5 seconds by default)');
   assert.deepEqual(normalizeEdit(result,{duration:20}).hook,result.hook);
   const subtitle=buildAss(result,[]);
   assert.match(subtitle,/How did that ball go in\?/);
-  assert.match(subtitle,/0:00:00\.00,0:00:03\.00,Hook/);
+  assert.match(subtitle,/0:00:00\.00,0:00:05\.00,Hook/);
   assert.equal(needsSubtitles({...result,captions:{...result.captions,on:false}},[]),true,'hook renders even with subtitles hidden');
 });
 test('skips disabled generation, silence, filler and invalid words', () => {
@@ -40,4 +40,12 @@ test('keeps long titles readable, removes subtitle commands, and honors profanit
   assert.doesNotMatch(generateHook(words('Look {\\an8}at this <b>moment</b>!'),{start:0,end:20}),/[{}\\<>]/);
   const original=edit();original.captions.mask=true;
   assert.doesNotMatch(applyAutomaticHook(original,words('What the fuck happened?')).hook.text,/fuck/i);
+});
+
+test('the hook length follows the look and can cover the whole clip', () => {
+  const long = defaultEdit({ ...defaultStyle(), hook: { color: '#111111', bg: '#ffffff', seconds: 90 } }, {trimStart:2,trimEnd:17});
+  const whole = applyAutomaticHook(long, words('How did that ball go in?'));
+  assert.equal(whole.hook.seconds, 15, 'whole clip: capped at its length');
+  assert.match(buildAss(whole, []), /0:00:00\.00,0:00:15\.00,Hook/);
+  assert.equal(normalizeEdit({ ...edit(), hook: { text: 'x' } }, { duration: 20 }).hook.seconds, 5, 'older edits without a length get the default');
 });

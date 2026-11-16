@@ -335,3 +335,6 @@ th.num{text-align:right}
  footer{padding:20px 0 12px}
  .best-moments select,.best-moments button{flex:1 1 auto}
 }
+/* Editor: "Keep for the whole clip" under the hook length slider */
+.check-inline{display:flex;align-items:center;gap:7px;font-size:12px;color:#c9d3de;margin-top:8px}
+.check-inline input{width:15px;height:15px;accent-color:var(--lime)}

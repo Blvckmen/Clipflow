@@ -40,6 +40,7 @@ export function applyAutomaticHook(edit, words, { enabled = true } = {}) {
   if (!enabled || edit.hook.text?.trim()) return edit;
   const text = generateHook(edit.words ?? words, edit.trim, { mask: !!edit.captions.mask });
   if (!text) return edit;
-  const seconds = Math.min(edit.trim.end - edit.trim.start, 6, Math.max(3, Math.ceil(text.split(/\s+/).length / 3)));
+  // The look's hook length (5 seconds unless changed), longer if the hook needs more reading time; never past the end.
+  const seconds = Math.min(edit.trim.end - edit.trim.start, Math.max(edit.hook?.seconds ?? 5, Math.ceil(text.split(/\s+/).length / 3)));
   return { ...edit, hook: { ...edit.hook, text, seconds } };
 }
