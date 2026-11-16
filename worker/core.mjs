@@ -37,7 +37,23 @@ export function validateControl(c) {
   for (const s of c.streamers) {
     if (!/^[0-9a-f-]{36}$/i.test(s.id) || ids.has(s.id) || !["armed","paused","stopped"].includes(s.status)) throw new Error("Invalid streamer");
     if (s.style !== undefined && s.style !== null && typeof s.style !== "object") throw new Error("Invalid streamer style");
+    // Dashboards that predate recording omit the capture mode: clip live, as before.
+    s.captureMode ??= "clip";
+    if (!["clip","record","both"].includes(s.captureMode)) throw new Error("Invalid capture mode");
     channelUrl(s.url); ids.add(s.id);
+  }
+  c.recordingDays ??= 7;
+  if (!Number.isInteger(c.recordingDays) || c.recordingDays < 1 || c.recordingDays > 30) throw new Error("Invalid recording retention");
+  // Recordings the dashboard still has (null: a dashboard that predates recording, so nothing is pruned for it),
+  // and clips asked for from them.
+  c.recordings ??= null;
+  if (c.recordings !== null && (!Array.isArray(c.recordings) || c.recordings.some(id => !/^[0-9a-f-]{36}$/i.test(id)))) throw new Error("Invalid recordings");
+  c.clipRequests ??= [];
+  if (!Array.isArray(c.clipRequests) || c.clipRequests.length > 50) throw new Error("Invalid clip requests");
+  for (const r of c.clipRequests) {
+    if (!/^[0-9a-f-]{36}$/i.test(r?.id) || !/^[0-9a-f-]{36}$/i.test(r.recordingId) || !["moment","best"].includes(r.kind)) throw new Error("Invalid clip request");
+    if (r.kind === "moment" && !(Number.isInteger(r.start) && Number.isInteger(r.end) && r.start >= 0 && r.end - r.start >= 15 && r.end - r.start <= 90)) throw new Error("Invalid clip request range");
+    if (r.kind === "best" && !(Number.isInteger(r.count) && r.count >= 1 && r.count <= 20)) throw new Error("Invalid clip request count");
   }
   // Re-renders requested from the editor. Dashboards that predate the editor omit them.
   c.renders ??= [];
@@ -65,7 +81,8 @@ export function plan(c, { running, blockedUntil, countToday, now, maxCaptures, i
   let slots = maxCaptures - (running.size - stop.length);
   for (const s of c.streamers) {
     if (slots <= 0) break;
-    if (s.status !== "armed" || running.has(s.id) || !isLive(s.id) || (blockedUntil.get(s.id) ?? 0) > now || countToday(s.id) >= c.dailyLimit) continue;
+    // The daily limit only limits clipping: a streamer that is also recorded keeps being recorded.
+    if (s.status !== "armed" || running.has(s.id) || !isLive(s.id) || (blockedUntil.get(s.id) ?? 0) > now || ((s.captureMode ?? "clip") === "clip" && countToday(s.id) >= c.dailyLimit)) continue;
     start.push(s); slots--;
   }
   return { start, stop };
@@ -81,7 +98,17 @@ export class Store {
     // Added after the first release; older local databases gain the column on start.
     if (!this.db.prepare("PRAGMA table_info(clips)").all().some(c => c.name === "reason")) this.db.exec("ALTER TABLE clips ADD COLUMN reason TEXT");
     this.db.exec("UPDATE clips SET state='interrupted' WHERE state='capturing'");
+    // Whole-stream recordings kept here. state: recording -> ended (segments on disk, to be joined) -> ready
+    // (recording.mp4) | failed. step: what still has to happen once ready (measured, previewed, auto-clipped).
+    this.db.exec("CREATE TABLE IF NOT EXISTS recordings (id TEXT PRIMARY KEY, streamer TEXT NOT NULL, dir TEXT NOT NULL, mode TEXT NOT NULL, state TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, duration REAL, title TEXT, error TEXT, reported INTEGER NOT NULL DEFAULT 0, previewed INTEGER NOT NULL DEFAULT 0, clipped INTEGER NOT NULL DEFAULT 0)");
+    // A recording cut short by a worker restart is joined from whatever was written.
+    this.db.exec("UPDATE recordings SET state='ended', ended_at=coalesce(ended_at, started_at) WHERE state='recording'");
   }
+  addRecording(id,streamer,dir,mode) { this.db.prepare("INSERT INTO recordings(id,streamer,dir,mode,state,started_at) VALUES (?,?,?,?,'recording',?)").run(id,streamer,dir,mode,new Date().toISOString()); }
+  recording(id) { return this.db.prepare("SELECT * FROM recordings WHERE id=?").get(id)??null; }
+  recordings() { return this.db.prepare("SELECT * FROM recordings ORDER BY started_at").all(); }
+  setRecording(id,fields) { const keys=Object.keys(fields); this.db.prepare("UPDATE recordings SET "+keys.map(k=>k+"=?").join(",")+" WHERE id=?").run(...keys.map(k=>fields[k]),id); }
+  removeRecording(id) { this.db.prepare("DELETE FROM recordings WHERE id=?").run(id); }
   add(id,streamer,path,duration,captions,reason=null) { this.db.prepare("INSERT INTO clips(id,streamer,path,state,created_at,duration,captions,reason) VALUES (?,?,?,'capturing',?,?,?,?)").run(id,streamer,path,new Date().toISOString(),duration,Number(captions),reason); }
   // Sentence snapping makes the final length differ slightly from the configured one.
   ready(id,sha,duration) {this.db.prepare("UPDATE clips SET state='ready',sha=?,duration=coalesce(?,duration) WHERE id=?").run(sha,duration??null,id);}

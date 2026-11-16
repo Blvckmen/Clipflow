@@ -495,3 +495,72 @@ describe("split-screen backgrounds", () => {
     assert.equal((await dash({ action: "deleteBackground", id: bg.id })).status, 404);
   });
 });
+
+describe("recordings", () => {
+  const rec = () => ({ op: "recording", id: randomUUID(), streamerId: streamer.id, startedAt: new Date().toISOString(), state: "recording", title: "Finals" });
+  const post = body => worker("/api/worker/recordings", { method: "POST", body: JSON.stringify(body) });
+  test("a streamer's capture mode is saved and sent to the worker", async () => {
+    const s = (await dash()).body.streamers.find(x => x.id === streamer.id);
+    assert.equal((await dash({ action: "editStreamer", id: streamer.id, name: s.name, url: s.url, captureMode: "record" })).status, 200);
+    const config = await (await worker("/api/worker/config")).json();
+    assert.equal(config.streamers.find(x => x.id === streamer.id).captureMode, "record");
+    assert.equal(typeof config.recordingDays, "number");
+    assert.ok(Array.isArray(config.recordings) && Array.isArray(config.clipRequests));
+    assert.equal((await dash({ action: "editStreamer", id: streamer.id, name: s.name, url: s.url, captureMode: "archive" })).status, 400);
+  });
+  test("a recording is reported, clipped on request, previewed and deleted", async () => {
+    const r = rec();
+    assert.equal((await post(r)).status, 200);
+    let row = (await dash()).body.recordings.find(x => x.id === r.id);
+    assert.deepEqual([row.state, row.title, row.preview], ["recording", "Finals", false]);
+    assert.equal((await dash({ action: "deleteRecording", id: r.id })).status, 409, "a recording in progress can't be deleted");
+    // The same report again (a worker retry) is an update, not a second recording.
+    assert.equal((await post({ ...r, state: "ready", endedAt: new Date().toISOString(), duration: 3600, size: 2e9, signals: { step: 2, energy: [0, 0.5, 1], chat: [0, 3, 9] } })).status, 200);
+    const mine = (await dash()).body.recordings.filter(x => x.id === r.id);
+    assert.equal(mine.length, 1);
+    assert.deepEqual([mine[0].state, mine[0].duration], ["ready", 3600]);
+    assert.deepEqual((await (await fetch(base + "/api/recordings/" + r.id, { headers: { cookie } })).json()).signals.chat, [0, 3, 9]);
+    // Clips are 15 to 90 seconds.
+    assert.equal((await dash({ action: "makeClip", recordingId: r.id, start: 100, end: 105 })).status, 400);
+    assert.equal((await dash({ action: "makeClip", recordingId: r.id, start: 100, end: 130 })).status, 200);
+    assert.equal((await dash({ action: "findMoments", recordingId: r.id, count: 3 })).status, 200);
+    const config = await (await worker("/api/worker/config")).json();
+    assert.ok(config.recordings.includes(r.id));
+    const asks = config.clipRequests.filter(q => q.recordingId === r.id);
+    assert.deepEqual(asks.map(q => q.kind).sort(), ["best", "moment"]);
+    const moment = asks.find(q => q.kind === "moment");
+    assert.deepEqual([moment.start, moment.end], [100, 130]);
+    assert.equal((await post({ op: "request", id: moment.id, state: "working" })).status, 200);
+    assert.equal((await post({ op: "request", id: moment.id, state: "done", clips: 1 })).status, 200);
+    const done = (await dash()).body.recordingRequests.find(q => q.id === moment.id);
+    assert.deepEqual([done.state, done.clips], ["done", 1]);
+    assert.ok(!(await (await worker("/api/worker/config")).json()).clipRequests.some(q => q.id === moment.id), "finished requests aren't sent again");
+    // A clip cut from it reports as "manual".
+    const bytes = Buffer.alloc(4096, 7);
+    assert.equal((await reportClip(bytes, { reason: "manual" })).response.status, 200);
+    // The preview arrives in parts; parts out of order are refused.
+    const part1 = Buffer.alloc(5 * 1024 * 1024, 1), part2 = Buffer.alloc(1000, 2), path = "/api/worker/recordings/" + r.id + "/preview";
+    const put = (n, body) => worker(path, { method: "PUT", headers: { "content-type": "application/octet-stream", "x-part": String(n), "x-parts": "2" }, body });
+    assert.equal((await put(2, part2)).status, 409);
+    assert.equal((await put(1, part1)).status, 200);
+    assert.equal((await put(2, part2)).status, 200);
+    assert.equal((await worker(path, { method: "POST", body: JSON.stringify({ parts: 2, size: part1.length + part2.length }) })).status, 200);
+    row = (await dash()).body.recordings.find(x => x.id === r.id);
+    assert.equal(row.preview, true);
+    const ranged = await fetch(base + "/api/recordings/" + r.id + "/preview", { headers: { cookie, range: "bytes=" + (part1.length - 2) + "-" + (part1.length + 1) } });
+    assert.equal(ranged.status, 206);
+    assert.deepEqual([...new Uint8Array(await ranged.arrayBuffer())], [1, 1, 2, 2]);
+    assert.equal((await fetch(base + "/api/recordings/" + r.id + "/preview")).status, 401);
+    // Deleting it removes the preview and its requests; the worker sees it gone.
+    assert.equal((await dash({ action: "deleteRecording", id: r.id })).status, 200);
+    assert.ok(!(await dash()).body.recordings.some(x => x.id === r.id));
+    assert.equal((await fetch(base + "/api/recordings/" + r.id + "/preview", { headers: { cookie } })).status, 404);
+    assert.ok(!(await (await worker("/api/worker/config")).json()).recordings.includes(r.id));
+  });
+  test("recording reports are checked", async () => {
+    assert.equal((await fetch(base + "/api/worker/recordings", { method: "POST", body: "{}" })).status, 401);
+    assert.equal((await post({ ...rec(), state: "archived" })).status, 400);
+    assert.equal((await post({ ...rec(), streamerId: randomUUID() })).status, 404);
+    assert.equal((await dash({ action: "makeClip", recordingId: randomUUID(), start: 0, end: 30 })).status, 404);
+  });
+});

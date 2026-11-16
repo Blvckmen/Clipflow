@@ -10,6 +10,7 @@ import * as zernio from "./zernio";
 import { defaultCaption } from "./clipflow";
 import { captionForPost, fillCaptions } from "./post-caption";
 import { syncAnalytics } from "./analytics";
+import { expireRecordings } from "./recordings";
 import { readOptions, tiktokSettings } from "./account-options";
 import { keyConnection, siteConnection, zernioApiUrl, type Connection } from "./zernio-keys";
 
@@ -58,6 +59,8 @@ export async function runPublisher(env: Env, now = Date.now()) {
   await fillCaptions(env, now).catch(error => console.error("Caption writing failed:", error));
   // How published posts are doing, from Zernio (each connection about once an hour).
   await syncAnalytics(env, now).catch(error => console.error("Analytics sync failed:", error));
+  // Whole-stream recordings past their retention period.
+  await expireRecordings(env, now).catch(error => console.error("Recording expiry failed:", error));
   if (!env.MEDIA_KEY || !env.PUBLIC_URL) return;
   const ig = instagramConfig(env);
   const { results } = await env.DB.prepare("SELECT a.*, p.control, p.daily_limit, p.caption_template, k.label AS key_label, k.key_enc FROM accounts a LEFT JOIN preferences p ON p.owner=a.owner LEFT JOIN zernio_keys k ON k.id=a.zernio_key_id AND k.owner=a.owner WHERE a.status='connected'").all<AccountRow>();

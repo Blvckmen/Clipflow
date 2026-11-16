@@ -11,13 +11,15 @@ import { encrypt } from "../../../lib/secure";
 import { normalizeStyle } from "../../../worker/edit.mjs";
 import { socialCaptionsAvailable } from "../../../lib/social-caption";
 import { aiCaptionsAvailable } from "../../../lib/post-caption";
+import { removeRecordingFiles } from "../../../lib/recordings";
 import { env } from "cloudflare:workers";
 import { hashToken, newToken } from "../../../lib/worker-auth";
 import { z } from "zod";
 const accountIds=z.array(z.string().uuid()).max(50).transform(x=>[...new Set(x)]);
 const clipIds=z.array(z.string().uuid()).min(1).max(200).transform(x=>[...new Set(x)]);
+const captureMode=z.enum(["clip","record","both"]);
 const actionSchema=z.discriminatedUnion("action",[
- z.object({action:z.literal("add"),url:z.string().max(500),name:z.string().trim().max(80).optional(),accounts:accountIds.optional()}),
+ z.object({action:z.literal("add"),url:z.string().max(500),name:z.string().trim().max(80).optional(),accounts:accountIds.optional(),captureMode:captureMode.optional()}),
  z.object({action:z.literal("status"),id:z.string().uuid(),status:z.enum(["armed","paused","stopped"])}),
  z.object({action:z.literal("remove"),id:z.string().uuid()}),
  z.object({action:z.literal("settings"),settings:settingsSchema}),
@@ -48,7 +50,11 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("accountOptions"),id:z.string().uuid(),options:optionsSchema}),
  z.object({action:z.literal("assign"),streamerId:z.string().uuid(),accounts:accountIds}),
  // Edits a streamer: display name, channel URL, whether it is clipped, and (optionally) which accounts post its clips.
- z.object({action:z.literal("editStreamer"),id:z.string().uuid(),name:z.string().trim().min(1).max(80),url:z.string().max(500),status:z.enum(["armed","paused","stopped"]).optional(),accounts:accountIds.optional()}),
+ z.object({action:z.literal("editStreamer"),id:z.string().uuid(),name:z.string().trim().min(1).max(80),url:z.string().max(500),status:z.enum(["armed","paused","stopped"]).optional(),accounts:accountIds.optional(),captureMode:captureMode.optional()}),
+ // Clips from a whole-stream recording: one moment picked in the player (seconds into it), or the best few.
+ z.object({action:z.literal("makeClip"),recordingId:z.string().uuid(),start:z.number().int().min(0),end:z.number().int().min(1)}),
+ z.object({action:z.literal("findMoments"),recordingId:z.string().uuid(),count:z.number().int().min(1).max(20)}),
+ z.object({action:z.literal("deleteRecording"),id:z.string().uuid()}),
  // A streamer's own clip look, or the workspace's (no streamerId). A null style goes back to the default.
  z.object({action:z.literal("style"),streamerId:z.string().uuid().optional(),style:z.unknown().nullable()}),
 ]);
@@ -73,7 +79,11 @@ export async function GET(){
   const keys=(await listKeys(db,owner)).map(k=>({id:k.id,label:k.label,created_at:k.created_at,last_error:k.last_error,accounts:a.results.filter(x=>x.zernio_key_id===k.id).length}));
   const site=!keys.length&&!!siteConnection(env);
   const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,style:parse(p.style)}:{...defaults,style:null};
-  return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(x=>({...x,captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored})),storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,analytics:await analyticsSummary(db,owner)},{headers:{"Cache-Control":"private, no-store"}});
+  return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(x=>({...x,captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored})),storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,analytics:await analyticsSummary(db,owner),
+   // Whole-stream recordings (their heat strips load with GET /api/recordings/<id>) and clips asked for from them.
+   recordings:(await db.prepare("SELECT r.id,r.streamer_id,s.name AS streamer,r.title,r.started_at,r.ended_at,r.duration,r.size,r.state,r.error,r.preview_key IS NOT NULL AS preview,r.upload_id IS NOT NULL AS uploading,r.expires_at FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.owner=? ORDER BY r.started_at DESC LIMIT 100").bind(owner).all<Record<string,unknown>>()).results.map(x=>({...x,preview:!!x.preview,uploading:!!x.uploading})),
+   recordingRequests:(await db.prepare("SELECT id,recording_id,kind,start,end,count,state,error,clips,created_at,updated_at FROM recording_requests WHERE owner=? ORDER BY created_at DESC LIMIT 200").bind(owner).all()).results,
+  },{headers:{"Cache-Control":"private, no-store"}});
  }catch(error){console.error("Dashboard load failed",error);return Response.json({error:"We couldn't load your workspace. Please retry."},{status:503});}
 }
 export async function POST(request:Request){
@@ -94,11 +104,11 @@ export async function POST(request:Request){
    const linked=await ownAccounts(payload.accounts??[]);
    if(!linked)return Response.json({error:"One of those publishing accounts is no longer connected."},{status:404});
    const name=payload.name||channel.name;streamerId=crypto.randomUUID();
-   statements.push(db.prepare("INSERT INTO streamers (id,owner,name,url,platform,status,created_at) VALUES (?,?,?,?,?,'armed',?)").bind(streamerId,owner,name,channel.url,channel.platform,iso));
+   statements.push(db.prepare("INSERT INTO streamers (id,owner,name,url,platform,status,created_at,capture_mode) VALUES (?,?,?,?,?,'armed',?,?)").bind(streamerId,owner,name,channel.url,channel.platform,iso,payload.captureMode??"clip"));
    for(const a of linked)statements.push(db.prepare("INSERT INTO streamer_accounts (streamer_id,account_id,owner,created_at) VALUES (?,?,?,?)").bind(streamerId,a.id,owner,iso));
    // Adding a streamer means "start clipping them": automation is switched on for the workspace.
    statements.push(db.prepare("INSERT INTO preferences (owner,control) VALUES (?,'running') ON CONFLICT(owner) DO UPDATE SET control='running'").bind(owner));
-   message="Added "+name+" from "+channel.platform+". Clipping starts as soon as they go live"+(linked.length?" and clips post to "+linked.map(a=>"@"+a.username).join(", ")+".":".");
+   message="Added "+name+" from "+channel.platform+". "+(payload.captureMode==="record"?"Their whole stream is recorded as soon as they go live, and clipped when it ends":payload.captureMode==="both"?"Clipping and recording start as soon as they go live":"Clipping starts as soon as they go live")+(linked.length?" and clips post to "+linked.map(a=>"@"+a.username).join(", ")+".":".");
   }
   if(payload.action==="status"||payload.action==="remove"){
    const streamer=await db.prepare("SELECT name FROM streamers WHERE id=? AND owner=?").bind(payload.id,owner).first();
@@ -119,12 +129,13 @@ export async function POST(request:Request){
    message=streamer.name+(linked.length?"'s clips now post to "+linked.map(a=>"@"+a.username).join(", ")+".":"'s clips are kept in the library and not posted.");
   }
   if(payload.action==="editStreamer"){
-   const current=await db.prepare("SELECT name,url,status FROM streamers WHERE id=? AND owner=?").bind(payload.id,owner).first<{name:string;url:string;status:string}>();
+   const current=await db.prepare("SELECT name,url,status,capture_mode FROM streamers WHERE id=? AND owner=?").bind(payload.id,owner).first<{name:string;url:string;status:string;capture_mode:string}>();
    if(!current)return Response.json({error:"Streamer not found."},{status:404});
    let channel;try{channel=parseStreamer(payload.url);}catch(error){return Response.json({error:(error as Error).message},{status:400});}
    const moved=channel.url!==current.url;
    // A new channel starts with a fresh live status; the worker checks it on its next cycle.
-   statements.push(db.prepare("UPDATE streamers SET name=?,url=?,platform=?,status=?"+(moved?",live_status=NULL,live_checked_at=NULL,live_title=NULL":"")+" WHERE id=? AND owner=?").bind(payload.name,channel.url,channel.platform,payload.status??current.status,payload.id,owner));
+   // A new capture mode applies from the streamer's next stream (one being recorded now carries on as it began).
+   statements.push(db.prepare("UPDATE streamers SET name=?,url=?,platform=?,status=?,capture_mode=?"+(moved?",live_status=NULL,live_checked_at=NULL,live_title=NULL":"")+" WHERE id=? AND owner=?").bind(payload.name,channel.url,channel.platform,payload.status??current.status,payload.captureMode??current.capture_mode,payload.id,owner));
    if(payload.accounts){
     const linked=await ownAccounts(payload.accounts);
     if(!linked)return Response.json({error:"One of those publishing accounts is no longer connected."},{status:404});
@@ -133,7 +144,7 @@ export async function POST(request:Request){
     statements.push(keep.length?db.prepare("DELETE FROM streamer_accounts WHERE streamer_id=? AND owner=? AND account_id NOT IN ("+keep.map(()=>"?").join(",")+")").bind(payload.id,owner,...keep):db.prepare("DELETE FROM streamer_accounts WHERE streamer_id=? AND owner=?").bind(payload.id,owner));
     for(const a of linked)statements.push(db.prepare("INSERT OR IGNORE INTO streamer_accounts (streamer_id,account_id,owner,created_at) VALUES (?,?,?,?)").bind(payload.id,a.id,owner,iso));
    }
-   const changes=[payload.name!==current.name&&"renamed to "+payload.name,moved&&"now follows "+channel.url,payload.status&&payload.status!==current.status&&(payload.status==="armed"?"enabled":payload.status)].filter(Boolean);
+   const changes=[payload.name!==current.name&&"renamed to "+payload.name,moved&&"now follows "+channel.url,payload.captureMode&&payload.captureMode!==current.capture_mode&&{clip:"clipped live",record:"recorded whole and clipped afterwards",both:"clipped live and recorded whole"}[payload.captureMode]+" from the next stream",payload.status&&payload.status!==current.status&&(payload.status==="armed"?"enabled":payload.status)].filter(Boolean);
    message="Saved "+current.name+(changes.length?": "+changes.join(", "):"")+".";
   }
   if(payload.action==="style"){
@@ -155,6 +166,7 @@ export async function POST(request:Request){
    // A client that omits captionTemplate, aiCaptions or captionNotes keeps the saved values.
    const ai=s.aiCaptions===undefined?null:Number(s.aiCaptions),notes=s.captionNotes??null,transcribe=s.transcribe===undefined?null:Number(s.transcribe);
    statements.push(db.prepare("INSERT INTO preferences (owner,mode,duration,daily_limit,captions,framing,destinations,control,caption_template,ai_captions,caption_notes,transcribe) VALUES (?,?,?,?,?,?,?,'paused',?,?,?,?) ON CONFLICT(owner) DO UPDATE SET mode=excluded.mode,duration=excluded.duration,daily_limit=excluded.daily_limit,captions=excluded.captions,framing=excluded.framing,destinations=excluded.destinations,caption_template=coalesce(?,preferences.caption_template),ai_captions=coalesce(?,preferences.ai_captions),caption_notes=coalesce(?,preferences.caption_notes),transcribe=coalesce(?,preferences.transcribe)").bind(owner,s.mode,s.duration,s.dailyLimit,Number(s.captions),s.framing,JSON.stringify(s.destinations),s.captionTemplate??defaultCaption,ai??1,notes??"",transcribe??1,s.captionTemplate??null,ai,notes,transcribe));
+   if(s.recordingDays!==undefined)statements.push(db.prepare("UPDATE preferences SET recording_days=? WHERE owner=?").bind(s.recordingDays,owner));
    message="Saved clipping and publishing preferences.";
   }
   if(payload.action==="control"){
@@ -349,6 +361,32 @@ export async function POST(request:Request){
    if(!account)return Response.json({error:"That account is not connected."},{status:404});
    statements.push(db.prepare("UPDATE accounts SET options=? WHERE id=? AND owner=?").bind(JSON.stringify({...readOptions(account.options),...payload.options}),payload.id,owner));
    message="Saved posting options for "+(VIDEO_PLATFORMS[account.platform]??account.platform)+" @"+account.username+".";
+  }
+  if(payload.action==="makeClip"||payload.action==="findMoments"){
+   const rec=await db.prepare("SELECT r.state,r.duration,s.name FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.id=? AND r.owner=?").bind(payload.recordingId,owner).first<{state:string;duration:number|null;name:string|null}>();
+   if(!rec)return Response.json({error:"That recording is no longer in your workspace."},{status:404});
+   if(rec.state==="failed")return Response.json({error:"This recording failed, so it can't be clipped."},{status:409});
+   const open=await db.prepare("SELECT count(*) AS n FROM recording_requests WHERE owner=? AND state IN ('queued','working')").bind(owner).first<{n:number}>();
+   if((open?.n??0)>=40)return Response.json({error:"Lots of clips are already waiting to be made. Try again once some are done."},{status:429});
+   const later=rec.state==="ready"?"":" once the recording has finished saving";
+   if(payload.action==="makeClip"){
+    const length=payload.end-payload.start;
+    if(length<15||length>90)return Response.json({error:"Pick between 15 and 90 seconds (this is "+length+")."},{status:400});
+    if(rec.duration&&payload.start>=rec.duration)return Response.json({error:"That start is past the end of the recording."},{status:400});
+    statements.push(db.prepare("INSERT INTO recording_requests (id,owner,recording_id,kind,start,end,state,created_at,updated_at) VALUES (?,?,?,'moment',?,?,'queued',?,?)").bind(crypto.randomUUID(),owner,payload.recordingId,payload.start,payload.end,iso,iso));
+    message="Making a "+length+"s clip from "+(rec.name?rec.name+"'s":"the")+" recording"+later+". It appears in the clip library in a few minutes, while the worker PC is on.";
+   }else{
+    statements.push(db.prepare("INSERT INTO recording_requests (id,owner,recording_id,kind,count,state,created_at,updated_at) VALUES (?,?,?,'best',?,'queued',?,?)").bind(crypto.randomUUID(),owner,payload.recordingId,payload.count,iso,iso));
+    message="Finding the "+payload.count+" best moment"+(payload.count===1?"":"s")+" in "+(rec.name?rec.name+"'s":"the")+" recording"+later+". The clips appear in the clip library as the worker PC makes them.";
+   }
+  }
+  if(payload.action==="deleteRecording"){
+   const rec=await db.prepare("SELECT r.state,r.preview_key,r.upload_id,s.name FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.id=? AND r.owner=?").bind(payload.id,owner).first<{state:string;preview_key:string|null;upload_id:string|null;name:string|null}>();
+   if(!rec)return Response.json({error:"That recording is no longer in your workspace."},{status:404});
+   if(rec.state==="recording")return Response.json({error:"This stream is still being recorded. Delete it once it has ended."},{status:409});
+   await removeRecordingFiles(payload.id,rec);
+   statements.push(db.prepare("DELETE FROM recording_requests WHERE recording_id=? AND owner=?").bind(payload.id,owner),db.prepare("DELETE FROM recordings WHERE id=? AND owner=?").bind(payload.id,owner));
+   message="Deleted "+(rec.name?rec.name+"'s":"a")+" recording. The worker PC removes its copy on its next check; clips already made from it stay in the library.";
   }
   let token:string|undefined;
   if(payload.action==="token"){

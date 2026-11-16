@@ -52,7 +52,9 @@ export function sourceSignals(energy,chat,from,to) {
 // boundaries. Then keeps an unframed *source* (the moment plus SOURCE_PAD seconds either side) with its transcript,
 // and renders the vertical clip from it with `edit` (see edit.mjs), the same way the dashboard editor re-renders.
 // Writes clip.mp4, source.mp4 and meta.json into `dir` and removes `raw` and intermediates.
-export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infinity,chat=[],background=null},dir,signal) {
+// With `exact` (a moment picked by hand in a recording) the clip is exactly [focusFrom, focusTo]: no window search
+// and no sentence snapping.
+export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false},dir,signal) {
   const source=join(dir,"source.mp4"), energyFile=join(dir,"energy.json"), wordsFile=join(dir,"words.json");
   await mkdir(dir,{recursive:true});
   try {
@@ -70,8 +72,12 @@ export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infi
       if(captions||signal.aborted)throw error;
     }
     const duration=settings.duration, total=energy.length;
-    const first=pickWindow({energy,chat,duration,from:Math.max(0,Math.floor(focusFrom)),to:Math.min(total,Math.ceil(focusTo))});
-    const {start,end}=snapToSentences(first,first+duration,segments,{minLen:Math.max(15,duration-8),maxLen:Math.min(90,duration+8),total});
+    let start,end;
+    if(exact){start=Math.max(0,focusFrom);end=Math.min(total,focusTo);if(end-start<15)throw new Error("That part of the recording is too short to clip");}
+    else{
+      const first=pickWindow({energy,chat,duration,from:Math.max(0,Math.floor(focusFrom)),to:Math.min(total,Math.ceil(focusTo))});
+      ({start,end}=snapToSentences(first,first+duration,segments,{minLen:Math.max(15,duration-8),maxLen:Math.min(90,duration+8),total}));
+    }
     const from=Math.max(0,start-SOURCE_PAD), to=Math.min(total,end+SOURCE_PAD);
     // Frequent keyframes keep seeking in the editor responsive.
     await command("ffmpeg",["-hide_banner","-loglevel","error","-y","-ss",String(from),"-i",raw,"-t",String(to-from),"-vf","scale=1280:1280:force_original_aspect_ratio=decrease:force_divisible_by=2","-c:v","libx264","-preset","veryfast","-crf","23","-maxrate","3000k","-bufsize","6000k","-g","30","-c:a","aac","-b:a","128k","-movflags","+faststart",source],{signal,timeout:encodeTimeout(to-from)}).done;

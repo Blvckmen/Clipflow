@@ -4,11 +4,11 @@ import { workerOwner } from "../../../../lib/worker-auth";
 import { normalizeEdit, normalizeWords } from "../../../../worker/edit.mjs";
 const sha=z.string().regex(/^[0-9a-f]{64}$/);
 // Editor material is optional so older workers keep working; their clips just can't be edited.
-const clipSchema=z.object({id:z.string().uuid(),streamerId:z.string().uuid(),createdAt:z.string().datetime(),duration:z.number().int().min(15).max(90),captions:z.boolean(),sha,size:z.number().int().min(1024).max(32*1024*1024),reason:z.enum(["chat","audio"]).optional(),
+const clipSchema=z.object({id:z.string().uuid(),streamerId:z.string().uuid(),createdAt:z.string().datetime(),duration:z.number().int().min(15).max(90),captions:z.boolean(),sha,size:z.number().int().min(1024).max(32*1024*1024),reason:z.enum(["chat","audio","best","manual"]).optional(),
  edit:z.unknown().optional(),transcript:z.unknown().optional(),
  signals:z.object({energy:z.array(z.number().min(0).max(1)).max(200),chat:z.array(z.number().int().min(0).max(100000)).max(200)}).optional(),
  source:z.object({width:z.number().int().min(0).max(8192),height:z.number().int().min(0).max(8192),duration:z.number().min(1).max(200),sha,size:z.number().int().min(1024).max(64*1024*1024)}).optional()});
-const reasonText={chat:" after a chat spike",audio:" at its loudest moment"};
+const reasonText={chat:" after a chat spike",audio:" at its loudest moment",best:" from one of the best moments of a recording",manual:" from a recording, at the moment you picked"};
 export async function POST(request:Request){
  try{
   const db=database(),owner=await workerOwner(request,db);

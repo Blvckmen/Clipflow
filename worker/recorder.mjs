@@ -6,9 +6,11 @@ import { command, lastLines, tail } from "./process.mjs";
 // Records a live channel continuously into short MPEG-TS segments and keeps only the last `bufferSeconds`.
 // Media files use .m2t rather than .ts so TypeScript tooling never mistakes them for source.
 // Each segment's wall-clock span is taken from when ffmpeg finished it (live input, so ~real time).
+// With `keep`, nothing is pruned and the segments stay on disk after stop(): the whole stream is kept, and
+// recordings.mjs joins it into one file (list.csv gives the segment order).
 export class Recorder {
-  constructor(url, dir, { bufferSeconds = 240, segmentSeconds = 6, streamlink = "streamlink", quality = "720p,720p60,480p,best" } = {}) {
-    Object.assign(this, { url, dir, bufferMs: bufferSeconds * 1000, segmentSeconds, streamlink, quality });
+  constructor(url, dir, { bufferSeconds = 240, segmentSeconds = 6, streamlink = "streamlink", quality = "720p,720p60,480p,best", keep = false } = {}) {
+    Object.assign(this, { url, dir, bufferMs: bufferSeconds * 1000, segmentSeconds, streamlink, quality, keep });
     this.segments = [];  // { file, startMs, endMs }
     this.pinned = new Set();
     this.listed = 0;
@@ -58,7 +60,7 @@ export class Recorder {
         if (/^seg\d{6}\.m2t$/.test(file) && seconds > 0) this.segments.push({ file, startMs: now - seconds * 1000, endMs: now });
       }
       this.listed = rows.length;
-      while (this.segments.length && this.segments[0].endMs < now - this.bufferMs && !this.pinned.has(this.segments[0].file))
+      while (!this.keep && this.segments.length && this.segments[0].endMs < now - this.bufferMs && !this.pinned.has(this.segments[0].file))
         await rm(join(this.dir, this.segments.shift().file), { force: true });
     } finally { this.polling = false; }
   }
@@ -86,6 +88,6 @@ export class Recorder {
     const force = setTimeout(() => { this.source?.kill("SIGKILL"); this.ffmpeg?.kill("SIGKILL"); }, 3000);
     await Promise.race([this.exited, new Promise(resolve => setTimeout(resolve, 5000))]);
     clearTimeout(force);
-    await rm(this.dir, { recursive: true, force: true }).catch(() => {});
+    if (!this.keep) await rm(this.dir, { recursive: true, force: true }).catch(() => {});
   }
 }

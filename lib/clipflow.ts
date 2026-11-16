@@ -5,9 +5,12 @@ export const settingsSchema=z.object({mode:z.enum(["automatic","review"]),durati
  // Omitted by older clients: the saved values are kept.
  aiCaptions:z.boolean().optional(),captionNotes:z.string().trim().max(1000).optional(),
  // Whether the worker transcribes clips (Whisper). Off saves time and CPU; captions then need it back on.
- transcribe:z.boolean().optional()});
+ transcribe:z.boolean().optional(),
+ // Days whole-stream recordings are kept.
+ recordingDays:z.number().int().min(1).max(30).optional()});
 export const defaultCaption="{streamer} on {platform} #clips #{platform}";
-export const defaults={mode:"automatic",duration:45,dailyLimit:5,captions:true,framing:"blur",destinations:[] as string[],control:"paused",captionTemplate:defaultCaption,aiCaptions:true,captionNotes:"",transcribe:true};
+export const defaults={mode:"automatic",duration:45,dailyLimit:5,captions:true,framing:"blur",destinations:[] as string[],control:"paused",captionTemplate:defaultCaption,aiCaptions:true,captionNotes:"",transcribe:true,recordingDays:7};
+export const captureModes={clip:"Clip live",record:"Record the whole stream, clip it afterwards",both:"Clip live and record the whole stream"} as const;
 // Platforms this build can actually publish to once an account is connected.
 export const publishable=["Instagram"] as const;
 export function parseStreamer(input:string){

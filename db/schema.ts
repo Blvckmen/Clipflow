@@ -5,6 +5,9 @@ export const streamers = sqliteTable("streamers", {
  liveStatus:text("live_status"),liveCheckedAt:text("live_checked_at"),liveTitle:text("live_title"),
  // This streamer's clip look (JSON style, see worker/edit.mjs); null uses the workspace's.
  style:text("style"),
+ // clip: clip live (the rolling buffer only). record: keep the whole stream and clip it when it ends. both: clip
+ // live and keep the whole stream.
+ captureMode:text("capture_mode").notNull().default("clip"),
 },t=>[uniqueIndex("streamers_owner_url").on(t.owner,t.url)]);
 export const preferences=sqliteTable("preferences",{
  owner:text("owner").primaryKey(),mode:text("mode").notNull().default("automatic"),duration:integer("duration").notNull().default(45),dailyLimit:integer("daily_limit").notNull().default(5),captions:integer("captions",{mode:"boolean"}).notNull().default(true),destinations:text("destinations").notNull().default('[]'),control:text("control").notNull().default("paused"),framing:text("framing").notNull().default("blur"),
@@ -17,6 +20,8 @@ export const preferences=sqliteTable("preferences",{
  aiCaptions:integer("ai_captions",{mode:"boolean"}).notNull().default(true),captionNotes:text("caption_notes").notNull().default(""),
  // Whether the worker transcribes new clips. Off skips Whisper: no subtitles, no sentence-aligned cuts.
  transcribe:integer("transcribe",{mode:"boolean"}).notNull().default(true),
+ // Days full stream recordings are kept (on the worker PC, and their previews in R2).
+ recordingDays:integer("recording_days").notNull().default(7),
  // No longer used: the single Zernio key setting, moved to zernio_keys by migration 0011.
  zernioKeyEnc:text("zernio_key_enc"),zernioLabel:text("zernio_label"),
 });
@@ -84,6 +89,28 @@ export const posts=sqliteTable("posts",{
 // When each periodic job last ran (e.g. "analytics:<owner>:<zernio key id or site>"), so the once-a-minute cron
 // trigger can run slower jobs on their own schedule.
 export const syncState=sqliteTable("sync_state",{key:text("key").primaryKey(),at:text("at").notNull(),note:text("note")});
+// Whole streams kept by the worker (capture mode record or both). The full-quality file stays on the worker PC;
+// a small preview is uploaded to R2 (previews/<id>.mp4, in parts) so the owner can scrub it and pick clips.
+// state: recording -> processing (joining, measuring, preview) -> ready | failed. Deleted rows go entirely.
+export const recordings=sqliteTable("recordings",{
+ id:text("id").primaryKey(),owner:text("owner").notNull(),streamerId:text("streamer_id").notNull(),title:text("title"),
+ startedAt:text("started_at").notNull(),endedAt:text("ended_at"),duration:integer("duration"),size:integer("size"),
+ state:text("state").notNull().default("recording"),error:text("error"),
+ // Heat strip: {step (seconds per bar), energy: [0-1], chat: [counts]}.
+ signals:text("signals"),
+ previewKey:text("preview_key"),previewSize:integer("preview_size"),
+ // R2 multipart upload in progress: its id and the parts received so far (JSON [{partNumber, etag}]).
+ uploadId:text("upload_id"),uploadParts:text("upload_parts"),
+ expiresAt:text("expires_at").notNull(),createdAt:text("created_at").notNull(),
+},t=>[index("recordings_owner_started").on(t.owner,t.startedAt)]);
+// Clips asked for from a recording: one moment (start/end seconds into it) or "find the best `count` moments".
+// state: queued -> working -> done | failed.
+export const recordingRequests=sqliteTable("recording_requests",{
+ id:text("id").primaryKey(),owner:text("owner").notNull(),recordingId:text("recording_id").notNull(),kind:text("kind").notNull(),
+ start:integer("start"),end:integer("end"),count:integer("count"),
+ state:text("state").notNull().default("queued"),error:text("error"),clips:integer("clips").notNull().default(0),
+ createdAt:text("created_at").notNull(),updatedAt:text("updated_at").notNull(),
+},t=>[index("recording_requests_recording").on(t.recordingId),index("recording_requests_owner_state").on(t.owner,t.state)]);
 // Split-screen background videos a workspace has uploaded (stored in R2 under backgrounds/<id>.mp4).
 export const backgrounds=sqliteTable("backgrounds",{
  id:text("id").primaryKey(),owner:text("owner").notNull(),name:text("name").notNull(),key:text("key").notNull(),size:integer("size").notNull(),

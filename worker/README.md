@@ -64,7 +64,20 @@ logs to `worker\data\worker.log`.
   paused. Caption fonts must be installed on this machine (the Docker image ships DejaVu and
   Liberation, which stands in for Arial); a missing font falls back to a default one.
 - Processing (transcription and rendering) runs one clip at a time; recording continues meanwhile.
-- The daily limit caps clips per streamer per UTC day; reaching it ends that day's recording.
+- The daily limit caps clips per streamer per UTC day; reaching it ends that day's recording
+  for streamers set to clip live only.
+- **Whole-stream recordings** (a streamer's capture mode *Record the whole stream* or *Clip
+  live and record*): every segment is kept under `DATA_DIR/recordings/<id>/`, at roughly
+  1–3 GB an hour. When the stream ends, the segments are joined into `recording.mp4` (no
+  re-encode), loudness is measured for every second, and the heat strip (plus Twitch chat)
+  goes to the dashboard. A 360p preview (about 200 MB an hour, two encoder threads) is then
+  uploaded in 48 MB parts so the stream can be watched in the dashboard's Recordings page.
+  *Record* mode then clips the best moments, up to the daily limit. Clips picked in the
+  dashboard (an exact range, or "find best moments") arrive with the config poll and are
+  cut from the full-quality file here, so this machine must be on and still have the
+  recording. Recordings are deleted after the workspace's retention (Settings, default
+  7 days), or as soon as they're deleted in the dashboard. A worker restart mid-stream
+  saves what was recorded so far.
 - A recording that fails or ends is retried with backoff (30s up to 5 min) after a fresh live check.
 - Each clip is reported, then its file is uploaded to the dashboard's storage so it can be
   watched and downloaded there (if storage is off, it stays local). Both are retried until

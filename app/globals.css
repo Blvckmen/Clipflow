@@ -220,6 +220,27 @@ th.num{text-align:right}
 .background-item figcaption span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .background-item figcaption small{font-size:11px}
 .background-item .icon-button{position:absolute;top:6px;right:6px;background:#0c0f13cc}
+/* Recordings: whole streams kept on the worker PC, a preview player and a moment picker. */
+.recordings-layout{display:grid;grid-template-columns:minmax(260px,330px) minmax(0,1fr);gap:22px;align-items:start}
+.recording-list{display:flex;flex-direction:column}
+.recording-row{display:flex;flex-direction:column;gap:3px;text-align:left;background:none;border:0;border-bottom:1px solid var(--border);padding:14px 20px;min-width:0}
+.recording-row:hover{background:#181e25}.recording-row.active{background:#1b2418;box-shadow:inset 3px 0 0 var(--lime)}
+.recording-row-top{display:flex;align-items:center;justify-content:space-between;gap:10px}.recording-row strong{font-size:14px;font-weight:550}
+.recording-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.recording-video{display:block;width:100%;max-height:56vh;border-radius:9px;background:#000}
+.recording-heat{height:72px}
+.heat-cursor{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:#fff;pointer-events:none;opacity:.8}
+.moment-picker{display:flex;flex-direction:column;gap:12px;border:1px solid var(--border);border-radius:8px;padding:16px;background:#12171d}
+.moment-fields{display:grid;grid-template-columns:minmax(90px,1fr) auto minmax(90px,1fr) auto;gap:10px;align-items:end}
+.moment-fields label{font-size:13px}.form-body .moment-fields input{margin-top:6px}
+.moment-actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap}.moment-actions .primary{margin-left:auto}
+.best-moments{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid #33472a;background:#182016;border-radius:8px;padding:14px 16px}
+.best-moments>svg{color:var(--lime);flex-shrink:0}.best-moments>div{flex:1;min-width:200px}.best-moments strong{font-size:14px;font-weight:600;display:block}.best-moments small{margin-top:2px}
+.request-list{display:flex;flex-direction:column;margin-top:8px}
+.request-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:9px 0;border-top:1px solid var(--border);font-size:13px}
+.request-row>span:first-child{display:flex;align-items:center;gap:7px;min-width:150px}
+.mode-note{display:block;margin-top:4px;font-size:11px;color:var(--muted)}
+@media (max-width:900px){.recordings-layout{grid-template-columns:1fr}.moment-fields{grid-template-columns:1fr auto}}
 /* Clip editor on wide screens: the preview column takes the spare width and the controls panel keeps a readable
    width, instead of the panel stretching across the screen. */
 @media (min-width:901px){
