@@ -141,7 +141,7 @@ async function clipWindow(session, fromMs, toMs, reason) {
   const id = crypto.randomUUID(), dir = join(dataDir, "clips", streamer.id, id), raw = join(dir, "window.m2t");
   session.busy = true;
   try {
-    store.add(id, streamer.id, join(dir, "clip.mp4"), settings.duration, settings.captions, reason);
+    store.add(id, streamer.id, join(dir, "clip.mp4"), settings.duration, settings.captions && settings.transcribe !== false, reason);
     await rm(dir, { recursive: true, force: true });
     await mkdir(dir, { recursive: true });
     const rawStartMs = await session.recorder.extract(fromMs, toMs, raw, AbortSignal.timeout(60_000));

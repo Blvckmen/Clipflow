@@ -85,6 +85,13 @@
       "when": 1794780090397,
       "tag": "0011_zernio_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1794792237098,
+      "tag": "0012_transcribe_setting",
+      "breakpoints": true
     }
   ]
 }

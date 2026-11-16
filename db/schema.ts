@@ -15,6 +15,8 @@ export const preferences=sqliteTable("preferences",{
  // Post captions written by Claude from each clip's transcript (when the site has an Anthropic API key), with
  // the owner's own guidance; caption_template is the fallback.
  aiCaptions:integer("ai_captions",{mode:"boolean"}).notNull().default(true),captionNotes:text("caption_notes").notNull().default(""),
+ // Whether the worker transcribes new clips. Off skips Whisper: no subtitles, no sentence-aligned cuts.
+ transcribe:integer("transcribe",{mode:"boolean"}).notNull().default(true),
  // No longer used: the single Zernio key setting, moved to zernio_keys by migration 0011.
  zernioKeyEnc:text("zernio_key_enc"),zernioLabel:text("zernio_label"),
 });

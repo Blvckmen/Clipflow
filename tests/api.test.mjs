@@ -354,6 +354,36 @@ describe("clip editor", () => {
     assert.deepEqual([s.aiCaptions, s.captionNotes], [false, "No emoji"], "unchanged");
     await dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, framing, destinations, aiCaptions: true, captionNotes: "" } });
   });
+  test("the transcribe setting is saved, kept when left out, and sent to the worker", async () => {
+    const { mode, duration, dailyLimit, captions, framing, destinations } = originalSettings;
+    assert.equal((await dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, framing, destinations, transcribe: false } })).status, 200);
+    assert.equal((await dash()).body.settings.transcribe, false);
+    assert.equal((await (await worker("/api/worker/config")).json()).transcribe, false);
+    assert.equal((await dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, framing, destinations } })).status, 200);
+    assert.equal((await dash()).body.settings.transcribe, false, "unchanged by a client that omits it");
+    await dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, framing, destinations, transcribe: true } });
+    assert.equal((await (await worker("/api/worker/config")).json()).transcribe, true);
+  });
+  test("subtitles can be removed from (and added back to) every recorded clip at once", async () => {
+    const before = (await dash()).body.clips.find(c => c.id === clip.id).edit_rev;
+    // Start from a known state: subtitles on in this clip's edit.
+    const on = await dash({ action: "captionsAll", on: true });
+    assert.equal(on.status, 200);
+    const off = await dash({ action: "captionsAll", on: false });
+    assert.equal(off.status, 200);
+    assert.match(off.body.message, /^Removing subtitles from \d+ clips?\./);
+    const row = (await dash()).body.clips.find(c => c.id === clip.id);
+    assert.equal(row.render_state, "queued");
+    assert.ok(row.edit_rev > before, "a new revision to render");
+    const job = (await (await worker("/api/worker/config")).json()).renders.find(r => r.id === clip.id);
+    assert.equal(job.edit.captions.on, false, "the worker re-renders it without subtitles");
+    assert.equal(job.edit.trim.start, (await edit(clip.id).then(r => r.json())).edit.trim.start, "the rest of the edit is kept");
+    assert.match((await dash({ action: "captionsAll", on: false })).body.message, /^No clips to change/, "running it again changes nothing");
+    const back = await dash({ action: "captionsAll", on: true });
+    assert.match(back.body.message, /^Adding subtitles to \d+ clips?\./);
+    assert.equal((await (await worker("/api/worker/config")).json()).renders.find(r => r.id === clip.id).edit.captions.on, true);
+    assert.equal((await dash({ action: "captionsAll", on: "yes" })).status, 400);
+  });
   test("deleting a clip also removes its source", async () => {
     assert.equal((await dash({ action: "deleteClip", id: clip.id })).status, 200);
     assert.equal((await worker("/api/worker/clips/" + clip.id + "/source")).status, 404);

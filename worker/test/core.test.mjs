@@ -142,3 +142,9 @@ test("Store tracks clip states and recovers interrupted captures", () => {
     store.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("validateControl defaults transcription on and rejects other values", () => {
+  assert.equal(validateControl(config()).transcribe, true, "older dashboards omit it");
+  assert.equal(validateControl(config({ transcribe: false })).transcribe, false);
+  assert.throws(() => validateControl(config({ transcribe: "no" })));
+});

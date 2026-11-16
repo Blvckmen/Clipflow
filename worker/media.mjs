@@ -60,12 +60,14 @@ export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infi
     await command(python,[script("highlight.py"),raw,energyFile],{signal,timeout:120_000}).done;
     const {energy}=JSON.parse(await readFile(energyFile,"utf8"));
     let segments=[];
-    try {
+    // Transcription off (a workspace setting): no Whisper, so no subtitles and no sentence-aligned cuts.
+    const transcribe=settings.transcribe!==false, captions=transcribe&&!!settings.captions;
+    if(transcribe)try {
       await command(python,[script("captions.py"),"words",raw,wordsFile],{signal,timeout:600_000}).done;
       segments=JSON.parse(await readFile(wordsFile,"utf8")).segments;
     } catch(error) {
       // Sentence snapping is a refinement; only captions make the transcript mandatory.
-      if(settings.captions||signal.aborted)throw error;
+      if(captions||signal.aborted)throw error;
     }
     const duration=settings.duration, total=energy.length;
     const first=pickWindow({energy,chat,duration,from:Math.max(0,Math.floor(focusFrom)),to:Math.min(total,Math.ceil(focusTo))});
@@ -77,9 +79,9 @@ export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infi
     const words=sourceWords(segments,from,to);
     let base=null;
     try { if(style)base=normalizeStyle(style); } catch { /* an unreadable saved style falls back to the defaults */ }
-    base??=defaultStyle({framing:settings.framing,captions:settings.captions});
+    base??=defaultStyle({framing:settings.framing,captions});
     // The workspace's on/off switch for captions always wins over a saved style.
-    base.captions.on=!!settings.captions;
+    base.captions.on=captions;
     const edit=defaultEdit(base,{trimStart:start-from,trimEnd:end-from});
     const rendered=await renderClip(source,{edit,words,width:info.width,height:info.height},join(dir,"clip.mp4"),signal);
     const sourceBytes=await readFile(source);

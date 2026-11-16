@@ -1,0 +1,1 @@
+ALTER TABLE `preferences` ADD `transcribe` integer DEFAULT true NOT NULL;

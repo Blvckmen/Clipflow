@@ -28,6 +28,9 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("retryPost"),id:z.string().min(1).max(64)}),
  // Re-reads the accounts under every Zernio key of the workspace (new ones added, removed ones marked).
  z.object({action:z.literal("syncZernio")}),
+ // Turns subtitles off (or on) in every editable clip's edit and queues a re-render. "unposted" leaves clips that
+ // are already published somewhere alone, since the posted videos can't change.
+ z.object({action:z.literal("captionsAll"),on:z.boolean(),scope:z.enum(["unposted","all"]).default("unposted")}),
  // Adds one more Zernio API key (a separate Zernio account). It is checked with Zernio before it is saved.
  z.object({action:z.literal("addZernioKey"),key:z.string().trim().min(10).max(300)}),
  // Removes a key and the accounts connected under it from Clipflow (they stay connected on Zernio).
@@ -58,7 +61,7 @@ export async function GET(){
   const prefs=Object.fromEntries(Object.entries((p??{}) as Record<string,unknown>).filter(([k])=>k!=="zernio_key_enc"&&k!=="zernio_label"));
   const keys=(await listKeys(db,owner)).map(k=>({id:k.id,label:k.label,created_at:k.created_at,last_error:k.last_error,accounts:a.results.filter(x=>x.zernio_key_id===k.id).length}));
   const site=!keys.length&&!!siteConnection(env);
-  const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,style:parse(p.style)}:{...defaults,style:null};
+  const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,style:parse(p.style)}:{...defaults,style:null};
   return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(x=>({...x,captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored})),storage:!!bucket(),analytics:null},{headers:{"Cache-Control":"private, no-store"}});
  }catch(error){console.error("Dashboard load failed",error);return Response.json({error:"We couldn't load your workspace. Please retry."},{status:503});}
 }
@@ -121,8 +124,8 @@ export async function POST(request:Request){
   if(payload.action==="settings"){
    const s=payload.settings;
    // A client that omits captionTemplate, aiCaptions or captionNotes keeps the saved values.
-   const ai=s.aiCaptions===undefined?null:Number(s.aiCaptions),notes=s.captionNotes??null;
-   statements.push(db.prepare("INSERT INTO preferences (owner,mode,duration,daily_limit,captions,framing,destinations,control,caption_template,ai_captions,caption_notes) VALUES (?,?,?,?,?,?,?,'paused',?,?,?) ON CONFLICT(owner) DO UPDATE SET mode=excluded.mode,duration=excluded.duration,daily_limit=excluded.daily_limit,captions=excluded.captions,framing=excluded.framing,destinations=excluded.destinations,caption_template=coalesce(?,preferences.caption_template),ai_captions=coalesce(?,preferences.ai_captions),caption_notes=coalesce(?,preferences.caption_notes)").bind(owner,s.mode,s.duration,s.dailyLimit,Number(s.captions),s.framing,JSON.stringify(s.destinations),s.captionTemplate??defaultCaption,ai??1,notes??"",s.captionTemplate??null,ai,notes));
+   const ai=s.aiCaptions===undefined?null:Number(s.aiCaptions),notes=s.captionNotes??null,transcribe=s.transcribe===undefined?null:Number(s.transcribe);
+   statements.push(db.prepare("INSERT INTO preferences (owner,mode,duration,daily_limit,captions,framing,destinations,control,caption_template,ai_captions,caption_notes,transcribe) VALUES (?,?,?,?,?,?,?,'paused',?,?,?,?) ON CONFLICT(owner) DO UPDATE SET mode=excluded.mode,duration=excluded.duration,daily_limit=excluded.daily_limit,captions=excluded.captions,framing=excluded.framing,destinations=excluded.destinations,caption_template=coalesce(?,preferences.caption_template),ai_captions=coalesce(?,preferences.ai_captions),caption_notes=coalesce(?,preferences.caption_notes),transcribe=coalesce(?,preferences.transcribe)").bind(owner,s.mode,s.duration,s.dailyLimit,Number(s.captions),s.framing,JSON.stringify(s.destinations),s.captionTemplate??defaultCaption,ai??1,notes??"",transcribe??1,s.captionTemplate??null,ai,notes,transcribe));
    message="Saved clipping and publishing preferences.";
   }
   if(payload.action==="control"){
@@ -212,6 +215,17 @@ export async function POST(request:Request){
    }
    if(!notes.length)return Response.json({error:failed.join(" ")},{status:502});
    message=[...notes,...failed].join(" ");
+  }
+  if(payload.action==="captionsAll"){
+   // Only clips with an edit and their unframed source can be re-rendered; turning subtitles on also needs words.
+   const result=await db.prepare(`UPDATE clips SET edit=json_set(edit,'$.captions.on',json(?)),edit_rev=edit_rev+1,render_state='queued',render_error=NULL
+    WHERE owner=? AND edit IS NOT NULL AND source_key IS NOT NULL AND coalesce(json_extract(edit,'$.captions.on'),0)!=?
+    AND (?=0 OR coalesce(json_array_length(transcript),0)>0)
+    AND (?='all' OR NOT EXISTS (SELECT 1 FROM posts p WHERE p.clip_id=clips.id AND p.state='published'))`)
+    .bind(payload.on?"true":"false",owner,Number(payload.on),Number(payload.on),payload.scope).run();
+   const n=result.meta.changes??0;
+   message=n?(payload.on?"Adding subtitles to ":"Removing subtitles from ")+n+" clip"+(n===1?"":"s")+". The worker re-renders them over the next few minutes; queued posts wait for the new version."
+    :payload.on?"No clips to change: they already have subtitles, or have no transcript.":"No clips to change: none of them "+(payload.scope==="all"?"":"that are still unposted ")+"have subtitles.";
   }
   if(payload.action==="accountOptions"){
    const account=await db.prepare("SELECT username,platform,options FROM accounts WHERE id=? AND owner=?").bind(payload.id,owner).first<{username:string;platform:string;options:string|null}>();

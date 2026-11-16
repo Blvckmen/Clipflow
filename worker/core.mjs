@@ -25,6 +25,9 @@ export function validateControl(c) {
   if (c.streamers.length > 500) throw new Error("Too many channels");
   // Dashboards that predate the framing setting omit it.
   c.framing ??= "blur";
+  // Dashboards that predate the transcribe setting omit it: transcribe, as before.
+  c.transcribe ??= true;
+  if (typeof c.transcribe !== "boolean") throw new Error("Invalid transcribe setting");
   if (!["blur","crop","fit"].includes(c.framing)) throw new Error("Invalid framing");
   if (!Number.isInteger(c.duration) || c.duration < 15 || c.duration > 90 || typeof c.captions !== "boolean" || !Number.isInteger(c.dailyLimit) || c.dailyLimit < 1 || c.dailyLimit > 50) throw new Error("Invalid clip settings");
   const ids = new Set();

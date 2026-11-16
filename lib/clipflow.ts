@@ -3,9 +3,11 @@ export const destinations=["TikTok","Instagram","YouTube","Facebook","X"] as con
 export const framings={blur:"Blurred background",crop:"Centre crop",fit:"Fit with black bars"} as const;
 export const settingsSchema=z.object({mode:z.enum(["automatic","review"]),duration:z.number().int().min(15).max(90),dailyLimit:z.number().int().min(1).max(50),captions:z.boolean(),framing:z.enum(["blur","crop","fit"]),destinations:z.array(z.enum(destinations)).max(5).transform(x=>[...new Set(x)]),captionTemplate:z.string().trim().min(1).max(500).optional(),
  // Omitted by older clients: the saved values are kept.
- aiCaptions:z.boolean().optional(),captionNotes:z.string().trim().max(1000).optional()});
+ aiCaptions:z.boolean().optional(),captionNotes:z.string().trim().max(1000).optional(),
+ // Whether the worker transcribes clips (Whisper). Off saves time and CPU; captions then need it back on.
+ transcribe:z.boolean().optional()});
 export const defaultCaption="{streamer} on {platform} #clips #{platform}";
-export const defaults={mode:"automatic",duration:45,dailyLimit:5,captions:true,framing:"blur",destinations:[] as string[],control:"paused",captionTemplate:defaultCaption,aiCaptions:true,captionNotes:""};
+export const defaults={mode:"automatic",duration:45,dailyLimit:5,captions:true,framing:"blur",destinations:[] as string[],control:"paused",captionTemplate:defaultCaption,aiCaptions:true,captionNotes:"",transcribe:true};
 // Platforms this build can actually publish to once an account is connected.
 export const publishable=["Instagram"] as const;
 export function parseStreamer(input:string){
