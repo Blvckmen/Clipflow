@@ -148,3 +148,9 @@ test("validateControl defaults transcription on and rejects other values", () =>
   assert.equal(validateControl(config({ transcribe: false })).transcribe, false);
   assert.throws(() => validateControl(config({ transcribe: "no" })));
 });
+
+test("validateControl accepts split screen and the background library", () => {
+  const c = validateControl(config({ framing: "split", backgrounds: [{ id: "11111111-1111-4111-8111-111111111111", size: 100 }] }));
+  assert.deepEqual([c.framing, c.backgrounds.length], ["split", 1]);
+  assert.deepEqual(validateControl(config()).backgrounds, [], "older dashboards send none");
+});

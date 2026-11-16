@@ -52,7 +52,7 @@ export function sourceSignals(energy,chat,from,to) {
 // boundaries. Then keeps an unframed *source* (the moment plus SOURCE_PAD seconds either side) with its transcript,
 // and renders the vertical clip from it with `edit` (see edit.mjs), the same way the dashboard editor re-renders.
 // Writes clip.mp4, source.mp4 and meta.json into `dir` and removes `raw` and intermediates.
-export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infinity,chat=[]},dir,signal) {
+export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infinity,chat=[],background=null},dir,signal) {
   const source=join(dir,"source.mp4"), energyFile=join(dir,"energy.json"), wordsFile=join(dir,"words.json");
   await mkdir(dir,{recursive:true});
   try {
@@ -83,7 +83,7 @@ export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infi
     // The workspace's on/off switch for captions always wins over a saved style.
     base.captions.on=captions;
     const edit=defaultEdit(base,{trimStart:start-from,trimEnd:end-from});
-    const rendered=await renderClip(source,{edit,words,width:info.width,height:info.height},join(dir,"clip.mp4"),signal);
+    const rendered=await renderClip(source,{edit,words,width:info.width,height:info.height,background:background?await background(edit):null},join(dir,"clip.mp4"),signal);
     const sourceBytes=await readFile(source);
     const meta={edit,words,signals:sourceSignals(energy,chat,from,to),source:{width:info.width,height:info.height,duration:Math.round((info.duration||to-from)*100)/100},sourceSha:clipHash(sourceBytes),sourceSize:sourceBytes.length};
     await writeFile(join(dir,"meta.json"),JSON.stringify(meta));

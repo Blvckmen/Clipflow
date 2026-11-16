@@ -3,9 +3,9 @@
 // worker renders with, so what you see is what gets posted. Saving stores the edit; the worker re-renders it.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, Scissors, Sparkles, Undo2 } from "lucide-react";
-import { ANIMATIONS, FONTS, H, MAX_CLIP, MIN_CLIP, PRESETS, W, activeCue, cues, layout } from "../worker/edit.mjs";
+import { ANIMATIONS, FONTS, H, MAX_CLIP, MIN_CLIP, PRESETS, SPLIT_H, W, activeCue, cues, layout } from "../worker/edit.mjs";
 
-type Frame = { mode: "blur" | "crop" | "fit"; zoom: number; x: number; y: number };
+type Frame = { mode: "blur" | "crop" | "fit" | "split"; zoom: number; x: number; y: number; background?: string | null };
 type Captions = { on: boolean; preset: string; font: string; size: number; color: string; highlight: string; outline: number; outlineColor: string; box: boolean; boxColor: string; uppercase: boolean; animation: string; words: number; y: number; mask: boolean };
 type Word = [number, number, string];
 export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { text: string; seconds: number; color: string; bg: string }; progress: { on: boolean; color: string }; words?: Word[] };
@@ -60,6 +60,9 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
   const [edit, setEditState] = useState<Edit | null>(null), [past, setPast] = useState<Edit[]>([]), [future, setFuture] = useState<Edit[]>([]);
   const [tab, setTab] = useState<Tab>("captions"), [playing, setPlaying] = useState(false), [time, setTime] = useState(0), [safe, setSafe] = useState(true), [saveStyle, setSaveStyle] = useState(false), [selected, setSelected] = useState<number | null>(null);
   const video = useRef<HTMLVideoElement>(null), canvas = useRef<HTMLCanvasElement>(null), strip = useRef<HTMLDivElement>(null);
+  // Split screen: the workspace's background videos, and the one playing under the preview.
+  const bgVideo = useRef<HTMLVideoElement>(null), [backgrounds, setBackgrounds] = useState<{ id: string; name: string }[]>([]);
+  useEffect(() => { fetch("/api/backgrounds").then(r => r.ok ? r.json() as Promise<{ backgrounds?: { id: string; name: string }[] }> : { backgrounds: [] }).then(b => setBackgrounds(b.backgrounds ?? [])).catch(() => {}); }, []);
   const lastPush = useRef({ at: 0, key: "" }), editRef = useRef<Edit | null>(null);
   // The post caption is saved on its own (no re-render needed).
   const [postText, setPostText] = useState(""), [captionSource, setCaptionSource] = useState<string | null>(null), [captionBusy, setCaptionBusy] = useState<"" | "write" | "save">(""), [captionNote, setCaptionNote] = useState("");
@@ -88,7 +91,8 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
 
   const words: Word[] = useMemo(() => edit?.words ?? bundle?.words ?? [], [edit?.words, bundle?.words]);
   const cueList = useMemo(() => edit ? cues(words, edit) : [], [words, edit]);
-  const cueRef = useRef(cueList);
+  const cueRef = useRef(cueList), backgroundsRef = useRef(backgrounds);
+  useEffect(() => { backgroundsRef.current = backgrounds; }, [backgrounds]);
   useEffect(() => { cueRef.current = cueList; }, [cueList]);
   const duration = bundle?.source.duration ?? 0;
 
@@ -109,7 +113,22 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
       const look = `brightness(${l.brightness}) contrast(${l.contrast}) saturate(${l.saturation})`;
       ctx.save();
       ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
-      if (v.readyState >= 2) {
+      if (v.readyState >= 2 && e.frame.mode === "split") {
+        // Stream in the top half (cut off at the seam), the background video looping in the bottom half.
+        ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, SPLIT_H); ctx.clip();
+        ctx.filter = look; ctx.drawImage(v, box.x, box.y, box.w, box.h); ctx.filter = "none"; ctx.restore();
+        const bg = bgVideo.current;
+        if (bg && bg.readyState >= 2) {
+          if (v.paused !== bg.paused) { if (v.paused) bg.pause(); else void bg.play().catch(() => {}); }
+          const bw = bg.videoWidth, bh = bg.videoHeight, cover = Math.max(W / bw, SPLIT_H / bh);
+          ctx.save(); ctx.beginPath(); ctx.rect(0, SPLIT_H, W, H - SPLIT_H); ctx.clip();
+          ctx.drawImage(bg, (W - bw * cover) / 2, SPLIT_H + (SPLIT_H - bh * cover) / 2, bw * cover, bh * cover); ctx.restore();
+        } else {
+          ctx.fillStyle = "#1b2128"; ctx.fillRect(0, SPLIT_H, W, H - SPLIT_H);
+          ctx.fillStyle = "#8b97a6"; ctx.font = "28px Arial, sans-serif"; ctx.textAlign = "center";
+          ctx.fillText(backgroundsRef.current.length ? "Background video loading…" : "Upload background videos in Settings", W / 2, SPLIT_H + SPLIT_H / 2);
+        }
+      } else if (v.readyState >= 2) {
         if (e.frame.mode === "blur") {
           const cover = Math.max(W / sw, H / sh), cw = sw * cover, ch = sh * cover;
           ctx.filter = look + " blur(26px) brightness(0.86)";
@@ -165,7 +184,7 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
     if (!d || !cv || !bundle) return;
     const scale = W / cv.getBoundingClientRect().width;
     const box = layout({ ...editRef.current!.frame, x: 0, y: 0 }, v?.videoWidth || bundle.source.width, v?.videoHeight || bundle.source.height);
-    const roomX = Math.abs(W - box.w) / 2, roomY = Math.abs(H - box.h) / 2;
+    const roomX = Math.abs(box.area.w - box.w) / 2, roomY = Math.abs(box.area.h - box.h) / 2;
     change("pan", e => ({ ...e, frame: { ...e.frame, x: roomX ? clamp(d.fx + (ev.clientX - d.x) * scale / roomX, -1, 1) : 0, y: roomY ? clamp(d.fy + (ev.clientY - d.y) * scale / roomY, -1, 1) : 0 } }));
   };
 
@@ -232,6 +251,7 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
           <canvas ref={canvas} width={W} height={H} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={() => { drag.current = null; }} title="Drag to reposition the picture" />
           {safe && <div className="safe-zones" aria-hidden><span className="sz-top" /><span className="sz-right">App buttons</span><span className="sz-bottom">Username &amp; caption</span></div>}
         </div>
+        {edit.frame.mode === "split" && (edit.frame.background ?? backgrounds[0]?.id) && <video ref={bgVideo} className="editor-video" key={edit.frame.background ?? backgrounds[0]?.id} src={"/api/backgrounds/" + (edit.frame.background ?? backgrounds[0]?.id) + "/file"} muted loop playsInline preload="auto" />}
         <video ref={video} className="editor-video" src={bundle.sourceStored ? "/api/clips/" + clipId + "/source" : undefined} playsInline preload="auto" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onLoadedMetadata={e => { e.currentTarget.currentTime = edit.trim.start; }} />
         <div className="stage-controls">
           <button className="icon-button play" aria-label={playing ? "Pause" : "Play"} onClick={toggle}>{playing ? <Pause size={18} /> : <Play size={18} />}</button>
@@ -288,7 +308,13 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
             </div>
           </>}
           {tab === "frame" && <>
-            <div className="segmented">{(["blur", "crop", "fit"] as const).map(m => <button key={m} className={edit.frame.mode === m ? "active" : ""} onClick={() => set("frame", { mode: m })}>{{ blur: "Blurred fill", crop: "Fill (crop)", fit: "Fit with bars" }[m]}</button>)}</div>
+            <div className="segmented">{(["blur", "crop", "fit", "split"] as const).map(m => <button key={m} className={edit.frame.mode === m ? "active" : ""} onClick={() => change("frame-mode", e => ({ ...e, frame: { ...e.frame, mode: m }, captions: m === "split" && e.captions.y === 0.72 ? { ...e.captions, y: 0.5 } : m !== "split" && e.frame.mode === "split" && e.captions.y === 0.5 ? { ...e.captions, y: 0.72 } : e.captions }))}>{{ blur: "Blurred fill", crop: "Fill (crop)", fit: "Fit with bars", split: "Split screen" }[m]}</button>)}</div>
+            {edit.frame.mode === "split" && <label className="wide">Background video
+              <select value={edit.frame.background ?? ""} onChange={e => set("frame", { background: e.target.value || null })}>
+                <option value="">Picked from your library for this clip</option>
+                {backgrounds.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+              <small>{backgrounds.length ? "Plays under the stream from a different point in each clip. Manage the videos in Settings → Split-screen backgrounds." : "Your library is empty: upload loops in Settings → Split-screen backgrounds. Until then the clip renders with the blurred fill."}</small></label>}
             <div className="control-grid">
               <label>Zoom <span>{edit.frame.zoom.toFixed(2)}×</span><input type="range" min={1} max={3} step={0.01} value={edit.frame.zoom} onChange={e => set("frame", { zoom: Number(e.target.value) })} /></label>
               <label>Left / right <span>{Math.round(edit.frame.x * 100)}</span><input type="range" min={-1} max={1} step={0.01} value={edit.frame.x} onChange={e => set("frame", { x: Number(e.target.value) })} /></label>

@@ -3,7 +3,7 @@
 //
 // An edit describes how to turn a clip's *source* (the captured moment plus a few seconds either side, unframed)
 // into the published 720x1280 clip. Times are seconds from the start of the source.
-//   { v, trim:{start,end}, frame:{mode,zoom,x,y}, look:{brightness,contrast,saturation},
+//   { v, trim:{start,end}, frame:{mode,zoom,x,y,background}, look:{brightness,contrast,saturation},
 //     captions:{on,preset,font,size,color,highlight,outline,outlineColor,box,boxColor,uppercase,animation,words,y,mask},
 //     hook:{text,seconds,color,bg}, progress:{on,color}, words?:[[start,end,text],...] }
 // A *style* is the reusable part of an edit (everything except trim, hook text and words). Each streamer can have
@@ -11,7 +11,10 @@
 
 export const W = 720, H = 1280;
 export const FONTS = ["Arial", "Impact", "Verdana", "Trebuchet MS", "Georgia", "Comic Sans MS", "DejaVu Sans"];
-export const FRAMINGS = ["blur", "crop", "fit"];
+// "split": the stream fills the top half and a looping background video (from the workspace's library) the bottom
+// half. frame.background is that video's id, or null to let the worker pick one for the clip (the same one each
+// time it renders that clip).
+export const FRAMINGS = ["blur", "crop", "fit", "split"];
 export const ANIMATIONS = ["none", "pop", "karaoke", "word"];
 export const MIN_CLIP = 5, MAX_CLIP = 90;
 
@@ -29,9 +32,10 @@ export function defaultStyle({ framing = "blur", captions = true } = {}) {
   const preset = { ...PRESETS.bold };
   delete preset.label;
   return {
-    frame: { mode: FRAMINGS.includes(framing) ? framing : "blur", zoom: 1, x: 0, y: 0 },
+    frame: { mode: FRAMINGS.includes(framing) ? framing : "blur", zoom: 1, x: 0, y: 0, background: null },
     look: { brightness: 1, contrast: 1, saturation: 1 },
-    captions: { on: !!captions, preset: "bold", ...preset, y: 0.72, mask: false },
+    // Split screen puts captions on the seam between the two videos.
+    captions: { on: !!captions, preset: "bold", ...preset, y: framing === "split" ? 0.5 : 0.72, mask: false },
     hook: { color: "#111111", bg: "#ffffff" },
     progress: { on: false, color: "#bcfa76" },
   };
@@ -46,6 +50,7 @@ const color = (v, name) => { if (typeof v !== "string" || !/^#[0-9a-f]{6}$/i.tes
 const pick = (v, list, name) => { if (!list.includes(v)) fail(name + " is not a supported value"); return v; };
 const text = (v, max, name) => { if (typeof v !== "string") fail(name + " must be text"); return v.replace(/[\r\n]+/g, " ").replace(/[{}\\]/g, "").slice(0, max); };
 const obj = (v, name) => { if (!v || typeof v !== "object" || Array.isArray(v)) fail(name + " is missing"); return v; };
+const ref = (v, name) => { if (v === null || v === undefined) return null; if (typeof v !== "string" || !/^[0-9a-f-]{36}$/i.test(v)) fail(name + " is not valid"); return v.toLowerCase(); };
 
 // Validates a style from an untrusted client (or an older saved one), filling any missing part from the defaults.
 export function normalizeStyle(input, base = defaultStyle()) {
@@ -53,7 +58,7 @@ export function normalizeStyle(input, base = defaultStyle()) {
   const f = { ...base.frame, ...(s.frame ?? {}) }, l = { ...base.look, ...(s.look ?? {}) }, c = { ...base.captions, ...(s.captions ?? {}) };
   const h = { ...base.hook, ...(s.hook ?? {}) }, p = { ...base.progress, ...(s.progress ?? {}) };
   return {
-    frame: { mode: pick(f.mode, FRAMINGS, "Framing"), zoom: num(f.zoom, 1, 3, "Zoom"), x: num(f.x, -1, 1, "Horizontal position"), y: num(f.y, -1, 1, "Vertical position") },
+    frame: { mode: pick(f.mode, FRAMINGS, "Framing"), zoom: num(f.zoom, 1, 3, "Zoom"), x: num(f.x, -1, 1, "Horizontal position"), y: num(f.y, -1, 1, "Vertical position"), background: ref(f.background, "Background video") },
     look: { brightness: num(l.brightness, 0.5, 1.5, "Brightness"), contrast: num(l.contrast, 0.5, 1.5, "Contrast"), saturation: num(l.saturation, 0, 2, "Saturation") },
     captions: {
       on: bool(c.on, "Captions"), preset: typeof c.preset === "string" && PRESETS[c.preset] ? c.preset : "custom",
@@ -105,12 +110,15 @@ const round = n => Math.round(n * 100) / 100;
 const even = n => Math.max(2, 2 * Math.round(n / 2));
 
 // Where the picture sits on the 720x1280 canvas. Crop covers the frame, fit and blur fit inside it; zoom enlarges,
-// and x/y (-1..1) slide the picture across whatever room the zoom leaves.
+// and x/y (-1..1) slide the picture across whatever room the zoom leaves. Split screen covers the top half (the
+// picture is cut off at the seam: `area` is the region it is clipped to).
+export const SPLIT_H = H / 2;
 export function layout(frame, width, height) {
   const sw = width > 0 ? width : 1280, sh = height > 0 ? height : 720;
-  const base = frame.mode === "crop" ? Math.max(W / sw, H / sh) : Math.min(W / sw, H / sh);
+  const AW = W, AH = frame.mode === "split" ? SPLIT_H : H;
+  const base = frame.mode === "crop" || frame.mode === "split" ? Math.max(AW / sw, AH / sh) : Math.min(AW / sw, AH / sh);
   const w = even(sw * base * frame.zoom), h = even(sh * base * frame.zoom);
-  return { w, h, x: Math.round((W - w) / 2 + frame.x * Math.abs(W - w) / 2), y: Math.round((H - h) / 2 + frame.y * Math.abs(H - h) / 2) };
+  return { w, h, x: Math.round((AW - w) / 2 + frame.x * Math.abs(AW - w) / 2), y: Math.round((AH - h) / 2 + frame.y * Math.abs(AH - h) / 2), area: { w: AW, h: AH } };
 }
 
 const SWEAR = /^(fuck|shit|bitch|cunt|dick|puss|asshole|bastard|cock|slut|whore|fag|nigg|motherf)/i;
@@ -203,15 +211,23 @@ const hex6 = c => "0x" + c.replace("#", "");
 const fmt = n => String(Math.round(n * 1000) / 1000);
 
 // The ffmpeg -filter_complex graph for an edit. `subtitles` is the ASS file name relative to ffmpeg's working
-// directory (absolute Windows paths break filter syntax), or null when there is nothing to draw.
-export function filterGraph(edit, { width, height }, subtitles) {
-  const { w, h, x, y } = layout(edit.frame, width, height), l = edit.look;
+// directory (absolute Windows paths break filter syntax), or null when there is nothing to draw. `background` says
+// whether input 1 is a split-screen background video; split screen without one falls back to the blurred fill.
+export function filterGraph(edit, { width, height }, subtitles, { background = false } = {}) {
+  const split = edit.frame.mode === "split" && background;
+  const frame = edit.frame.mode === "split" && !background ? { ...edit.frame, mode: "blur" } : edit.frame;
+  const { w, h, x, y } = layout(frame, width, height), l = edit.look;
   // Brightness scales luma above video black (16), like the preview's CSS brightness(), through a lookup table:
   // colorchannelmixer did the same per pixel in floating point and made renders about four times slower.
   const look = [l.brightness !== 1 && `lutyuv=y=clip(16+(val-16)*${fmt(l.brightness)}\\,0\\,255)`, (l.contrast !== 1 || l.saturation !== 1) && `eq=contrast=${fmt(l.contrast)}:saturation=${fmt(l.saturation)}`].filter(Boolean).join(",");
   const src = "[0:v]" + (look ? look + "," : "");
   const parts = [];
-  if (edit.frame.mode === "blur") {
+  if (split) {
+    // Top: the stream scaled to cover the top half and cut to it. Bottom: the background, covering the bottom half.
+    parts.push(src + `scale=${w}:${h},crop=${W}:${SPLIT_H}:${-x}:${-y},setsar=1[top]`,
+      `[1:v]scale=${W}:${SPLIT_H}:force_original_aspect_ratio=increase,crop=${W}:${SPLIT_H},fps=30,setsar=1[bot]`,
+      `[top][bot]vstack=inputs=2:shortest=1[v0]`);
+  } else if (frame.mode === "blur") {
     parts.push(src + "split[a][b]", `[a]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},scale=180:320,boxblur=8:2,eq=brightness=-0.12,scale=${W}:${H}[bg]`, `[b]scale=${w}:${h}[fg]`, `[bg][fg]overlay=${x}:${y}[v0]`);
   } else {
     parts.push(`color=c=black:s=${W}x${H}:r=30[bg]`, src + `scale=${w}:${h}[fg]`, `[bg][fg]overlay=${x}:${y}:shortest=1[v0]`);

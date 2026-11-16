@@ -22,15 +22,17 @@ export async function videoInfo(file, signal) {
   } catch { return { width: 0, height: 0, duration: 0 }; }
 }
 
-// Writes the rendered clip to `out`. Returns { sha, size, duration }.
-export async function renderClip(source, { edit, words, width, height }, out, signal) {
+// Writes the rendered clip to `out`. Returns { sha, size, duration }. `background` ({ path, start }) is the
+// split-screen video, looped from `start` seconds; without it split screen renders as the blurred fill.
+export async function renderClip(source, { edit, words, width, height, background = null }, out, signal) {
   const dir = dirname(out), ass = basename(out).replace(/\.mp4$/, "") + ".ass";
   const subtitles = needsSubtitles(edit, words) ? ass : null;
   if (subtitles) await writeFile(join(dir, ass), buildAss(edit, words), "utf8");
-  const length = edit.trim.end - edit.trim.start;
+  const length = edit.trim.end - edit.trim.start, split = edit.frame.mode === "split" && !!background;
   try {
     await command("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-ss", String(edit.trim.start), "-t", String(length), "-i", source,
-      "-filter_complex", filterGraph(edit, { width, height }, subtitles), "-map", "[vout]", "-map", "0:a?",
+      ...(split ? ["-stream_loop", "-1", "-ss", String(background.start ?? 0), "-i", background.path] : []),
+      "-filter_complex", filterGraph(edit, { width, height }, subtitles, { background: split }), "-map", "[vout]", "-map", "0:a?",
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-maxrate", "2500k", "-bufsize", "5000k", "-r", "30",
       "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", basename(out)], { signal, cwd: dir, timeout: encodeTimeout(length) }).done;
   } finally { if (subtitles) await rm(join(dir, ass), { force: true }); }

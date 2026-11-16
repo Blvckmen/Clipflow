@@ -32,7 +32,9 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("postClip"),id:z.string().uuid(),accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)])}),
  // Bulk actions on clips picked in the library: post them all to the chosen accounts, or review, edit or delete them.
  z.object({action:z.literal("postClips"),ids:clipIds,accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)])}),
- z.object({action:z.literal("bulkClips"),ids:clipIds,op:z.enum(["approve","reject","pending","delete","captionsOn","captionsOff","frame"]),frame:z.enum(["blur","crop","fit"]).optional()}),
+ z.object({action:z.literal("bulkClips"),ids:clipIds,op:z.enum(["approve","reject","pending","delete","captionsOn","captionsOff","frame"]),frame:z.enum(["blur","crop","fit","split"]).optional()}),
+ // Removes a split-screen background video from the library (clips using it switch to another one).
+ z.object({action:z.literal("deleteBackground"),id:z.string().uuid()}),
  // Re-reads the accounts under every Zernio key of the workspace (new ones added, removed ones marked).
  z.object({action:z.literal("syncZernio")}),
  // Turns subtitles off (or on) in every editable clip's edit and queues a re-render. "unposted" leaves clips that
@@ -71,7 +73,7 @@ export async function GET(){
   const keys=(await listKeys(db,owner)).map(k=>({id:k.id,label:k.label,created_at:k.created_at,last_error:k.last_error,accounts:a.results.filter(x=>x.zernio_key_id===k.id).length}));
   const site=!keys.length&&!!siteConnection(env);
   const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,style:parse(p.style)}:{...defaults,style:null};
-  return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(x=>({...x,captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored})),storage:!!bucket(),analytics:await analyticsSummary(db,owner)},{headers:{"Cache-Control":"private, no-store"}});
+  return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(x=>({...x,captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored})),storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,analytics:await analyticsSummary(db,owner)},{headers:{"Cache-Control":"private, no-store"}});
  }catch(error){console.error("Dashboard load failed",error);return Response.json({error:"We couldn't load your workspace. Please retry."},{status:503});}
 }
 export async function POST(request:Request){
@@ -265,7 +267,7 @@ export async function POST(request:Request){
      :{path:"$.captions.on",value:payload.op==="captionsOn"?"true":"false"};
     if(payload.op==="frame"&&!payload.frame)return Response.json({error:"Choose a framing."},{status:400});
     const needsWords=payload.op==="captionsOn"?1:0;
-    const r=await db.prepare(`UPDATE clips SET edit=json_set(edit,'${set.path}',json(?)),edit_rev=edit_rev+1,render_state='queued',render_error=NULL
+    const r=await db.prepare(`UPDATE clips SET edit=json_set(edit,'${set.path}',json(?)${payload.op==="frame"&&payload.frame==="split"?",'$.captions.y',0.5":""}),edit_rev=edit_rev+1,render_state='queued',render_error=NULL
      WHERE owner=? AND id IN (${marks}) AND edit IS NOT NULL AND source_key IS NOT NULL AND coalesce(json_extract(edit,'${set.path}'),'')!=json_extract(json(?),'$')
      AND (?=0 OR coalesce(json_array_length(transcript),0)>0)`).bind(set.value,owner,idList,set.value,needsWords).run();
     const k=n(r),skipped=payload.ids.length-k;
@@ -273,6 +275,13 @@ export async function POST(request:Request){
     message=(k?what+clips(k)+". The worker re-renders them over the next few minutes; queued posts wait for the new version.":"No clips changed.")
      +(skipped?" "+clips(skipped)+" left as they were (already like that"+(needsWords?", no transcript":"")+", or can't be edited).":"");
    }
+  }
+  if(payload.action==="deleteBackground"){
+   const row=await db.prepare("SELECT key,name FROM backgrounds WHERE id=? AND owner=?").bind(payload.id,owner).first<{key:string;name:string}>();
+   if(!row)return Response.json({error:"That background video is not in your library."},{status:404});
+   await bucket()?.delete(row.key);
+   statements.push(db.prepare("DELETE FROM backgrounds WHERE id=? AND owner=?").bind(payload.id,owner));
+   message="Removed "+row.name+" from the background library. Split-screen clips that used it get another one when they are next rendered.";
   }
   if(payload.action==="retryPost"){
    const post=await db.prepare("SELECT state FROM posts WHERE id=? AND owner=?").bind(payload.id,owner).first<{state:string}>();

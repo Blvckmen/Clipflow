@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { validBackgrounds } from "./backgrounds.mjs";
 
 export function channelUrl(value) {
   const u = new URL(value);
@@ -28,7 +29,9 @@ export function validateControl(c) {
   // Dashboards that predate the transcribe setting omit it: transcribe, as before.
   c.transcribe ??= true;
   if (typeof c.transcribe !== "boolean") throw new Error("Invalid transcribe setting");
-  if (!["blur","crop","fit"].includes(c.framing)) throw new Error("Invalid framing");
+  if (!["blur","crop","fit","split"].includes(c.framing)) throw new Error("Invalid framing");
+  // Split-screen background videos in the workspace library; dashboards that predate them omit the list.
+  c.backgrounds = validBackgrounds(c.backgrounds);
   if (!Number.isInteger(c.duration) || c.duration < 15 || c.duration > 90 || typeof c.captions !== "boolean" || !Number.isInteger(c.dailyLimit) || c.dailyLimit < 1 || c.dailyLimit > 50) throw new Error("Invalid clip settings");
   const ids = new Set();
   for (const s of c.streamers) {

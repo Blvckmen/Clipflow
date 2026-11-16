@@ -449,3 +449,49 @@ describe("editing a streamer", () => {
     await dash({ action: "remove", id: s.id });
   });
 });
+
+describe("split-screen backgrounds", () => {
+  const up = (bytes, type = "video/mp4", name = "Parkour run.mp4") => fetch(base + "/api/backgrounds", { method: "POST", headers: { cookie, "content-type": type, "x-file-name": encodeURIComponent(name) }, body: bytes });
+  let bg;
+  test("a background video can be uploaded, previewed by its owner and downloaded by the worker", async () => {
+    const bytes = Buffer.alloc(5000, 3);
+    assert.equal((await up(bytes, "image/png")).status, 415, "MP4 only");
+    assert.equal((await up(Buffer.alloc(10))).status, 400, "empty");
+    const r = await up(bytes);
+    assert.equal(r.status, 200, await r.clone().text());
+    const body = await r.json();
+    bg = body.backgrounds.find(b => b.name === "Parkour run");
+    assert.ok(bg, "listed under its name, without the extension");
+    assert.equal(bg.size, 5000);
+    assert.equal((await dash()).body.backgrounds.some(b => b.id === bg.id), true);
+    const own = await fetch(base + "/api/backgrounds/" + bg.id + "/file", { headers: { cookie } });
+    assert.deepEqual(Buffer.from(await own.arrayBuffer()), bytes);
+    assert.equal((await fetch(base + "/api/backgrounds/" + bg.id + "/file")).status, 401);
+    const config = await (await worker("/api/worker/config")).json();
+    assert.ok(config.backgrounds.some(b => b.id === bg.id && b.size === 5000), "the worker is told about it");
+    const got = await worker("/api/worker/backgrounds/" + bg.id);
+    assert.deepEqual(Buffer.from(await got.arrayBuffer()), bytes);
+    assert.equal((await fetch(base + "/api/worker/backgrounds/" + bg.id)).status, 401);
+  });
+  test("split screen can be the default framing and is applied to selected clips with captions on the seam", async () => {
+    const { mode, duration, dailyLimit, captions, destinations } = originalSettings;
+    assert.equal((await dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, framing: "split", destinations } })).status, 200);
+    assert.equal((await (await worker("/api/worker/config")).json()).framing, "split");
+    await dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, framing: originalSettings.framing ?? "blur", destinations } });
+    const source = Buffer.alloc(9000, 5), file = Buffer.alloc(5000, 4);
+    const edit = defaultEdit(defaultStyle(), { trimStart: 6, trimEnd: 36 });
+    const { clip } = await reportClip(file, { edit, transcript: [], source: { width: 1920, height: 1080, duration: 42, sha: sha256(source), size: source.length } });
+    await worker("/api/worker/clips/" + clip.id + "/source", { method: "PUT", headers: { "content-type": "video/mp4" }, body: source });
+    const r = await dash({ action: "bulkClips", ids: [clip.id], op: "frame", frame: "split" });
+    assert.match(r.body.message, /^Reframing \(split\) 1 clip/);
+    const job = (await (await worker("/api/worker/config")).json()).renders.find(x => x.id === clip.id);
+    assert.deepEqual([job.edit.frame.mode, job.edit.captions.y], ["split", 0.5]);
+    await dash({ action: "deleteClip", id: clip.id });
+  });
+  test("deleting a background removes it everywhere", async () => {
+    assert.equal((await dash({ action: "deleteBackground", id: bg.id })).status, 200);
+    assert.equal((await dash()).body.backgrounds.some(b => b.id === bg.id), false);
+    assert.equal((await worker("/api/worker/backgrounds/" + bg.id)).status, 404);
+    assert.equal((await dash({ action: "deleteBackground", id: bg.id })).status, 404);
+  });
+});

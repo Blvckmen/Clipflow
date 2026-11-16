@@ -39,13 +39,13 @@ test("normalizeStyle fills parts an older saved style lacks", () => {
 });
 
 test("layout fits, covers, zooms and pans on the 720x1280 frame", () => {
-  assert.deepEqual(layout({ mode: "fit", zoom: 1, x: 0, y: 0 }, 1920, 1080), { w: 720, h: 406, x: 0, y: 437 });
-  assert.deepEqual(layout({ mode: "crop", zoom: 1, x: 0, y: 0 }, 1920, 1080), { w: 2276, h: 1280, x: -778, y: 0 });
+  assert.deepEqual(layout({ mode: "fit", zoom: 1, x: 0, y: 0 }, 1920, 1080), { w: 720, h: 406, x: 0, y: 437, area: { w: 720, h: 1280 } });
+  assert.deepEqual(layout({ mode: "crop", zoom: 1, x: 0, y: 0 }, 1920, 1080), { w: 2276, h: 1280, x: -778, y: 0, area: { w: 720, h: 1280 } });
   assert.equal(layout({ mode: "crop", zoom: 1, x: 1, y: 0 }, 1920, 1080).x, 0, "sliding the picture fully right shows its left edge");
   assert.equal(layout({ mode: "crop", zoom: 1, x: -1, y: 0 }, 1920, 1080).x, 720 - 2276, "fully left shows its right edge");
   const zoomed = layout({ mode: "blur", zoom: 2, x: 0, y: 0 }, 1920, 1080);
   assert.deepEqual([zoomed.w, zoomed.h], [1440, 810]);
-  for (const v of Object.values(layout({ mode: "fit", zoom: 1.37, x: 0.3, y: -0.2 }, 1279, 721))) assert.equal(Number.isInteger(v), true);
+  for (const v of Object.values(layout({ mode: "fit", zoom: 1.37, x: 0.3, y: -0.2 }, 1279, 721))) if (typeof v === "number") assert.equal(Number.isInteger(v), true);
 });
 
 test("cues group words by line length, pauses and sentence ends, relative to the trim", () => {
@@ -102,4 +102,20 @@ test("filterGraph frames, adjusts colour, burns subtitles and draws the progress
   assert.doesNotMatch(crop, /colorchannelmixer/, "the slow per-pixel mixer is not used");
   assert.match(crop, /color=c=0xff0000:s=720x10:r=30\[bar\];\[v0\]\[bar\]overlay=x='-w\+w\*t\/29':y=main_h-10:eval=frame:shortest=1\[v2\];\[v2\]format=yuv420p/);
   assert.doesNotMatch(crop, /subtitles/);
+});
+
+test("split screen: the stream covers the top half and a background video the bottom half", async () => {
+  const { filterGraph, SPLIT_H, normalizeStyle, defaultStyle } = await import("../edit.mjs");
+  const top = layout({ mode: "split", zoom: 1, x: 0, y: 0 }, 1920, 1080);
+  assert.deepEqual(top, { w: 1138, h: 640, x: -209, y: 0, area: { w: 720, h: SPLIT_H } }, "16:9 covers 720x640, centred");
+  const edit = { ...defaultStyle({ framing: "split" }), trim: { start: 0, end: 10 }, hook: { text: "", seconds: 3, color: "#111111", bg: "#ffffff" } };
+  assert.equal(edit.captions.y, 0.5, "captions sit on the seam");
+  const graph = filterGraph(edit, { width: 1920, height: 1080 }, null, { background: true });
+  assert.match(graph, /\[0:v\]scale=1138:640,crop=720:640:209:0,setsar=1\[top\]/);
+  assert.match(graph, /\[1:v\]scale=720:640:force_original_aspect_ratio=increase,crop=720:640,fps=30,setsar=1\[bot\]/);
+  assert.match(graph, /\[top\]\[bot\]vstack=inputs=2:shortest=1\[v0\]/);
+  assert.match(filterGraph(edit, { width: 1920, height: 1080 }, null), /boxblur/, "no background video: blurred fill instead");
+  assert.equal(normalizeStyle({ frame: { mode: "split", background: "0b5A6acf-19ee-570a-9e28-aaf4c6c5765c" } }).frame.background, "0b5a6acf-19ee-570a-9e28-aaf4c6c5765c");
+  assert.throws(() => normalizeStyle({ frame: { mode: "split", background: "../etc/passwd" } }), /Background video/);
+  assert.equal(normalizeStyle({ frame: { mode: "fit" } }).frame.background, null, "older styles get no background");
 });

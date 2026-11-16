@@ -6,6 +6,7 @@ import { openChat } from "./chat.mjs";
 import { PROBE_TIMEOUT_MS, probeLive, processWindow, streamlink } from "./media.mjs";
 import { normalizeEdit } from "./edit.mjs";
 import { renderClip, videoInfo } from "./render.mjs";
+import { backgroundStart, chooseBackground, localBackground } from "./backgrounds.mjs";
 import { Recorder } from "./recorder.mjs";
 
 const env = process.env;
@@ -166,7 +167,7 @@ async function processJobs() {
     const controller = new AbortController();
     processing = { job, controller };
     try {
-      const result = await processWindow(job.raw, { settings: job.settings, style: job.style, focusFrom: job.focusFrom, focusTo: job.focusTo, chat: job.chat }, job.dir, controller.signal);
+      const result = await processWindow(job.raw, { settings: job.settings, style: job.style, focusFrom: job.focusFrom, focusTo: job.focusTo, chat: job.chat, background: edit => backgroundFor(edit, job.id) }, job.dir, controller.signal);
       store.ready(job.id, result.sha, Math.min(90, Math.max(15, Math.round(result.end - result.start))));
       console.log("Clip ready", job.id, "from", job.streamer.url, "(" + reasonLabel[job.reason] + ", " + Math.round(result.end - result.start) + "s)");
     } catch (error) {
@@ -222,6 +223,26 @@ async function checkSessions() {
   }
 }
 
+// The split-screen background for a clip ({ path, start }), downloaded the first time it is needed. Null when the
+// clip isn't split screen or the library is empty; a background that can't be fetched falls back to the blurred
+// fill rather than failing the clip.
+async function backgroundFor(edit, clipId) {
+  const entry = chooseBackground(edit, clipId, config?.backgrounds);
+  if (!entry) return null;
+  try {
+    const path = await localBackground(dataDir, entry, async id => {
+      const response = await api("/api/worker/backgrounds/" + id, { timeout: 300_000 });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      return Buffer.from(await response.arrayBuffer());
+    });
+    const info = await videoInfo(path);
+    return { path, start: backgroundStart(clipId, info.duration, edit.trim.end - edit.trim.start) };
+  } catch (error) {
+    problem("Split-screen background unavailable for clip " + clipId + "; used the blurred fill instead: " + error.message);
+    return null;
+  }
+}
+
 // Re-renders a clip with an edit saved in the dashboard editor and uploads the result in place of the old file.
 async function rerender(job) {
   const controller = new AbortController();
@@ -242,7 +263,7 @@ async function rerender(job) {
     const info = job.source?.width ? job.source : await videoInfo(source, controller.signal);
     const edit = normalizeEdit(job.edit, { duration: info.duration || job.source?.duration || 600 });
     const out = join(scratch, "render-" + job.rev + ".mp4");
-    const result = await renderClip(source, { edit, words: job.edit.words ?? job.words ?? [], width: info.width, height: info.height }, out, controller.signal);
+    const result = await renderClip(source, { edit, words: job.edit.words ?? job.words ?? [], width: info.width, height: info.height, background: await backgroundFor(edit, job.id) }, out, controller.signal);
     const upload = await api("/api/worker/clips/" + job.id + "/render", { method: "PUT", body: await readFile(out), headers: { "content-type": "video/mp4", "x-edit-rev": String(job.rev), "x-clip-sha256": result.sha }, timeout: 180_000 });
     // 409: the clip was edited again meanwhile; the newer revision arrives with the next config poll.
     if (!upload.ok && upload.status !== 409) throw new Error("upload HTTP " + upload.status);

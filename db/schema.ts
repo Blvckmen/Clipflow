@@ -84,3 +84,8 @@ export const posts=sqliteTable("posts",{
 // When each periodic job last ran (e.g. "analytics:<owner>:<zernio key id or site>"), so the once-a-minute cron
 // trigger can run slower jobs on their own schedule.
 export const syncState=sqliteTable("sync_state",{key:text("key").primaryKey(),at:text("at").notNull(),note:text("note")});
+// Split-screen background videos a workspace has uploaded (stored in R2 under backgrounds/<id>.mp4).
+export const backgrounds=sqliteTable("backgrounds",{
+ id:text("id").primaryKey(),owner:text("owner").notNull(),name:text("name").notNull(),key:text("key").notNull(),size:integer("size").notNull(),
+ contentType:text("content_type").notNull(),createdAt:text("created_at").notNull(),
+},t=>[index("backgrounds_owner").on(t.owner)]);
