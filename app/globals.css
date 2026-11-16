@@ -166,3 +166,9 @@
 .bulk-captions small{display:block;font-size:12px;margin-top:4px}
 .bulk-captions>div{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
 .form-body .check-row input:disabled+span{opacity:.55}
+/* Post dialog */
+.post-picker label{align-items:center}
+.post-picker label>span{display:flex;flex-direction:column}
+.post-picker label small{font-size:12px;color:var(--muted)}
+.post-picker label small a{color:var(--lime);display:inline-flex;align-items:center;gap:2px}
+.post-picker label.disabled{opacity:.55}

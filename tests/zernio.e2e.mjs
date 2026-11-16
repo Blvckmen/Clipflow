@@ -253,6 +253,38 @@ test("per-account options change how posts are sent", async () => {
   assert.deepEqual((await sentAll(second.clip.id, ["tiktok"])).tiktok.params.tiktokSettings, { draft: true });
 });
 
+test("a clip can be posted again by hand, once at a time, and posting a clip awaiting review approves it", async () => {
+  const ig = (await dash()).body.accounts.find(a => a.platform === "instagram");
+  const { clip } = await addClip();
+  for (let i = 0; i < 4 && (await postsFor(clip.id)).instagram?.state !== "published"; i++) await cron(61_000);
+  assert.equal((await postsFor(clip.id)).instagram.state, "published");
+  const again = await dash({ action: "postClip", id: clip.id, accounts: [ig.id] });
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.match(again.body.message, /Instagram @ig_clips \(again\)/);
+  const twice = await dash({ action: "postClip", id: clip.id, accounts: [ig.id] });
+  assert.equal(twice.status, 409, "one unfinished post per clip and account");
+  assert.match(twice.body.error, /Already on its way to Instagram @ig_clips/);
+  for (let i = 0; i < 4 && (await dash()).body.posts.filter(p => p.clip_id === clip.id && p.platform === "instagram" && p.state === "published").length < 2; i++) await cron(61_000);
+  const igPosts = (await dash()).body.posts.filter(p => p.clip_id === clip.id && p.platform === "instagram");
+  assert.deepEqual(igPosts.map(p => [p.round, p.state]).sort(), [[0, "published"], [1, "published"]]);
+  const sent = (await fakeLog()).posts.filter(p => p.platform === "instagram" && p.params.mediaItems[0].url.includes(clip.id));
+  assert.equal(sent.length, 2, "Zernio got a second, separate post");
+  await cron(61_000); await cron(61_000);
+  assert.equal((await dash()).body.posts.filter(p => p.clip_id === clip.id && p.platform === "instagram").length, 2, "the automatic queue never adds a third");
+  // In review mode a new clip waits; posting it by hand approves it.
+  await dash({ action: "settings", settings: { ...settings, mode: "review" } });
+  await dash({ action: "control", control: "running" });
+  const pending = (await addClip()).clip;
+  assert.equal((await dash()).body.clips.find(c => c.id === pending.id).review, "pending");
+  assert.equal((await dash({ action: "postClip", id: pending.id, accounts: [ig.id] })).status, 200);
+  assert.equal((await dash()).body.clips.find(c => c.id === pending.id).review, "approved");
+  for (let i = 0; i < 4 && (await postsFor(pending.id)).instagram?.state !== "published"; i++) await cron(61_000);
+  assert.equal((await postsFor(pending.id)).instagram.state, "published");
+  assert.equal((await dash({ action: "postClip", id: randomUUID(), accounts: [ig.id] })).status, 404);
+  await dash({ action: "settings", settings });
+  await dash({ action: "control", control: "running" });
+});
+
 test("a second Zernio key adds a separate set of accounts that post with their own key", async () => {
   const added = await dash({ action: "addZernioKey", key: "sk_second_7890" });
   assert.equal(added.status, 200, JSON.stringify(added.body));

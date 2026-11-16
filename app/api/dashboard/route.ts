@@ -26,6 +26,8 @@ const actionSchema=z.discriminatedUnion("action",[
  // `platform` is the pre-multi-account form: it disconnects that platform's only account.
  z.object({action:z.literal("disconnect"),id:z.string().uuid().optional(),platform:z.enum(["instagram"]).optional()}),
  z.object({action:z.literal("retryPost"),id:z.string().min(1).max(64)}),
+ // Posts a clip's current version to the chosen accounts now: its first post, or again after an edit.
+ z.object({action:z.literal("postClip"),id:z.string().uuid(),accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)])}),
  // Re-reads the accounts under every Zernio key of the workspace (new ones added, removed ones marked).
  z.object({action:z.literal("syncZernio")}),
  // Turns subtitles off (or on) in every editable clip's edit and queues a re-render. "unposted" leaves clips that
@@ -50,7 +52,7 @@ export async function GET(){
   const [a,po,l]=await Promise.all([
    // Tokens never leave the server: only display fields are selected.
    db.prepare("SELECT id,provider,platform,username,status,connected_at,last_error,options,zernio_key_id FROM accounts WHERE owner=? ORDER BY connected_at").bind(owner).all<Record<string,unknown>&{options:string|null}>(),
-   db.prepare("SELECT p.id,p.clip_id,p.platform,p.account_id,p.state,p.permalink,p.error,p.attempts,p.created_at,p.published_at,s.name AS streamer,a.username AS account FROM posts p LEFT JOIN clips c ON c.id=p.clip_id LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner LEFT JOIN accounts a ON a.id=p.account_id WHERE p.owner=? ORDER BY p.created_at DESC LIMIT 100").bind(owner).all(),
+   db.prepare("SELECT p.id,p.clip_id,p.platform,p.account_id,p.state,p.permalink,p.error,p.attempts,p.created_at,p.published_at,p.round,s.name AS streamer,a.username AS account FROM posts p LEFT JOIN clips c ON c.id=p.clip_id LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner LEFT JOIN accounts a ON a.id=p.account_id WHERE p.owner=? ORDER BY p.created_at DESC LIMIT 100").bind(owner).all(),
    db.prepare("SELECT streamer_id,account_id FROM streamer_accounts WHERE owner=?").bind(owner).all<{streamer_id:string;account_id:string}>(),
   ]);
   const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(owner).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(owner).all(),db.prepare("SELECT c.id,c.streamer_id,c.created_at,c.duration,c.captions,c.size,c.file_key IS NOT NULL AS stored,c.review,c.reason,(c.edit IS NOT NULL OR c.file_key IS NOT NULL) AS editable,c.edit IS NULL AS legacy,c.post_caption,c.caption_source,c.source_key IS NOT NULL AS source_stored,c.render_state,c.render_error,c.rendered_at,c.edit_rev,s.name AS streamer FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.owner=? ORDER BY c.created_at DESC LIMIT 200").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at FROM worker_tokens WHERE owner=?").bind(owner).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null}>()]);
@@ -165,6 +167,30 @@ export async function POST(request:Request){
    message=account.provider==="zernio"
     ?"Disconnected "+(VIDEO_PLATFORMS[account.platform]??account.platform)+" account @"+account.username+"."
     :"Disconnected Instagram account @"+account.username+". Remove Clipflow under Instagram settings → Apps and websites to revoke its access fully.";
+  }
+  if(payload.action==="postClip"){
+   const clip=await db.prepare("SELECT c.id,c.review,c.file_key,c.render_state,s.name FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(payload.id,owner).first<{id:string;review:string;file_key:string|null;render_state:string|null;name:string|null}>();
+   if(!clip)return Response.json({error:"Clip not found."},{status:404});
+   if(!clip.file_key)return Response.json({error:"This clip's video isn't uploaded yet, so it can't be posted."},{status:409});
+   const {results:chosen}=await db.prepare("SELECT id,username,platform,status FROM accounts WHERE owner=? AND id IN ("+payload.accounts.map(()=>"?").join(",")+")").bind(owner,...payload.accounts).all<{id:string;username:string;platform:string;status:string}>();
+   if(chosen.length!==payload.accounts.length)return Response.json({error:"One of those accounts is no longer connected."},{status:404});
+   const {results:existing}=await db.prepare("SELECT account_id,state,round FROM posts WHERE clip_id=? AND owner=?").bind(clip.id,owner).all<{account_id:string;state:string;round:number}>();
+   const label=(a:{username:string;platform:string})=>(VIDEO_PLATFORMS[a.platform]??a.platform)+" @"+a.username;
+   const queued:string[]=[],busyNow:string[]=[],offline:string[]=[];
+   for(const a of chosen){
+    if(a.status!=="connected"){offline.push(label(a));continue;}
+    const mine=existing.filter(p=>p.account_id===a.id);
+    // One unfinished post per clip and account at a time.
+    if(mine.some(p=>p.state==="queued"||p.state==="processing")){busyNow.push(label(a));continue;}
+    const round=mine.length?Math.max(...mine.map(p=>p.round))+1:0;
+    statements.push(db.prepare("INSERT INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at,round) VALUES (lower(hex(randomblob(16))),?,?,?,?,'queued',?,?,?,?)").bind(owner,clip.id,a.platform,a.id,iso,iso,iso,round));
+    queued.push(label(a)+(round?" (again)":""));
+   }
+   if(!queued.length)return Response.json({error:[busyNow.length?"Already on its way to "+busyNow.join(", ")+".":"",offline.length?"Reconnect "+offline.join(", ")+" first.":""].filter(Boolean).join(" ")},{status:409});
+   // Posting a clip by hand approves it.
+   if(clip.review!=="approved")statements.push(db.prepare("UPDATE clips SET review='approved',reviewed_at=? WHERE id=? AND owner=?").bind(iso,clip.id,owner));
+   message="Posting "+(clip.name?clip.name+"'s clip":"the clip")+" to "+queued.join(", ")+(clip.render_state==="queued"?" once the edit has finished rendering":"")+"."
+    +(busyNow.length?" Already on its way to "+busyNow.join(", ")+".":"")+(offline.length?" Skipped "+offline.join(", ")+" (reconnect needed).":"");
   }
   if(payload.action==="retryPost"){
    const post=await db.prepare("SELECT state FROM posts WHERE id=? AND owner=?").bind(payload.id,owner).first<{state:string}>();

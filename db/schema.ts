@@ -70,10 +70,12 @@ export const zernioKeys=sqliteTable("zernio_keys",{
 export const streamerAccounts=sqliteTable("streamer_accounts",{
  streamerId:text("streamer_id").notNull(),accountId:text("account_id").notNull(),owner:text("owner").notNull(),createdAt:text("created_at").notNull(),
 },t=>[primaryKey({columns:[t.streamerId,t.accountId]}),index("streamer_accounts_account").on(t.accountId)]);
-// One row per clip per account, so a clip is never posted twice to the same account.
+// One row per clip per account per round. The publisher queues round 0 by itself, once; posting a clip again by
+// hand (after editing it, say) adds the next round, so the automatic queue never posts a clip twice.
 export const posts=sqliteTable("posts",{
  id:text("id").primaryKey(),owner:text("owner").notNull(),clipId:text("clip_id").notNull(),platform:text("platform").notNull(),accountId:text("account_id").notNull(),
  // queued -> processing (container created) -> published | failed
  state:text("state").notNull().default("queued"),containerId:text("container_id"),mediaId:text("media_id"),permalink:text("permalink"),error:text("error"),
  attempts:integer("attempts").notNull().default(0),nextAttemptAt:text("next_attempt_at").notNull(),createdAt:text("created_at").notNull(),updatedAt:text("updated_at").notNull(),publishedAt:text("published_at"),
-},t=>[uniqueIndex("posts_clip_account").on(t.clipId,t.accountId),index("posts_owner_state").on(t.owner,t.state)]);
+ round:integer("round").notNull().default(0),
+},t=>[uniqueIndex("posts_clip_account_round").on(t.clipId,t.accountId,t.round),index("posts_owner_state").on(t.owner,t.state)]);
