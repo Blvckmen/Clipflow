@@ -23,7 +23,8 @@ export const optionsSchema = z.object({
   // This account's own daily limit (null: the workspace's), and minutes to leave between its posts.
   dailyLimit: z.number().int().min(1).max(100).nullable().optional(),
   gapMinutes: z.number().int().min(0).max(720).optional(),
-  // TikTok: once its 15 direct posts a day are used, send the next few to drafts instead of waiting.
+  // No longer used: drafts count towards TikTok's 15 a day as well, so overflowing to them adds nothing. Kept so
+  // options saved with it still read.
   overflowToDrafts: z.boolean().optional(),
 }).strict();
 export type AccountOptions = Required<z.infer<typeof optionsSchema>>;

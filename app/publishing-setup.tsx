@@ -85,10 +85,9 @@ export function AccountOptionsForm({ account, busy, workspaceLimit, onSave }: { 
   // How many and how often, for every platform.
   const pacing = <>
     <label>Daily limit<input type="number" min={1} max={100} placeholder={"Workspace setting (" + workspaceLimit + ")"} value={draft.dailyLimit ?? ""} onChange={e => set("dailyLimit", e.target.value === "" ? null : Math.max(1, Math.min(100, Math.round(Number(e.target.value)))))} />
-      <small>Posts (drafts included) this account sends in any 24 hours. Leave empty to use the workspace limit from Settings.{account.platform === "tiktok" ? " TikTok itself takes about 15 direct posts a day through apps." : ""}</small></label>
+      <small>Posts (drafts included) this account sends in any 24 hours. Leave empty to use the workspace limit from Settings.{account.platform === "tiktok" ? " TikTok itself takes about 15 videos a day from apps, drafts included; for more, download clips and post them in the TikTok app." : ""}</small></label>
     <label>Spacing<select value={draft.gapMinutes} onChange={e => set("gapMinutes", Number(e.target.value))}>{Object.entries(gapChoices).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
       <small>Spread posts through the day; a burst of posts usually reaches fewer people.</small></label>
-    {account.platform === "tiktok" && <label className="check-row"><input type="checkbox" checked={draft.overflowToDrafts} onChange={e => set("overflowToDrafts", e.target.checked)} /><span>When the 15 direct posts are used up, send up to 5 more to my TikTok drafts<small>You finish those in the TikTok app; posting them yourself doesn&apos;t count against TikTok&apos;s app limit. Off: they wait for the next day.</small></span></label>}
   </>;
   return <form className="form-body" onSubmit={e => { e.preventDefault(); onSave(draft); }}>{fields}{pacing}<button className="primary" type="submit" disabled={busy}>{busy ? <Loader2 size={15} className="spin" /> : <Check size={15} />}Save options</button></form>;
 }

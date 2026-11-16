@@ -213,6 +213,7 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   }
 
   // One post in flight per account: one being processed or held, even if it isn't due for a check yet, comes first.
+  // (While TikTok holds one for its daily limit, anything else, drafts included, would only be held too.)
   if (await db.prepare("SELECT 1 FROM posts WHERE account_id=? AND state='processing' LIMIT 1").bind(account.id).first()) return;
 
   // 2. Otherwise start the oldest queued post, within the daily limit.
@@ -230,15 +231,14 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   // sent, when the last one went, and when the oldest of each leaves the 24-hour window.
   const since = new Date(now - 24 * 3600_000).toISOString(), options = readOptions(account.options);
   const day = await db.prepare(`SELECT sum(draft=0 AND state='published') AS direct, sum(draft=1) AS drafts,
-      max(coalesce(published_at,updated_at)) AS last, min(CASE WHEN draft=0 AND state='published' THEN published_at END) AS oldest_direct,
-      min(CASE WHEN draft=1 THEN coalesce(published_at,updated_at) END) AS oldest_draft
+      max(coalesce(published_at,updated_at)) AS last, min(coalesce(published_at,updated_at)) AS oldest
     FROM posts WHERE account_id=? AND state IN ('published','processing') AND coalesce(published_at,updated_at)>=?`).bind(account.id, since)
-    .first<{ direct: number | null; drafts: number | null; last: string | null; oldest_direct: string | null; oldest_draft: string | null }>();
+    .first<{ direct: number | null; drafts: number | null; last: string | null; oldest: string | null }>();
   const at = (v: string | null | undefined) => v ? Date.parse(v) : null;
   const plan = planNext({
-    platform: account.platform, wantsDraft: account.platform === "tiktok" && (!!queued.draft || wantsDraft(options, !!clip.reviewed_at)), overflow: options.overflowToDrafts,
+    platform: account.platform, wantsDraft: account.platform === "tiktok" && (!!queued.draft || wantsDraft(options, !!clip.reviewed_at)),
     limit: options.dailyLimit ?? account.daily_limit ?? 5, gapMinutes: options.gapMinutes,
-    directToday: day?.direct ?? 0, draftsToday: day?.drafts ?? 0, lastSentAt: at(day?.last), oldestDirectAt: at(day?.oldest_direct), oldestDraftAt: at(day?.oldest_draft), now,
+    directToday: day?.direct ?? 0, draftsToday: day?.drafts ?? 0, lastSentAt: at(day?.last), oldestSentAt: at(day?.oldest), now,
   });
   if (plan.action === "wait") {
     // Not this post's fault: look again when there is room (or in 15 minutes), and say why in the queue.
