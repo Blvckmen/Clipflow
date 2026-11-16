@@ -8,6 +8,7 @@ import { channelUrl, clipHash, probeResult } from "./core.mjs";
 import { pickWindow, snapToSentences } from "./highlights.mjs";
 import { defaultEdit, defaultStyle, normalizeStyle } from "./edit.mjs";
 import { encodeTimeout, renderClip, videoInfo } from "./render.mjs";
+import { applyAutomaticHook } from "./hooks.mjs";
 const run=promisify(execFile);
 export const streamlink=process.env.STREAMLINK||"streamlink";
 const python=process.env.PYTHON||"python", script=name=>fileURLToPath(new URL("./"+name,import.meta.url));
@@ -88,7 +89,9 @@ export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infi
     base??=defaultStyle({framing:settings.framing,captions});
     // The workspace's on/off switch for captions always wins over a saved style.
     base.captions.on=captions;
-    const edit=defaultEdit(base,{trimStart:start-from,trimEnd:end-from});
+    const initialEdit=defaultEdit(base,{trimStart:start-from,trimEnd:end-from});
+    // Build the title before the first render; the saved edit and dashboard preview share it.
+    const edit=applyAutomaticHook(initialEdit,words,{enabled:transcribe && process.env.AUTO_HOOKS!=="false"});
     const rendered=await renderClip(source,{edit,words,width:info.width,height:info.height,background:background?await background(edit):null},join(dir,"clip.mp4"),signal);
     const sourceBytes=await readFile(source);
     const meta={edit,words,signals:sourceSignals(energy,chat,from,to),source:{width:info.width,height:info.height,duration:Math.round((info.duration||to-from)*100)/100},sourceSha:clipHash(sourceBytes),sourceSize:sourceBytes.length};

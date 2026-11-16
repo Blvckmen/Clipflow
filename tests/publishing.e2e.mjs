@@ -46,7 +46,7 @@ before(async () => {
   dev = spawn(process.execPath, ["--import", "./scripts/sites-env.mjs", "./node_modules/wrangler/bin/wrangler.js", "dev", "--config", "dist/server/wrangler.json", "--local", "--persist-to", process.env.E2E_PERSIST_DIR || ".wrangler/state", "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", "0", ...Object.entries(vars).flatMap(([k, v]) => ["--var", k + ":" + v])], { cwd: root, stdio: process.env.E2E_DEV_LOG ? ["ignore", openSync(process.env.E2E_DEV_LOG, "w"), "pipe"] : "ignore", env: { ...process.env, CI: "true" } });
   // E2E_DEV_LOG=<file> keeps the Worker's own log (console.error from the publisher and the caption writer).
   if (process.env.E2E_DEV_LOG) dev.stderr.on("data", d => appendFileSync(process.env.E2E_DEV_LOG, d));
-  for (let i = 0; i < 90; i++) { try { await fetch(base + "/api/worker/config"); break; } catch { await sleep(1000); } }
+  for (let i = 0; i < 90; i++) { if (dev.exitCode !== null) throw new Error("Local test server exited with code " + dev.exitCode + "; inspect E2E_DEV_LOG."); try { await fetch(base + "/api/worker/config", {signal:AbortSignal.timeout(2000)}); break; } catch { await sleep(1000); } }
   assert.equal((await dash({ action: "settings", settings: { mode: "automatic", duration: 30, dailyLimit: 2, captions: true, framing: "blur", destinations: ["Instagram"], captionTemplate: "{streamer} on {platform} #test", aiCaptions: false } })).status, 200);
   assert.equal((await dash({ action: "control", control: "running" })).status, 200);
   assert.equal((await dash({ action: "add", url: "https://twitch.tv/" + owner })).status, 200);

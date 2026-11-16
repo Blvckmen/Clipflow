@@ -63,6 +63,13 @@ logs to `worker\data\worker.log`.
   and uploads the result in place of the old file. Re-renders run even while automation is
   paused. Caption fonts must be installed on this machine (the Docker image ships DejaVu and
   Liberation, which stands in for Arial); a missing font falls back to a default one.
+- New clips automatically get an opening hook title from the words inside their selected trim.
+  It is generated after transcription, before the first render, while recording continues.
+  The hook appears at the top for 3-6 seconds and is saved in the edit; change or clear it in
+  **Clip library > Edit > Hook & extras**. This uses local excerpt selection, not an AI API.
+  Transcription must be on; silence or unusable speech skips the hook. The subtitle profanity
+  mask also applies to generated hooks. Saved edits are never given a replacement hook during
+  re-rendering. This applies to clips made live and clips made from whole-stream recordings.
 - Processing (transcription and rendering) runs one clip at a time; recording continues meanwhile.
 - The daily limit caps clips per streamer per UTC day; reaching it ends that day's recording
   for streamers set to clip live only.
@@ -88,6 +95,7 @@ logs to `worker\data\worker.log`.
 | `CLIPFLOW_URL` | required | Dashboard origin (https, or localhost) |
 | `CLIPFLOW_TOKEN` | required | Worker token from the dashboard |
 | `DATA_DIR` | `/data` | Clips and the local SQLite queue |
+| `AUTO_HOOKS` | `true` | Automatic opening titles on new clips; set `false` to disable, then restart the worker |
 | `POLL_SECONDS` | `60` | How often to read control and settings |
 | `COOLDOWN_SECONDS` | `600` | Quiet time before a "loudest moment" clip is taken |
 | `CHAT_CLIP_GAP_SECONDS` | `120` | Minimum time between chat-spike clips from one streamer |

@@ -5,6 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, Scissors, Sparkles, Undo2 } from "lucide-react";
 import { ANIMATIONS, FONTS, H, MAX_CLIP, MIN_CLIP, PRESETS, SPLIT_H, W, activeCue, cues, layout } from "../worker/edit.mjs";
 
+import { applyAutomaticHook } from "../worker/hooks.mjs";
+
 type Frame = { mode: "blur" | "crop" | "fit" | "split"; zoom: number; x: number; y: number; background?: string | null };
 type Captions = { on: boolean; preset: string; font: string; size: number; color: string; highlight: string; outline: number; outlineColor: string; box: boolean; boxColor: string; uppercase: boolean; animation: string; words: number; y: number; mask: boolean };
 type Word = [number, number, string];
@@ -65,7 +67,8 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
   useEffect(() => { fetch("/api/backgrounds").then(r => r.ok ? r.json() as Promise<{ backgrounds?: { id: string; name: string }[] }> : { backgrounds: [] }).then(b => setBackgrounds(b.backgrounds ?? [])).catch(() => {}); }, []);
   const lastPush = useRef({ at: 0, key: "" }), editRef = useRef<Edit | null>(null);
   // The post caption is saved on its own (no re-render needed).
-  const [postText, setPostText] = useState(""), [captionSource, setCaptionSource] = useState<string | null>(null), [captionBusy, setCaptionBusy] = useState<"" | "write" | "save">(""), [captionNote, setCaptionNote] = useState("");
+  const [hookNote, setHookNote] = useState("");
+  const [postText, setPostText] = useState(""), [captionSource, setCaptionSource] = useState<string | null>(null), [captionBusy, setCaptionBusy] = useState<"" | "save">(""), [captionNote, setCaptionNote] = useState("");
 
   useEffect(() => {
     let live = true;
@@ -198,7 +201,7 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
   };
 
-  const captionAction = async (body: { action: "write" } | { action: "save"; text: string }) => {
+  const captionAction = async (body: { action: "save"; text: string }) => {
     setCaptionBusy(body.action); setCaptionNote(""); setError("");
     try {
       const response = await fetch("/api/clips/" + clipId + "/caption", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -223,6 +226,20 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
 
   if (!bundle || !edit) return <div className="editor-shell"><div className="editor-loading">{error ? <><p className="error" role="alert">{error}</p><button className="secondary" onClick={onClose}><ArrowLeft size={16} />Back to clips</button></> : <><Loader2 className="spin" size={22} />Opening the editor…</>}</div></div>;
 
+  const generateOpeningHook = () => {
+    // Explicit regeneration uses the current unsaved trim/word corrections, just like the preview.
+    const generated = applyAutomaticHook({ ...edit, hook: { ...edit.hook, text: "" } }, words);
+    setTab("extras");
+    if (!generated.hook.text) {
+      setHookNote("No usable speech in the current trim. Correct the transcript, widen the trim, or type a hook below. Your current hook has been kept.");
+      return;
+    }
+    change("generate-hook", e => ({ ...e, hook: generated.hook }));
+    video.current?.pause();
+    if (video.current) video.current.currentTime = edit.trim.start;
+    setPlaying(false); setTime(edit.trim.start);
+    setHookNote("Hook generated locally from the current transcript. Preview it, then Save edit to render it into the video. Undo restores the previous hook.");
+  };
   const c = edit.captions, len = edit.trim.end - edit.trim.start;
   const set = <K extends keyof Edit>(key: K, value: Partial<Edit[K]>) => change(String(key) + Object.keys(value).join(), e => ({ ...e, [key]: { ...(e[key] as object), ...value } }));
   const setCaption = (value: Partial<Captions>) => change("captions" + Object.keys(value).join(), e => ({ ...e, captions: { ...e.captions, ...value, preset: "preset" in value ? value.preset! : "custom" } }));
@@ -278,11 +295,11 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
         <div className="editor-controls">
           {bundle.legacy && (tab === "captions" || tab === "transcript") && <div className="subtle-note">This clip was captured before the editor existed, so its captions are part of the picture and can&apos;t be restyled or corrected. You can still trim it, reframe it, adjust its colour, and add a hook title and progress bar. Clips captured from now on are fully editable.</div>}
           {tab === "post" && <>
-            <p className="hint">The text posted with this clip on Instagram, TikTok and YouTube. The first line is also the YouTube title. {bundle.caption.ai ? "Created locally from the saved transcript with streamer credit and keyword hashtags. Save transcript or trim changes before generating." : "Automatic transcript captions are disabled in Settings. You can still generate one or type your own."}</p>
+            <p className="hint">The text posted with this clip on Instagram, TikTok and YouTube. The first line is also the YouTube title. {bundle.caption.ai ? "Automatic post captions use the saved transcript. Edit this text manually, or generate an on-screen opening hook below." : "Automatic post captions are disabled in Settings. Type your own post text here; the hook generator adds a title to the video."}</p>
             <label className="wide">Caption <small>{captionSource === "local" ? "Created from transcript" : captionSource === "ai" ? "Previously AI-generated" : captionSource === "edited" ? "Your text: never automatically replaced" : "Not written yet: " + (bundle.caption.ai ? "created from the transcript before posting" : "the template is used")}</small>
               <textarea rows={9} maxLength={2200} value={postText} onChange={e => setPostText(e.target.value)} placeholder={bundle.caption.ai ? "Leave empty to use an automatic caption or fallback" : "Type the caption to post with this clip"} /></label>
             <div className="caption-actions"><span className="muted">{postText.length} / 2200</span>
-              <button className="secondary" disabled={!!captionBusy} title="Uses the saved transcript; replaces the current caption" onClick={() => void captionAction({ action: "write" })}>{captionBusy === "write" ? <Loader2 className="spin" size={15} /> : <Sparkles size={15} />}{postText ? "Generate from transcript" : "Generate from transcript"}</button>
+              <button className="secondary" disabled={saving} title="Generate an on-screen opening title from the current transcript" onClick={generateOpeningHook}><Sparkles size={15} />Generate hook</button>
               <button className="primary" disabled={!!captionBusy} onClick={() => void captionAction({ action: "save", text: postText })}>{captionBusy === "save" ? <Loader2 className="spin" size={15} /> : <Check size={15} />}Save caption</button></div>
             {captionNote && <p className="hint" role="status">{captionNote}</p>}
           </>}
@@ -327,6 +344,9 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
             <button className="secondary" onClick={() => change("reset-frame", e => ({ ...e, frame: { ...e.frame, zoom: 1, x: 0, y: 0 }, look: { brightness: 1, contrast: 1, saturation: 1 } }))}>Reset framing and colour</button>
           </>}
           {tab === "extras" && <>
+            <p className="hint">The same local hook generator used during clipping. Uses your current trim and transcript corrections; no API key needed.</p>
+            <button className="secondary" disabled={saving} onClick={generateOpeningHook}><Sparkles size={15} />{edit.hook.text ? "Regenerate hook" : "Generate hook"}</button>
+            {hookNote && <p className="hint" role="status">{hookNote}</p>}
             <label className="wide">Hook title <small>Shown at the top for the first seconds, to stop the scroll</small><input maxLength={90} placeholder="e.g. He did NOT see that coming" value={edit.hook.text} onChange={e => set("hook", { text: e.target.value })} /></label>
             <div className="control-grid">
               <label>Hook length <span>{edit.hook.seconds}s</span><input type="range" min={1} max={10} step={0.5} value={edit.hook.seconds} onChange={e => set("hook", { seconds: Number(e.target.value) })} /></label>
