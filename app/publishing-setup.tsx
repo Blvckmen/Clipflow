@@ -4,7 +4,7 @@
 // per-account posting options. Nothing here needs a code change or a redeploy.
 import { useState, type ReactNode } from "react";
 import { Check, ExternalLink, KeyRound, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
-import { tiktokModes, tiktokPrivacy, youtubeVisibility, type AccountOptions } from "../lib/account-options";
+import { gapChoices, tiktokModes, tiktokPrivacy, youtubeVisibility, type AccountOptions } from "../lib/account-options";
 
 export type ZernioKey = { id: string; label: string; created_at: string; last_error: string | null; accounts: number };
 export type Publishing = { zernio: boolean; zernioSource: "workspace" | "site" | null; zernioKeys: ZernioKey[]; canSaveKey: boolean };
@@ -70,7 +70,7 @@ export function ZernioPanel({ publishing, accounts, busy, mutate, brand, row }: 
 }
 
 // The options dialog's body for one account.
-export function AccountOptionsForm({ account, busy, onSave }: { account: ZernioAccount; busy: boolean; onSave: (options: Partial<AccountOptions>) => void }) {
+export function AccountOptionsForm({ account, busy, workspaceLimit, onSave }: { account: ZernioAccount; busy: boolean; workspaceLimit: number; onSave: (options: Partial<AccountOptions>) => void }) {
   const [draft, setDraft] = useState<AccountOptions>(account.options);
   const set = <K extends keyof AccountOptions>(k: K, v: AccountOptions[K]) => setDraft({ ...draft, [k]: v });
   const fields = account.platform === "tiktok" ? <>
@@ -82,8 +82,16 @@ export function AccountOptionsForm({ account, busy, onSave }: { account: ZernioA
   </> : account.platform === "youtube" ? <label>Visibility<select value={draft.youtubeVisibility} onChange={e => set("youtubeVisibility", e.target.value as AccountOptions["youtubeVisibility"])}>{Object.entries(youtubeVisibility).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
       <small>The video title is the first line of the post caption.</small></label>
     : null;
-  if (!fields) return <p className="muted">There are no extra options for this platform. Captions come from each clip, and the daily limit is under Settings.</p>;
-  return <form className="form-body" onSubmit={e => { e.preventDefault(); onSave(draft); }}>{fields}<button className="primary" type="submit" disabled={busy}>{busy ? <Loader2 size={15} className="spin" /> : <Check size={15} />}Save options</button></form>;
+  // How many and how often, for every platform.
+  const pacing = <>
+    <label>Daily limit<input type="number" min={1} max={100} placeholder={"Workspace setting (" + workspaceLimit + ")"} value={draft.dailyLimit ?? ""} onChange={e => set("dailyLimit", e.target.value === "" ? null : Math.max(1, Math.min(100, Math.round(Number(e.target.value)))))} />
+      <small>Posts (drafts included) this account sends in any 24 hours. Leave empty to use the workspace limit from Settings.{account.platform === "tiktok" ? " TikTok itself takes about 15 direct posts a day through apps." : ""}</small></label>
+    <label>Spacing<select value={draft.gapMinutes} onChange={e => set("gapMinutes", Number(e.target.value))}>{Object.entries(gapChoices).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+      <small>Spread posts through the day; a burst of posts usually reaches fewer people.</small></label>
+    {account.platform === "tiktok" && <label className="check-row"><input type="checkbox" checked={draft.overflowToDrafts} onChange={e => set("overflowToDrafts", e.target.checked)} /><span>When the 15 direct posts are used up, send up to 5 more to my TikTok drafts<small>You finish those in the TikTok app; posting them yourself doesn&apos;t count against TikTok&apos;s app limit. Off: they wait for the next day.</small></span></label>}
+  </>;
+  return <form className="form-body" onSubmit={e => { e.preventDefault(); onSave(draft); }}>{fields}{pacing}<button className="primary" type="submit" disabled={busy}>{busy ? <Loader2 size={15} className="spin" /> : <Check size={15} />}Save options</button></form>;
 }
 
-export const hasOptions = (platform: string) => platform === "tiktok" || platform === "youtube";
+// Every connected account has options now (daily limit and spacing at least).
+export const hasOptions = (platform: string) => !!platform;

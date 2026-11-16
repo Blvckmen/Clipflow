@@ -83,6 +83,8 @@ export const posts=sqliteTable("posts",{
  state:text("state").notNull().default("queued"),containerId:text("container_id"),mediaId:text("media_id"),permalink:text("permalink"),error:text("error"),
  attempts:integer("attempts").notNull().default(0),nextAttemptAt:text("next_attempt_at").notNull(),createdAt:text("created_at").notNull(),updatedAt:text("updated_at").notNull(),publishedAt:text("published_at"),
  round:integer("round").notNull().default(0),
+ // Sent to the account's TikTok drafts (to be finished in the app) rather than published directly.
+ draft:integer("draft",{mode:"boolean"}).notNull().default(false),
  // Performance read from the platform (through Zernio's analytics, about hourly); null until first read.
  views:integer("views"),likes:integer("likes"),comments:integer("comments"),shares:integer("shares"),saves:integer("saves"),metricsAt:text("metrics_at"),
 },t=>[uniqueIndex("posts_clip_account_round").on(t.clipId,t.accountId,t.round),index("posts_owner_state").on(t.owner,t.state)]);

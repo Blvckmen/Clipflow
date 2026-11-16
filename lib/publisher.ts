@@ -11,13 +11,14 @@ import { defaultCaption } from "./clipflow";
 import { captionForPost, fillCaptions } from "./post-caption";
 import { syncAnalytics } from "./analytics";
 import { expireRecordings } from "./recordings";
-import { readOptions, tiktokSettings } from "./account-options";
+import { readOptions, tiktokSettings, wantsDraft } from "./account-options";
+import { planNext, tiktokBusy } from "./posting-plan.mjs";
 import { keyConnection, siteConnection, zernioApiUrl, type Connection } from "./zernio-keys";
 
 type Env = Cloudflare.Env;
 type AccountRow = { id: string; owner: string; provider: string; platform: string; external_id: string; username: string; token_enc: string; token_expires_at: string; token_refreshed_at: string; connected_at: string; options: string | null; control: string | null; daily_limit: number | null; caption_template: string | null; zernio_key_id: string | null; key_label: string | null; key_enc: string | null };
-type PostRow = { id: string; clip_id: string; state: string; container_id: string | null; attempts: number; updated_at: string };
-type ClipInfo = { reviewed: boolean; streamer: string; platform: string };
+type PostRow = { id: string; clip_id: string; state: string; container_id: string | null; attempts: number; updated_at: string; draft?: number };
+type ClipInfo = { reviewed: boolean; streamer: string; platform: string; draft: boolean };
 // What an adapter reports back: done, still going (check again later), or failed with a reason.
 type Outcome = { state: "published"; mediaId: string | null; permalink: string | null; externalId?: string } | { state: "processing"; containerId: string; until?: string; note?: string } | { state: "failed"; message: string } | { state: "wait"; until?: string; note?: string };
 // A post the platform is holding (its own daily posting limit): `until` is when it goes out, `note` says why.
@@ -32,9 +33,6 @@ type Adapter = {
 const CHECK_EVERY_MS = 60_000;   // Instagram recommends checking a container about once a minute
 const MAX_ATTEMPTS = 3;
 const REFRESH_WITHIN_MS = 10 * 24 * 3600_000;
-// Posts a platform accepts per account per rolling day through its API, whatever the workspace limit says. More
-// than that are held by the platform (and Zernio) until the next day.
-const PLATFORM_DAILY: Record<string, number> = { tiktok: 15 };
 
 export function instagramConfig(env: Env): instagram.InstagramConfig | null {
   if (!env.INSTAGRAM_APP_ID || !env.INSTAGRAM_APP_SECRET || !env.TOKEN_KEY) return null;
@@ -135,8 +133,9 @@ function zernioAdapter(config: Connection, account: AccountRow): Adapter {
         platform.platformSpecificData = { title: (caption.split("\n")[0].trim() || clip.streamer + " clip").slice(0, 100) };
         body.visibility = options.youtubeVisibility;
       }
-      // Publish directly or send to TikTok drafts, per the account's posting mode (see account-options.ts).
-      if (account.platform === "tiktok") body.tiktokSettings = tiktokSettings(options, clip.reviewed);
+      // Publish directly or send to TikTok drafts: the posting mode (see account-options.ts), or the planner sending
+      // an overflow post to drafts once TikTok's direct posts for the day are used up.
+      if (account.platform === "tiktok") body.tiktokSettings = clip.draft ? { draft: true } : tiktokSettings(options, clip.reviewed);
       // One key per attempt: a lost response is answered with the same post, while a retry after a definite
       // failure (automatic or by hand) is a fresh post. The attempt count separates automatic retries; updated_at,
       // set when a manual retry resets that count, separates those.
@@ -171,6 +170,16 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
     AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.clip_id=c.id AND p.account_id=?)`).bind(account.platform, account.id, iso, iso, iso, account.id, account.owner, account.connected_at, account.id).run();
 
   const fail = async (post: PostRow, message: string) => {
+    // TikTok saying "not now" (drafts inbox full, too many posts today) isn't a failure: try again later, as a
+    // fresh request (updated_at is part of the idempotency key), without using up an attempt.
+    const busy = account.platform === "tiktok" ? tiktokBusy(message) : null;
+    if (busy) {
+      const later = now + (busy === "drafts" ? 2 : 3) * 3600_000;
+      const note = busy === "drafts" ? "TikTok's drafts inbox is full. Post or delete drafts in the TikTok app; Clipflow tries again at " + new Date(later).toISOString().slice(11, 16) + " UTC."
+        : "TikTok won't take more posts from apps today; Clipflow tries again at " + new Date(later).toISOString().slice(11, 16) + " UTC.";
+      await db.prepare("UPDATE posts SET state='queued',container_id=NULL,error=?,next_attempt_at=?,updated_at=? WHERE id=?").bind(note, new Date(later).toISOString(), iso, post.id).run();
+      return;
+    }
     const attempts = post.attempts + 1, final = attempts >= MAX_ATTEMPTS;
     await db.prepare("UPDATE posts SET state=?,container_id=NULL,attempts=?,error=?,next_attempt_at=?,updated_at=? WHERE id=?")
       .bind(final ? "failed" : "queued", attempts, message.slice(0, 500), new Date(now + 5 * 60_000 * attempts).toISOString(), iso, post.id).run();
@@ -207,7 +216,7 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   if (await db.prepare("SELECT 1 FROM posts WHERE account_id=? AND state='processing' LIMIT 1").bind(account.id).first()) return;
 
   // 2. Otherwise start the oldest queued post, within the daily limit.
-  const queued = await db.prepare("SELECT id,clip_id,state,container_id,attempts,updated_at FROM posts WHERE account_id=? AND state='queued' AND next_attempt_at<=? ORDER BY created_at LIMIT 1").bind(account.id, iso).first<PostRow>();
+  const queued = await db.prepare("SELECT id,clip_id,state,container_id,attempts,updated_at,draft FROM posts WHERE account_id=? AND state='queued' AND next_attempt_at<=? ORDER BY created_at LIMIT 1").bind(account.id, iso).first<PostRow>();
   if (!queued) return;
   const clip = await db.prepare("SELECT c.review,c.reviewed_at,c.file_key,c.render_state,s.name,s.platform FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(queued.clip_id, account.owner).first<{ review: string; reviewed_at: string | null; file_key: string | null; render_state: string | null; name: string | null; platform: string | null }>();
   if (!clip || clip.review !== "approved" || !clip.file_key) {
@@ -217,12 +226,31 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   }
   // Edited after it was queued: post the new version once the worker has rendered it.
   if (clip.render_state === "queued") return;
-  const since = new Date(now - 24 * 3600_000).toISOString();
-  const today = await db.prepare("SELECT count(*) AS n FROM posts WHERE account_id=? AND state='published' AND published_at>=?").bind(account.id, since).first<{ n: number }>();
-  if ((today?.n ?? 0) >= Math.min(account.daily_limit ?? 5, PLATFORM_DAILY[account.platform] ?? Infinity)) return;
+  // What the last day looks like for this account, for the planner (lib/posting-plan.mjs): direct posts and drafts
+  // sent, when the last one went, and when the oldest of each leaves the 24-hour window.
+  const since = new Date(now - 24 * 3600_000).toISOString(), options = readOptions(account.options);
+  const day = await db.prepare(`SELECT sum(draft=0 AND state='published') AS direct, sum(draft=1) AS drafts,
+      max(coalesce(published_at,updated_at)) AS last, min(CASE WHEN draft=0 AND state='published' THEN published_at END) AS oldest_direct,
+      min(CASE WHEN draft=1 THEN coalesce(published_at,updated_at) END) AS oldest_draft
+    FROM posts WHERE account_id=? AND state IN ('published','processing') AND coalesce(published_at,updated_at)>=?`).bind(account.id, since)
+    .first<{ direct: number | null; drafts: number | null; last: string | null; oldest_direct: string | null; oldest_draft: string | null }>();
+  const at = (v: string | null | undefined) => v ? Date.parse(v) : null;
+  const plan = planNext({
+    platform: account.platform, wantsDraft: account.platform === "tiktok" && (!!queued.draft || wantsDraft(options, !!clip.reviewed_at)), overflow: options.overflowToDrafts,
+    limit: options.dailyLimit ?? account.daily_limit ?? 5, gapMinutes: options.gapMinutes,
+    directToday: day?.direct ?? 0, draftsToday: day?.drafts ?? 0, lastSentAt: at(day?.last), oldestDirectAt: at(day?.oldest_direct), oldestDraftAt: at(day?.oldest_draft), now,
+  });
+  if (plan.action === "wait") {
+    // Not this post's fault: look again when there is room (or in 15 minutes), and say why in the queue.
+    const next = Math.max(now + CHECK_EVERY_MS, plan.until ?? now + 15 * 60_000);
+    await db.prepare("UPDATE posts SET next_attempt_at=?,error=? WHERE id=?").bind(new Date(next).toISOString(), "Waiting: " + plan.reason + "; next try " + new Date(next).toISOString().slice(11, 16) + " UTC.", queued.id).run();
+    return;
+  }
+  const draft = plan.action === "draft";
+  if (draft) await db.prepare("UPDATE posts SET draft=1 WHERE id=?").bind(queued.id).run();
   try {
     const link = env.PUBLIC_URL!.replace(/\/$/, "") + await signedMediaPath(queued.clip_id, now + adapter.linkTtlMs, env.MEDIA_KEY!);
-    const info = { reviewed: !!clip.reviewed_at, streamer: clip.name ?? "a streamer", platform: clip.platform ?? "stream" };
+    const info = { reviewed: !!clip.reviewed_at, streamer: clip.name ?? "a streamer", platform: clip.platform ?? "stream", draft };
     // The clip's own caption (written by Claude or typed by the owner), else the workspace template.
     const caption = await captionForPost(env, queued.clip_id).catch(() => null) ?? renderCaption(account.caption_template || defaultCaption, info);
     await apply(queued, await adapter.start(queued, link, caption, info));

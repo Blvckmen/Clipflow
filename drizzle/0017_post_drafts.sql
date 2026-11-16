@@ -1,0 +1,1 @@
+ALTER TABLE `posts` ADD `draft` integer DEFAULT false NOT NULL;

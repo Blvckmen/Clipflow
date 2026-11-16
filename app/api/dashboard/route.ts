@@ -31,9 +31,10 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("disconnect"),id:z.string().uuid().optional(),platform:z.enum(["instagram"]).optional()}),
  z.object({action:z.literal("retryPost"),id:z.string().min(1).max(64)}),
  // Posts a clip's current version to the chosen accounts now: its first post, or again after an edit.
- z.object({action:z.literal("postClip"),id:z.string().uuid(),accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)])}),
+ // draft: send to the accounts' TikTok drafts (to finish in the app) instead of publishing; TikTok accounts only.
+ z.object({action:z.literal("postClip"),id:z.string().uuid(),accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)]),draft:z.boolean().optional()}),
  // Bulk actions on clips picked in the library: post them all to the chosen accounts, or review, edit or delete them.
- z.object({action:z.literal("postClips"),ids:clipIds,accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)])}),
+ z.object({action:z.literal("postClips"),ids:clipIds,accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)]),draft:z.boolean().optional()}),
  z.object({action:z.literal("bulkClips"),ids:clipIds,op:z.enum(["approve","reject","pending","delete","captionsOn","captionsOff","frame"]),frame:z.enum(["blur","crop","fit","split"]).optional()}),
  // Removes a split-screen background video from the library (clips using it switch to another one).
  z.object({action:z.literal("deleteBackground"),id:z.string().uuid()}),
@@ -67,7 +68,7 @@ export async function GET(){
   const [a,po,l]=await Promise.all([
    // Tokens never leave the server: only display fields are selected.
    db.prepare("SELECT id,provider,platform,username,status,connected_at,last_error,options,zernio_key_id FROM accounts WHERE owner=? ORDER BY connected_at").bind(owner).all<Record<string,unknown>&{options:string|null}>(),
-   db.prepare("SELECT p.id,p.clip_id,p.platform,p.account_id,p.state,p.permalink,p.error,p.attempts,p.created_at,p.published_at,p.round,p.views,p.likes,s.name AS streamer,a.username AS account FROM posts p LEFT JOIN clips c ON c.id=p.clip_id LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner LEFT JOIN accounts a ON a.id=p.account_id WHERE p.owner=? ORDER BY p.created_at DESC LIMIT 100").bind(owner).all(),
+   db.prepare("SELECT p.id,p.clip_id,p.platform,p.account_id,p.state,p.permalink,p.error,p.attempts,p.created_at,p.published_at,p.round,p.views,p.likes,p.draft,s.name AS streamer,a.username AS account FROM posts p LEFT JOIN clips c ON c.id=p.clip_id LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner LEFT JOIN accounts a ON a.id=p.account_id WHERE p.owner=? ORDER BY p.created_at DESC LIMIT 100").bind(owner).all(),
    db.prepare("SELECT streamer_id,account_id FROM streamer_accounts WHERE owner=?").bind(owner).all<{streamer_id:string;account_id:string}>(),
   ]);
   const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(owner).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(owner).all(),db.prepare("SELECT c.id,c.streamer_id,c.created_at,c.duration,c.captions,c.size,c.file_key IS NOT NULL AS stored,c.review,c.reason,(c.edit IS NOT NULL OR c.file_key IS NOT NULL) AS editable,c.edit IS NULL AS legacy,c.post_caption,c.caption_source,c.source_key IS NOT NULL AS source_stored,c.render_state,c.render_error,c.rendered_at,c.edit_rev,s.name AS streamer FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.owner=? ORDER BY c.created_at DESC LIMIT 200").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at FROM worker_tokens WHERE owner=?").bind(owner).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null}>()]);
@@ -213,6 +214,9 @@ export async function POST(request:Request){
    if(!clip.file_key)return Response.json({error:"This clip's video isn't uploaded yet, so it can't be posted."},{status:409});
    const {results:chosen}=await db.prepare("SELECT id,username,platform,status FROM accounts WHERE owner=? AND id IN ("+payload.accounts.map(()=>"?").join(",")+")").bind(owner,...payload.accounts).all<{id:string;username:string;platform:string;status:string}>();
    if(chosen.length!==payload.accounts.length)return Response.json({error:"One of those accounts is no longer connected."},{status:404});
+   // Only TikTok has an app drafts inbox; drafts skip the other accounts.
+   const asDraft=!!payload.draft,skippedNoDrafts=asDraft?chosen.filter(a=>a.platform!=="tiktok").map(a=>(VIDEO_PLATFORMS[a.platform]??a.platform)+" @"+a.username):[];
+   if(asDraft){chosen.splice(0,chosen.length,...chosen.filter(a=>a.platform==="tiktok"));if(!chosen.length)return Response.json({error:"Drafts are a TikTok feature: tick a TikTok account."},{status:400});}
    const {results:existing}=await db.prepare("SELECT account_id,state,round FROM posts WHERE clip_id=? AND owner=?").bind(clip.id,owner).all<{account_id:string;state:string;round:number}>();
    const label=(a:{username:string;platform:string})=>(VIDEO_PLATFORMS[a.platform]??a.platform)+" @"+a.username;
    const queued:string[]=[],busyNow:string[]=[],offline:string[]=[];
@@ -222,14 +226,14 @@ export async function POST(request:Request){
     // One unfinished post per clip and account at a time.
     if(mine.some(p=>p.state==="queued"||p.state==="processing")){busyNow.push(label(a));continue;}
     const round=mine.length?Math.max(...mine.map(p=>p.round))+1:0;
-    statements.push(db.prepare("INSERT INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at,round) VALUES (lower(hex(randomblob(16))),?,?,?,?,'queued',?,?,?,?)").bind(owner,clip.id,a.platform,a.id,iso,iso,iso,round));
+    statements.push(db.prepare("INSERT INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at,round,draft) VALUES (lower(hex(randomblob(16))),?,?,?,?,'queued',?,?,?,?,?)").bind(owner,clip.id,a.platform,a.id,iso,iso,iso,round,Number(asDraft)));
     queued.push(label(a)+(round?" (again)":""));
    }
    if(!queued.length)return Response.json({error:[busyNow.length?"Already on its way to "+busyNow.join(", ")+".":"",offline.length?"Reconnect "+offline.join(", ")+" first.":""].filter(Boolean).join(" ")},{status:409});
    // Posting a clip by hand approves it.
    if(clip.review!=="approved")statements.push(db.prepare("UPDATE clips SET review='approved',reviewed_at=? WHERE id=? AND owner=?").bind(iso,clip.id,owner));
-   message="Posting "+(clip.name?clip.name+"'s clip":"the clip")+" to "+queued.join(", ")+(clip.render_state==="queued"?" once the edit has finished rendering":"")+"."
-    +(busyNow.length?" Already on its way to "+busyNow.join(", ")+".":"")+(offline.length?" Skipped "+offline.join(", ")+" (reconnect needed).":"");
+   message=(asDraft?"Saving "+(clip.name?clip.name+"'s clip":"the clip")+" to the TikTok drafts of ":"Posting "+(clip.name?clip.name+"'s clip":"the clip")+" to ")+queued.join(", ")+(clip.render_state==="queued"?" once the edit has finished rendering":"")+"."
+    +(asDraft?" Finish it in the TikTok app.":"")+(busyNow.length?" Already on its way to "+busyNow.join(", ")+".":"")+(offline.length?" Skipped "+offline.join(", ")+" (reconnect needed).":"")+(skippedNoDrafts.length?" "+skippedNoDrafts.join(", ")+" skipped: drafts are TikTok only.":"");
   }
   // Clip id lists go in as one JSON value (json_each): D1 allows at most 100 bound values per query.
   if(payload.action==="postClips"){
@@ -237,8 +241,8 @@ export async function POST(request:Request){
    const {results:clips}=await db.prepare("SELECT id,review,file_key FROM clips WHERE owner=? AND id IN ("+marks+")").bind(owner,idList).all<{id:string;review:string;file_key:string|null}>();
    const {results:chosen}=await db.prepare("SELECT id,username,platform,status FROM accounts WHERE owner=? AND id IN ("+payload.accounts.map(()=>"?").join(",")+")").bind(owner,...payload.accounts).all<{id:string;username:string;platform:string;status:string}>();
    if(chosen.length!==payload.accounts.length)return Response.json({error:"One of those accounts is no longer connected."},{status:404});
-   const live=chosen.filter(a=>a.status==="connected");
-   if(!live.length)return Response.json({error:"Reconnect those accounts first."},{status:409});
+   const asDraft=!!payload.draft,live=chosen.filter(a=>a.status==="connected"&&(!asDraft||a.platform==="tiktok"));
+   if(!live.length)return Response.json({error:asDraft?"Drafts are a TikTok feature: tick a connected TikTok account.":"Reconnect those accounts first."},{status:asDraft?400:409});
    const {results:existing}=await db.prepare("SELECT clip_id,account_id,state,round FROM posts WHERE owner=? AND clip_id IN ("+marks+")").bind(owner,idList).all<{clip_id:string;account_id:string;state:string;round:number}>();
    let posts=0,clipsPosted=0,busyNow=0;const notUploaded=payload.ids.length-clips.filter(c=>c.file_key).length;
    for(const clip of clips){
@@ -248,14 +252,14 @@ export async function POST(request:Request){
      const mine=existing.filter(p=>p.clip_id===clip.id&&p.account_id===a.id);
      if(mine.some(p=>p.state==="queued"||p.state==="processing")){busyNow++;continue;}
      const round=mine.length?Math.max(...mine.map(p=>p.round))+1:0;
-     statements.push(db.prepare("INSERT INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at,round) VALUES (lower(hex(randomblob(16))),?,?,?,?,'queued',?,?,?,?)").bind(owner,clip.id,a.platform,a.id,iso,iso,iso,round));
+     statements.push(db.prepare("INSERT INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at,round,draft) VALUES (lower(hex(randomblob(16))),?,?,?,?,'queued',?,?,?,?,?)").bind(owner,clip.id,a.platform,a.id,iso,iso,iso,round,Number(asDraft)));
      posts++;any=true;
     }
     if(any){clipsPosted++;if(clip.review!=="approved")statements.push(db.prepare("UPDATE clips SET review='approved',reviewed_at=? WHERE id=? AND owner=?").bind(iso,clip.id,owner));}
    }
    if(!posts)return Response.json({error:busyNow?"Those clips are already on their way to those accounts.":"None of those clips can be posted yet (their videos aren't uploaded)."},{status:409});
    const limit=(await db.prepare("SELECT daily_limit FROM preferences WHERE owner=?").bind(owner).first<{daily_limit:number}>())?.daily_limit??defaults.dailyLimit;
-   message="Posting "+clipsPosted+" clip"+(clipsPosted===1?"":"s")+" to "+live.map(a=>(VIDEO_PLATFORMS[a.platform]??a.platform)+" @"+a.username).join(", ")+" ("+posts+" post"+(posts===1?"":"s")+"). Each account posts about one a minute, up to "+limit+" a day; the rest wait their turn."
+   message=(asDraft?"Saving "+clipsPosted+" clip"+(clipsPosted===1?"":"s")+" to the TikTok drafts of ":"Posting "+clipsPosted+" clip"+(clipsPosted===1?"":"s")+" to ")+live.map(a=>(VIDEO_PLATFORMS[a.platform]??a.platform)+" @"+a.username).join(", ")+" ("+posts+" post"+(posts===1?"":"s")+"). "+(asDraft?"TikTok takes about 5 drafts per account a day; the rest wait their turn. Finish them in the TikTok app.":"Each account posts about one a minute, up to "+limit+" a day; the rest wait their turn.")
     +(busyNow?" "+busyNow+" already on their way were skipped.":"")+(notUploaded?" "+notUploaded+" not uploaded yet were skipped.":"")+(live.length<chosen.length?" Accounts needing reconnection were skipped.":"");
   }
   if(payload.action==="bulkClips"){

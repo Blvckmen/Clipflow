@@ -263,3 +263,6 @@ th.num{text-align:right}
 .help-link{padding:10px}
 .profile{padding-top:12px}
 .sidebar{scrollbar-width:thin;scrollbar-color:#2a323c transparent}
+/* Post dialog: Post and Save to TikTok drafts side by side */
+.post-buttons{display:flex;gap:10px;flex-wrap:wrap}
+.post-buttons>button{flex:1 1 200px}

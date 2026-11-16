@@ -264,7 +264,7 @@ test("a cancelled sign-in returns with its reason and adds nothing", async () =>
 test("per-account options change how posts are sent", async () => {
   const { body } = await dash();
   const tt = body.accounts.find(a => a.platform === "tiktok"), yt = body.accounts.find(a => a.username === "new_youtube");
-  assert.deepEqual(tt.options, { tiktokMode: "reviewed", tiktokPrivacy: "PUBLIC_TO_EVERYONE", allowComments: true, youtubeVisibility: "public" }, "defaults");
+  assert.deepEqual(tt.options, { tiktokMode: "reviewed", tiktokPrivacy: "PUBLIC_TO_EVERYONE", allowComments: true, youtubeVisibility: "public", dailyLimit: null, gapMinutes: 0, overflowToDrafts: true }, "defaults");
   assert.equal((await dash({ action: "accountOptions", id: tt.id, options: { tiktokMode: "direct", tiktokPrivacy: "SELF_ONLY", allowComments: false } })).status, 200);
   assert.equal((await dash({ action: "accountOptions", id: yt.id, options: { youtubeVisibility: "unlisted" } })).status, 200);
   assert.equal((await dash({ action: "accountOptions", id: yt.id, options: { youtubeVisibility: "secret" } })).status, 400, "unknown values are refused");
@@ -328,6 +328,65 @@ test("several selected clips can be posted together", async () => {
   const out = async () => (await dash()).body.posts.filter(p => (p.clip_id === one.id || p.clip_id === two.id) && p.platform === "instagram");
   for (let i = 0; i < 6 && (await out()).filter(p => p.state === "published").length < 2; i++) await cron(61_000);
   assert.deepEqual((await out()).map(p => p.state), ["published", "published"], "one a minute, both out");
+  await dash({ action: "settings", settings });
+  await dash({ action: "control", control: "running" });
+});
+
+test("a clip can be saved to TikTok drafts by hand, and a full drafts inbox holds it instead of failing", async () => {
+  const { body } = await dash();
+  const tt = body.accounts.find(a => a.platform === "tiktok"), ig = body.accounts.find(a => a.platform === "instagram");
+  await control("/__mode?platform=tiktok&mode=published");
+  // A day on, so the drafts earlier tests sent no longer count against TikTok's 5 a day.
+  await cron(25 * 3600_000);
+  const { clip } = await addClip();
+  assert.equal((await dash({ action: "postClip", id: clip.id, accounts: [ig.id], draft: true })).status, 400, "drafts are TikTok only");
+  const saved = await dash({ action: "postClip", id: clip.id, accounts: [tt.id, ig.id], draft: true });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.match(saved.body.message, /TikTok drafts of TikTok @tt_clips.*Instagram @ig_clips skipped: drafts are TikTok only/);
+  const mine = async () => (await dash()).body.posts.find(p => p.clip_id === clip.id && p.platform === "tiktok");
+  assert.ok((await mine()).draft, "marked as a draft in the queue");
+  for (let i = 0; i < 6 && (await mine()).state !== "published"; i++) await cron(61_000);
+  assert.deepEqual((await sentFor(clip.id)).tiktok.params.tiktokSettings, { draft: true });
+  // TikTok refuses the next draft: its drafts inbox is full. The post waits two hours without using an attempt.
+  await control("/__mode?platform=tiktok&mode=pendingfull");
+  const second = (await addClip()).clip;
+  assert.equal((await dash({ action: "postClip", id: second.id, accounts: [tt.id], draft: true })).status, 200);
+  const held = async () => (await dash()).body.posts.find(p => p.clip_id === second.id && p.platform === "tiktok");
+  for (let i = 0; i < 6 && !/drafts inbox is full/.test((await held()).error ?? ""); i++) await cron(61_000);
+  const h = await held();
+  assert.equal(h.state, "queued");
+  assert.equal(h.attempts, 0, "not counted as a failed attempt");
+  assert.match(h.error, /TikTok's drafts inbox is full/);
+  await control("/__mode?platform=tiktok&mode=published");
+  await cron(30 * 60_000);
+  assert.equal((await held()).state, "queued", "still waiting within the two hours");
+  for (let i = 0; i < 4 && (await held()).state !== "published"; i++) await cron(61 * 60_000);
+  assert.equal((await held()).state, "published", "goes out once TikTok has room");
+});
+
+test("an account's own daily limit and spacing pace its posts", async () => {
+  const ig = (await dash()).body.accounts.find(a => a.platform === "instagram");
+  assert.equal((await dash({ action: "accountOptions", id: ig.id, options: { gapMinutes: 60, dailyLimit: 40 } })).status, 200);
+  assert.equal((await dash({ action: "accountOptions", id: ig.id, options: { gapMinutes: 7 } })).status, 200, "any whole minutes are accepted");
+  assert.equal((await dash({ action: "accountOptions", id: ig.id, options: { dailyLimit: 0 } })).status, 400);
+  await dash({ action: "accountOptions", id: ig.id, options: { gapMinutes: 60 } });
+  await dash({ action: "settings", settings: { ...settings, mode: "review", dailyLimit: 50 } });
+  await dash({ action: "control", control: "running" });
+  await cron(2 * 3600_000);  // well past the last post
+  const a = (await addClip()).clip, b = (await addClip()).clip;
+  await dash({ action: "postClips", ids: [a.id, b.id], accounts: [ig.id] });
+  const state = async id => (await dash()).body.posts.find(p => p.clip_id === id && p.platform === "instagram");
+  for (let i = 0; i < 4 && (await state(a.id)).state !== "published"; i++) await cron(61_000);
+  assert.equal((await state(a.id)).state, "published");
+  await cron(5 * 60_000);
+  const waiting = await state(b.id);
+  assert.equal(waiting.state, "queued", "the second waits for the gap");
+  assert.match(waiting.error, /Waiting: spacing posts 60 minutes apart/);
+  await cron(60 * 60_000);
+  for (let i = 0; i < 3 && (await state(b.id)).state !== "published"; i++) await cron(61_000);
+  assert.equal((await state(b.id)).state, "published", "then goes out");
+  assert.equal((await state(b.id)).error, null);
+  await dash({ action: "accountOptions", id: ig.id, options: { gapMinutes: 0, dailyLimit: null } });
   await dash({ action: "settings", settings });
   await dash({ action: "control", control: "running" });
 });

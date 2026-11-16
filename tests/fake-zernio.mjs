@@ -68,7 +68,9 @@ export function startFakeZernio({ port = 0, apiKey = "sk_test", keys = { [apiKey
       const bytes = video.ok ? (await video.arrayBuffer()).byteLength : 0;
       const id = "zp-" + (posts.size + 1), mode = modes.get(target.platform) ?? "published";
       const post = { _id: id, platform: target.platform, accountId: target.accountId, params, fetchStatus: video.status, bytes, checks: 0 };
-      if (!video.ok || bytes < 1024 || mode === "fail") Object.assign(post, { status: "failed", platformStatus: "failed", errorMessage: video.ok ? "Video rejected by platform" : "Media could not be fetched" });
+      // pendingfull: TikTok refusing a draft because the creator's drafts inbox is full.
+      if (mode === "pendingfull") Object.assign(post, { status: "failed", platformStatus: "failed", errorMessage: "TikTok error spam_risk_too_many_pending_share: the user has too many pending shares" });
+      else if (!video.ok || bytes < 1024 || mode === "fail") Object.assign(post, { status: "failed", platformStatus: "failed", errorMessage: video.ok ? "Video rejected by platform" : "Media could not be fetched" });
       else if (mode === "pending") Object.assign(post, { status: "scheduled", platformStatus: "pending" });
       else if (mode === "held") Object.assign(post, { status: "publishing", platformStatus: "pending", held: true, errorMessage: "TikTok allows 15 video posts per account per day through the Business API. This post is queued and will publish automatically after " + holds.get(target.platform) + "." });
       else Object.assign(post, { status: "published", platformStatus: "published", url: "https://example.test/" + target.platform + "/" + id });
