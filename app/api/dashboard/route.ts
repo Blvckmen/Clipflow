@@ -18,8 +18,11 @@ import { z } from "zod";
 const accountIds=z.array(z.string().uuid()).max(50).transform(x=>[...new Set(x)]);
 const clipIds=z.array(z.string().uuid()).min(1).max(200).transform(x=>[...new Set(x)]);
 const captureMode=z.enum(["clip","record","both"]);
+// A streamer's publishing mode: review first, post directly, or the workspace's ("workspace" is stored as null).
+const publishMode=z.enum(["workspace","review","automatic"]);
+const storedMode=(m:z.infer<typeof publishMode>|undefined)=>m===undefined||m==="workspace"?null:m;
 const actionSchema=z.discriminatedUnion("action",[
- z.object({action:z.literal("add"),url:z.string().max(500),name:z.string().trim().max(80).optional(),accounts:accountIds.optional(),captureMode:captureMode.optional()}),
+ z.object({action:z.literal("add"),url:z.string().max(500),name:z.string().trim().max(80).optional(),accounts:accountIds.optional(),captureMode:captureMode.optional(),publishMode:publishMode.optional()}),
  z.object({action:z.literal("status"),id:z.string().uuid(),status:z.enum(["armed","paused","stopped"])}),
  z.object({action:z.literal("remove"),id:z.string().uuid()}),
  z.object({action:z.literal("settings"),settings:settingsSchema}),
@@ -55,7 +58,7 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("accountOptions"),id:z.string().uuid(),options:optionsSchema}),
  z.object({action:z.literal("assign"),streamerId:z.string().uuid(),accounts:accountIds}),
  // Edits a streamer: display name, channel URL, whether it is clipped, and (optionally) which accounts post its clips.
- z.object({action:z.literal("editStreamer"),id:z.string().uuid(),name:z.string().trim().min(1).max(80),url:z.string().max(500),status:z.enum(["armed","paused","stopped"]).optional(),accounts:accountIds.optional(),captureMode:captureMode.optional()}),
+ z.object({action:z.literal("editStreamer"),id:z.string().uuid(),name:z.string().trim().min(1).max(80),url:z.string().max(500),status:z.enum(["armed","paused","stopped"]).optional(),accounts:accountIds.optional(),captureMode:captureMode.optional(),publishMode:publishMode.optional()}),
  // Clips from a whole-stream recording: one moment picked in the player (seconds into it), or the best few.
  z.object({action:z.literal("makeClip"),recordingId:z.string().uuid(),start:z.number().int().min(0),end:z.number().int().min(1)}),
  z.object({action:z.literal("findMoments"),recordingId:z.string().uuid(),count:z.number().int().min(1).max(20)}),
@@ -109,7 +112,7 @@ export async function POST(request:Request){
    const linked=await ownAccounts(payload.accounts??[]);
    if(!linked)return Response.json({error:"One of those publishing accounts is no longer connected."},{status:404});
    const name=payload.name||channel.name;streamerId=crypto.randomUUID();
-   statements.push(db.prepare("INSERT INTO streamers (id,owner,name,url,platform,status,created_at,capture_mode) VALUES (?,?,?,?,?,'armed',?,?)").bind(streamerId,owner,name,channel.url,channel.platform,iso,payload.captureMode??"clip"));
+   statements.push(db.prepare("INSERT INTO streamers (id,owner,name,url,platform,status,created_at,capture_mode,publish_mode) VALUES (?,?,?,?,?,'armed',?,?,?)").bind(streamerId,owner,name,channel.url,channel.platform,iso,payload.captureMode??"clip",storedMode(payload.publishMode)));
    for(const a of linked)statements.push(db.prepare("INSERT INTO streamer_accounts (streamer_id,account_id,owner,created_at) VALUES (?,?,?,?)").bind(streamerId,a.id,owner,iso));
    // Adding a streamer means "start clipping them": automation is switched on for the workspace.
    statements.push(db.prepare("INSERT INTO preferences (owner,control) VALUES (?,'running') ON CONFLICT(owner) DO UPDATE SET control='running'").bind(owner));
@@ -134,13 +137,15 @@ export async function POST(request:Request){
    message=streamer.name+(linked.length?"'s clips now post to "+linked.map(a=>"@"+a.username).join(", ")+".":"'s clips are kept in the library and not posted.");
   }
   if(payload.action==="editStreamer"){
-   const current=await db.prepare("SELECT name,url,status,capture_mode FROM streamers WHERE id=? AND owner=?").bind(payload.id,owner).first<{name:string;url:string;status:string;capture_mode:string}>();
+   const current=await db.prepare("SELECT name,url,status,capture_mode,publish_mode FROM streamers WHERE id=? AND owner=?").bind(payload.id,owner).first<{name:string;url:string;status:string;capture_mode:string;publish_mode:string|null}>();
    if(!current)return Response.json({error:"Streamer not found."},{status:404});
    let channel;try{channel=parseStreamer(payload.url);}catch(error){return Response.json({error:(error as Error).message},{status:400});}
    const moved=channel.url!==current.url;
    // A new channel starts with a fresh live status; the worker checks it on its next cycle.
    // A new capture mode applies from the streamer's next stream (one being recorded now carries on as it began).
-   statements.push(db.prepare("UPDATE streamers SET name=?,url=?,platform=?,status=?,capture_mode=?"+(moved?",live_status=NULL,live_checked_at=NULL,live_title=NULL":"")+" WHERE id=? AND owner=?").bind(payload.name,channel.url,channel.platform,payload.status??current.status,payload.captureMode??current.capture_mode,payload.id,owner));
+   // A new publishing mode applies to clips that arrive from now on; clips already waiting keep their state.
+   const mode=payload.publishMode===undefined?current.publish_mode:storedMode(payload.publishMode);
+   statements.push(db.prepare("UPDATE streamers SET name=?,url=?,platform=?,status=?,capture_mode=?,publish_mode=?"+(moved?",live_status=NULL,live_checked_at=NULL,live_title=NULL":"")+" WHERE id=? AND owner=?").bind(payload.name,channel.url,channel.platform,payload.status??current.status,payload.captureMode??current.capture_mode,mode,payload.id,owner));
    if(payload.accounts){
     const linked=await ownAccounts(payload.accounts);
     if(!linked)return Response.json({error:"One of those publishing accounts is no longer connected."},{status:404});

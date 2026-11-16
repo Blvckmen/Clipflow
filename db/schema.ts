@@ -8,6 +8,9 @@ export const streamers = sqliteTable("streamers", {
  // clip: clip live (the rolling buffer only). record: keep the whole stream and clip it when it ends. both: clip
  // live and keep the whole stream.
  captureMode:text("capture_mode").notNull().default("clip"),
+ // What happens to this streamer's new clips: "review" (wait for review), "automatic" (approved, so they post
+ // straight away), or null to follow the workspace's publishing mode.
+ publishMode:text("publish_mode"),
 },t=>[uniqueIndex("streamers_owner_url").on(t.owner,t.url)]);
 export const preferences=sqliteTable("preferences",{
  owner:text("owner").primaryKey(),mode:text("mode").notNull().default("automatic"),duration:integer("duration").notNull().default(45),dailyLimit:integer("daily_limit").notNull().default(5),captions:integer("captions",{mode:"boolean"}).notNull().default(true),destinations:text("destinations").notNull().default('[]'),control:text("control").notNull().default("paused"),framing:text("framing").notNull().default("blur"),

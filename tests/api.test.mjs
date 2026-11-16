@@ -585,3 +585,31 @@ describe("recordings", () => {
     assert.equal((await dash({ action: "makeClip", recordingId: randomUUID(), start: 0, end: 30 })).status, 404);
   });
 });
+
+describe("a streamer's own publishing mode", () => {
+  test("review first or post directly per streamer, overriding the workspace", async () => {
+    const { mode, duration, dailyLimit, captions, framing, destinations } = originalSettings;
+    assert.equal((await dash({ action: "settings", settings: { mode: "automatic", duration, dailyLimit, captions, framing, destinations } })).status, 200);
+    const name = "pm" + Date.now().toString(36);
+    const added = await dash({ action: "add", url: "https://twitch.tv/" + name, publishMode: "review" });
+    assert.equal(added.status, 200);
+    let s = (await dash()).body.streamers.find(x => x.id === added.body.streamerId);
+    assert.equal(s.publish_mode, "review");
+    const report = async () => { const bytes = Buffer.alloc(3000, 6); const clip = { id: randomUUID(), streamerId: s.id, createdAt: new Date().toISOString(), duration: 30, captions: true, sha: sha256(bytes), size: bytes.length }; assert.equal((await worker("/api/worker/clips", { method: "POST", body: JSON.stringify(clip) })).status, 200); return (await dash()).body.clips.find(c => c.id === clip.id); };
+    assert.equal((await report()).review, "pending", "the streamer reviews first even though the workspace posts directly");
+    await dash({ action: "settings", settings: { mode: "review", duration, dailyLimit, captions, framing, destinations } });
+    assert.equal((await dash({ action: "editStreamer", id: s.id, name: s.name, url: s.url, publishMode: "automatic" })).status, 200);
+    assert.equal((await report()).review, "approved", "and posts directly even though the workspace reviews first");
+    assert.equal((await dash({ action: "editStreamer", id: s.id, name: s.name, url: s.url })).status, 200);
+    s = (await dash()).body.streamers.find(x => x.id === s.id);
+    assert.equal(s.publish_mode, "automatic", "left out: unchanged");
+    await dash({ action: "editStreamer", id: s.id, name: s.name, url: s.url, publishMode: "workspace" });
+    s = (await dash()).body.streamers.find(x => x.id === s.id);
+    assert.equal(s.publish_mode, null, "back to the workspace setting");
+    assert.equal((await report()).review, "pending", "which now reviews first");
+    assert.equal((await dash({ action: "editStreamer", id: s.id, name: s.name, url: s.url, publishMode: "sometimes" })).status, 400);
+    for (const c of (await dash()).body.clips.filter(c => c.streamer_id === s.id)) await dash({ action: "deleteClip", id: c.id });
+    await dash({ action: "remove", id: s.id });
+    await dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, framing, destinations } });
+  });
+});

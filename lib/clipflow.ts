@@ -8,6 +8,8 @@ export const settingsSchema=z.object({mode:z.enum(["automatic","review"]),durati
  transcribe:z.boolean().optional(),
  // Days whole-stream recordings are kept.
  recordingDays:z.number().int().min(1).max(30).optional()});
+// A streamer's own publishing mode; "workspace" follows Settings → Publishing mode.
+export const publishModes={workspace:"Use the workspace setting",review:"Review clips first",automatic:"Post to social media directly"} as const;
 export const defaultCaption="{streamer} on {platform} #clips #{platform}";
 export const defaults={mode:"automatic",duration:45,dailyLimit:5,captions:true,framing:"blur",destinations:[] as string[],control:"paused",captionTemplate:defaultCaption,aiCaptions:true,captionNotes:"",transcribe:true,recordingDays:7};
 export const captureModes={clip:"Clip live",record:"Record the whole stream, clip it afterwards",both:"Clip live and record the whole stream"} as const;

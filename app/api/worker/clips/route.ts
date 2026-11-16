@@ -18,14 +18,14 @@ export async function POST(request:Request){
    clip=clipSchema.parse(await request.json());
    if(clip.source&&clip.edit!==undefined){edit=normalizeEdit(clip.edit,{duration:clip.source.duration});words=normalizeWords(clip.transcript??[],clip.source.duration);}
   }catch{return Response.json({error:"Invalid clip report."},{status:400});}
-  const streamer=await db.prepare("SELECT name FROM streamers WHERE id=? AND owner=?").bind(clip.streamerId,owner).first<{name:string}>();
+  const streamer=await db.prepare("SELECT name,publish_mode FROM streamers WHERE id=? AND owner=?").bind(clip.streamerId,owner).first<{name:string;publish_mode:string|null}>();
   if(!streamer)return Response.json({error:"Streamer not found."},{status:404});
   // Reports are retried by the worker, so a repeated id is acknowledged without a second log entry.
   const existing=await db.prepare("SELECT owner FROM clips WHERE id=?").bind(clip.id).first<{owner:string}>();
   if(existing)return existing.owner===owner?Response.json({ok:true,duplicate:true}):Response.json({error:"Clip id conflict."},{status:409});
-  // The owner's publishing mode at arrival decides whether the clip waits for review.
+  // The publishing mode at arrival decides whether the clip waits for review: the streamer's own, else the workspace's.
   const prefs=await db.prepare("SELECT mode FROM preferences WHERE owner=?").bind(owner).first<{mode:string}>();
-  const review=prefs?.mode==="review"?"pending":"approved";
+  const review=(streamer.publish_mode??prefs?.mode)==="review"?"pending":"approved";
   const src=clip.source,iso=new Date().toISOString();
   await db.batch([
    db.prepare("INSERT INTO clips (id,owner,streamer_id,created_at,duration,captions,sha,size,review,reason,edit,transcript,signals,source_meta,source_sha,source_size,rendered_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
