@@ -226,3 +226,19 @@ th.num{text-align:right}
 .editor-body{grid-template-columns:minmax(0,1fr) minmax(440px,620px)}
 .editor-stage{border-right:1px solid var(--border)}
 }
+/* Sidebar: tighter spacing so the menu, worker card and profile fit on a laptop screen, and scrolling when the
+   window is shorter still, instead of cutting the bottom off. */
+.sidebar{padding:20px 14px 14px;overflow-y:auto;overscroll-behavior:contain}
+.logo{font-size:25px;margin:0 10px 18px}
+.logo>span:first-child{width:30px;height:30px}
+.workspace-label{padding:8px 10px;margin-bottom:18px}
+.nav-label{margin-bottom:6px}
+.nav-item{padding:7px 12px;margin:1px 0}
+.sidebar-bottom{padding-top:16px}
+.engine-card{padding:11px 12px}
+.engine-card .tag{margin-top:8px}
+.engine-card p{margin-top:6px;line-height:1.5}
+.engine-card button{margin-top:8px}
+.help-link{padding:10px}
+.profile{padding-top:12px}
+.sidebar{scrollbar-width:thin;scrollbar-color:#2a323c transparent}
