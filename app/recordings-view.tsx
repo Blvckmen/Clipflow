@@ -45,7 +45,11 @@ export function RecordingsView({ recordings, requests, storage, busy, workerOnli
     <section className="panel recording-list" aria-label="Recordings">
       <div className="panel-heading"><div><h2>Recordings <span className="count">{recordings.length}</span></h2><p>Whole streams kept on your worker PC</p></div></div>
       {recordings.map(r => { const mine = requests.filter(q => q.recording_id === r.id), made = mine.reduce((a, q) => a + q.clips, 0);
-        return <button key={r.id} className={"recording-row" + (r.id === open?.id ? " active" : "")} onClick={() => setOpenId(r.id)}>
+        return <button key={r.id} className={"recording-row" + (r.id === open?.id ? " active" : "")} onClick={() => {
+          setOpenId(r.id);
+          // On a phone the player is below the list: bring it into view.
+          if (window.matchMedia("(max-width: 900px)").matches) requestAnimationFrame(() => document.querySelector(".recording-player")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+        }}>
           <div className="recording-row-top"><strong>{r.streamer ?? "Removed streamer"}</strong><StateTag r={r} /></div>
           <small>{when(r.started_at)}{r.duration ? " · " + length(r.duration) : ""}{made ? " · " + made + " clip" + (made === 1 ? "" : "s") + " made" : ""}</small>
           {r.title && <small className="recording-title">{r.title}</small>}
