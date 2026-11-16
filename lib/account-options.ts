@@ -12,6 +12,9 @@ export const tiktokPrivacy = {
   FOLLOWER_OF_CREATOR: "Followers",
   SELF_ONLY: "Only me",
 } as const;
+// What happens to new clips once this account has reached its daily limit (its own or the platform's, e.g. TikTok's
+// 15): held for the owner to review (queue or skip each), or queued to go out as soon as there's room.
+export const whenFullChoices = { review: "Hold new clips for my review", queue: "Queue them for when there's room" } as const;
 export const youtubeVisibility = { public: "Public", unlisted: "Unlisted", private: "Private" } as const;
 
 const keys = <T extends object>(o: T) => Object.keys(o) as [keyof T & string, ...(keyof T & string)[]];
@@ -23,12 +26,13 @@ export const optionsSchema = z.object({
   // This account's own daily limit (null: the workspace's), and minutes to leave between its posts.
   dailyLimit: z.number().int().min(1).max(100).nullable().optional(),
   gapMinutes: z.number().int().min(0).max(720).optional(),
+  whenFull: z.enum(keys(whenFullChoices)).optional(),
   // No longer used: drafts count towards TikTok's 15 a day as well, so overflowing to them adds nothing. Kept so
   // options saved with it still read.
   overflowToDrafts: z.boolean().optional(),
 }).strict();
 export type AccountOptions = Required<z.infer<typeof optionsSchema>>;
-export const defaultOptions: AccountOptions = { tiktokMode: "reviewed", tiktokPrivacy: "PUBLIC_TO_EVERYONE", allowComments: true, youtubeVisibility: "public", dailyLimit: null, gapMinutes: 0, overflowToDrafts: true };
+export const defaultOptions: AccountOptions = { tiktokMode: "reviewed", tiktokPrivacy: "PUBLIC_TO_EVERYONE", allowComments: true, youtubeVisibility: "public", dailyLimit: null, gapMinutes: 0, whenFull: "review", overflowToDrafts: true };
 export const gapChoices = { 0: "Post as soon as possible", 15: "At least 15 minutes apart", 30: "At least 30 minutes apart", 60: "At least 1 hour apart", 120: "At least 2 hours apart", 180: "At least 3 hours apart" } as const;
 
 // Stored options merged over the defaults; anything unreadable falls back to them.

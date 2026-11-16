@@ -264,7 +264,7 @@ test("a cancelled sign-in returns with its reason and adds nothing", async () =>
 test("per-account options change how posts are sent", async () => {
   const { body } = await dash();
   const tt = body.accounts.find(a => a.platform === "tiktok"), yt = body.accounts.find(a => a.username === "new_youtube");
-  assert.deepEqual(tt.options, { tiktokMode: "reviewed", tiktokPrivacy: "PUBLIC_TO_EVERYONE", allowComments: true, youtubeVisibility: "public", dailyLimit: null, gapMinutes: 0, overflowToDrafts: true }, "defaults");
+  assert.deepEqual(tt.options, { tiktokMode: "reviewed", tiktokPrivacy: "PUBLIC_TO_EVERYONE", allowComments: true, youtubeVisibility: "public", dailyLimit: null, gapMinutes: 0, whenFull: "review", overflowToDrafts: true }, "defaults");
   assert.equal((await dash({ action: "accountOptions", id: tt.id, options: { tiktokMode: "direct", tiktokPrivacy: "SELF_ONLY", allowComments: false } })).status, 200);
   assert.equal((await dash({ action: "accountOptions", id: yt.id, options: { youtubeVisibility: "unlisted" } })).status, 200);
   assert.equal((await dash({ action: "accountOptions", id: yt.id, options: { youtubeVisibility: "secret" } })).status, 400, "unknown values are refused");
@@ -409,6 +409,73 @@ test("a clip posted by hand in the TikTok app can be marked as posted, and is th
   assert.equal((await dash({ action: "markPosted", id: clip.id, accountId: tt.id })).status, 200);
   assert.equal((await dash()).body.posts.filter(p => p.clip_id === clip.id && p.platform === "tiktok").length, 2);
   assert.equal((await dash({ action: "markPosted", id: clip.id, accountId: randomUUID() })).status, 404);
+  await dash({ action: "settings", settings });
+  await dash({ action: "control", control: "running" });
+});
+
+test("once a TikTok account has sent 15 in a day, new clips wait for review there but still post elsewhere", async () => {
+  await cron(25 * 3600_000);  // a fresh day for every account
+  await dash({ action: "settings", settings: { ...settings, dailyLimit: 50 } });
+  await dash({ action: "control", control: "running" });
+  await control("/__mode?platform=tiktok&mode=published");
+  const tiktok = async id => (await dash()).body.posts.find(p => p.clip_id === id && p.platform === "tiktok");
+  const instagram = async id => (await dash()).body.posts.find(p => p.clip_id === id && p.platform === "instagram");
+  const first = [];
+  for (let i = 0; i < 15; i++) first.push((await addClip()).clip);
+  for (let i = 0; i < 30; i++) {
+    const done = (await dash()).body.posts.filter(p => p.platform === "tiktok" && p.state === "published" && first.some(c => c.id === p.clip_id)).length;
+    if (done >= 15) break;
+    await cron(61_000);
+  }
+  assert.equal((await dash()).body.posts.filter(p => p.platform === "tiktok" && p.state === "published" && first.some(c => c.id === p.clip_id)).length, 15);
+  // The 16th: held for review on TikTok, posted on Instagram as usual.
+  const held = (await addClip()).clip, skipped = (await addClip()).clip;
+  for (let i = 0; i < 4; i++) await cron(61_000);
+  let post = await tiktok(held.id);
+  assert.equal(post.state, "review");
+  assert.match(post.error, /15 posts a day were used up/);
+  assert.equal((await instagram(held.id)).state, "published", "the other accounts still post it");
+  assert.equal((await sentFor(held.id)).tiktok, undefined, "nothing sent to TikTok");
+  const dash1 = await dash();
+  assert.equal(dash1.body.posts.filter(p => p.state === "review").length, 2);
+  // Queued by hand: it waits for room instead of being held again.
+  assert.equal((await dash({ action: "reviewPosts", ids: [post.id], op: "queue" })).status, 200);
+  await cron(61_000);
+  post = await tiktok(held.id);
+  assert.equal(post.state, "queued");
+  assert.match(post.error, /Waiting: TikTok/);
+  // Skipped: never posted, and not queued again.
+  const skip = await tiktok(skipped.id);
+  assert.equal((await dash({ action: "reviewPosts", ids: [skip.id], op: "skip" })).status, 200);
+  assert.equal((await dash({ action: "reviewPosts", ids: [skip.id], op: "queue" })).status, 409, "only posts waiting for review");
+  // A day later the queued one goes out; the skipped one stays skipped.
+  await cron(24 * 3600_000);
+  for (let i = 0; i < 4 && (await tiktok(held.id)).state !== "published"; i++) await cron(61_000);
+  assert.equal((await tiktok(held.id)).state, "published");
+  assert.deepEqual((await dash()).body.posts.filter(p => p.clip_id === skipped.id && p.platform === "tiktok").map(p => p.state), ["skipped"]);
+  assert.equal((await sentFor(skipped.id)).tiktok, undefined);
+  await control("/__mode?platform=tiktok&mode=pending");
+  await cron(25 * 3600_000);
+  // Any platform: an Instagram account at its own limit queues (set to queue) or holds (set to hold) new clips.
+  const ig = (await dash()).body.accounts.find(a => a.platform === "instagram");
+  assert.equal((await dash({ action: "accountOptions", id: ig.id, options: { dailyLimit: 1, whenFull: "queue" } })).status, 200);
+  assert.equal((await dash({ action: "accountOptions", id: ig.id, options: { whenFull: "later" } })).status, 400);
+  const one = (await addClip()).clip;
+  for (let i = 0; i < 4 && (await instagram(one.id))?.state !== "published"; i++) await cron(61_000);
+  assert.equal((await instagram(one.id)).state, "published");
+  const two = (await addClip()).clip;
+  await cron(61_000); await cron(61_000);
+  assert.equal((await instagram(two.id)).state, "queued", "set to queue: it waits for room");
+  assert.equal((await dash({ action: "accountOptions", id: ig.id, options: { whenFull: "review" } })).status, 200);
+  const three = (await addClip()).clip;
+  await cron(61_000);
+  const igHeld = await instagram(three.id);
+  assert.equal(igHeld.state, "review", "set to hold: it waits for review");
+  assert.match(igHeld.error, /daily limit of 1 was reached/);
+  assert.equal((await instagram(two.id)).state, "queued", "one already queued keeps its place");
+  await dash({ action: "accountOptions", id: ig.id, options: { dailyLimit: null, whenFull: "review" } });
+  await dash({ action: "reviewPosts", ids: [igHeld.id], op: "skip" });
+  await cron(25 * 3600_000);
   await dash({ action: "settings", settings });
   await dash({ action: "control", control: "running" });
 });

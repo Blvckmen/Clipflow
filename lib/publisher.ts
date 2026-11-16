@@ -12,12 +12,14 @@ import { captionForPost, fillCaptions } from "./post-caption";
 import { syncAnalytics } from "./analytics";
 import { expireRecordings } from "./recordings";
 import { readOptions, tiktokSettings, wantsDraft } from "./account-options";
-import { planNext, tiktokBusy } from "./posting-plan.mjs";
+import { planNext, tiktokBusy, TIKTOK_DAILY } from "./posting-plan.mjs";
 import { keyConnection, siteConnection, zernioApiUrl, type Connection } from "./zernio-keys";
 
 type Env = Cloudflare.Env;
 type AccountRow = { id: string; owner: string; provider: string; platform: string; external_id: string; username: string; token_enc: string; token_expires_at: string; token_refreshed_at: string; connected_at: string; options: string | null; control: string | null; daily_limit: number | null; caption_template: string | null; zernio_key_id: string | null; key_label: string | null; key_enc: string | null };
-type PostRow = { id: string; clip_id: string; state: string; container_id: string | null; attempts: number; updated_at: string; draft?: number };
+type PostRow = { id: string; clip_id: string; state: string; container_id: string | null; attempts: number; updated_at: string; draft?: number; queued_by_hand?: number };
+// Shown on a post held for review because its account had reached its daily limit (set to hold, not queue).
+const heldNote = (why: string) => "Held for your review: " + why + ". Queue it to post when there's room, or skip it.";
 type ClipInfo = { reviewed: boolean; streamer: string; platform: string; draft: boolean };
 // What an adapter reports back: done, still going (check again later), or failed with a reason.
 type Outcome = { state: "published"; mediaId: string | null; permalink: string | null; externalId?: string } | { state: "processing"; containerId: string; until?: string; note?: string } | { state: "failed"; message: string } | { state: "wait"; until?: string; note?: string };
@@ -160,14 +162,24 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   // Pausing or stopping automation also pauses publishing.
   if (account.control !== "running") return;
 
+  // An account that has reached its daily limit (its own, or TikTok's 15 a day, drafts included) and is set to hold
+  // ("When the daily limit is reached") holds its new clips for the owner's review rather than queueing them; the
+  // same clips still queue for the streamer's other accounts.
+  const since = new Date(now - 24 * 3600_000).toISOString(), options = readOptions(account.options);
+  const ownLimit = options.dailyLimit ?? account.daily_limit ?? 5, tiktokCap = account.platform === "tiktok" && TIKTOK_DAILY < ownLimit;
+  const cap = tiktokCap ? TIKTOK_DAILY : ownLimit;
+  const sentToday = options.whenFull === "review" ? (await db.prepare("SELECT count(*) AS n FROM posts WHERE account_id=? AND state IN ('published','processing') AND coalesce(published_at,updated_at)>=?").bind(account.id, since).first<{ n: number }>())?.n ?? 0 : 0;
+  const full = options.whenFull === "review" && sentToday >= cap;
+  const fullNote = heldNote(tiktokCap ? "TikTok's " + TIKTOK_DAILY + " posts a day were used up" : "this account's daily limit of " + ownLimit + " was reached");
+
   // Queue approved, uploaded clips from the streamers this account is linked to, approved after both the account
   // was connected and the streamer was linked to it — never the old backlog. Clips waiting for a re-render wait.
-  await db.prepare(`INSERT OR IGNORE INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at)
-    SELECT lower(hex(randomblob(16))),c.owner,c.id,?,?,'queued',?,?,? FROM clips c
+  await db.prepare(`INSERT OR IGNORE INTO posts (id,owner,clip_id,platform,account_id,state,error,next_attempt_at,created_at,updated_at)
+    SELECT lower(hex(randomblob(16))),c.owner,c.id,?,?,?,?,?,?,? FROM clips c
     JOIN streamer_accounts sa ON sa.streamer_id=c.streamer_id AND sa.account_id=?
     WHERE c.owner=? AND c.review='approved' AND c.file_key IS NOT NULL AND coalesce(c.render_state,'')!='queued'
     AND coalesce(c.reviewed_at,c.created_at)>=max(?,sa.created_at)
-    AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.clip_id=c.id AND p.account_id=?)`).bind(account.platform, account.id, iso, iso, iso, account.id, account.owner, account.connected_at, account.id).run();
+    AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.clip_id=c.id AND p.account_id=?)`).bind(account.platform, account.id, full ? "review" : "queued", full ? fullNote : null, iso, iso, iso, account.id, account.owner, account.connected_at, account.id).run();
 
   const fail = async (post: PostRow, message: string) => {
     // TikTok saying "not now" (drafts inbox full, too many posts today) isn't a failure: try again later, as a
@@ -217,7 +229,7 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   if (await db.prepare("SELECT 1 FROM posts WHERE account_id=? AND state='processing' LIMIT 1").bind(account.id).first()) return;
 
   // 2. Otherwise start the oldest queued post, within the daily limit.
-  const queued = await db.prepare("SELECT id,clip_id,state,container_id,attempts,updated_at,draft FROM posts WHERE account_id=? AND state='queued' AND next_attempt_at<=? ORDER BY created_at LIMIT 1").bind(account.id, iso).first<PostRow>();
+  const queued = await db.prepare("SELECT id,clip_id,state,container_id,attempts,updated_at,draft,queued_by_hand FROM posts WHERE account_id=? AND state='queued' AND next_attempt_at<=? ORDER BY created_at LIMIT 1").bind(account.id, iso).first<PostRow>();
   if (!queued) return;
   const clip = await db.prepare("SELECT c.review,c.reviewed_at,c.file_key,c.render_state,s.name,s.platform FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(queued.clip_id, account.owner).first<{ review: string; reviewed_at: string | null; file_key: string | null; render_state: string | null; name: string | null; platform: string | null }>();
   if (!clip || clip.review !== "approved" || !clip.file_key) {
@@ -229,17 +241,20 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   if (clip.render_state === "queued") return;
   // What the last day looks like for this account, for the planner (lib/posting-plan.mjs): direct posts and drafts
   // sent, when the last one went, and when the oldest of each leaves the 24-hour window.
-  const since = new Date(now - 24 * 3600_000).toISOString(), options = readOptions(account.options);
   const day = await db.prepare(`SELECT sum(draft=0 AND state='published') AS direct, sum(draft=1) AS drafts,
       max(coalesce(published_at,updated_at)) AS last, min(coalesce(published_at,updated_at)) AS oldest
     FROM posts WHERE account_id=? AND state IN ('published','processing') AND coalesce(published_at,updated_at)>=?`).bind(account.id, since)
     .first<{ direct: number | null; drafts: number | null; last: string | null; oldest: string | null }>();
   const at = (v: string | null | undefined) => v ? Date.parse(v) : null;
   const plan = planNext({
-    platform: account.platform, wantsDraft: account.platform === "tiktok" && (!!queued.draft || wantsDraft(options, !!clip.reviewed_at)),
+    platform: account.platform, wantsDraft: account.platform === "tiktok" && (!!queued.draft || wantsDraft(options, !!clip.reviewed_at)), queuedByHand: !!queued.queued_by_hand, holdWhenFull: options.whenFull === "review",
     limit: options.dailyLimit ?? account.daily_limit ?? 5, gapMinutes: options.gapMinutes,
     directToday: day?.direct ?? 0, draftsToday: day?.drafts ?? 0, lastSentAt: at(day?.last), oldestSentAt: at(day?.oldest), now,
   });
+  if (plan.action === "hold") {
+    await db.prepare("UPDATE posts SET state='review',error=?,updated_at=? WHERE id=?").bind(heldNote(plan.reason ?? "the daily limit was reached"), iso, queued.id).run();
+    return;
+  }
   if (plan.action === "wait") {
     // Not this post's fault: look again when there is room (or in 15 minutes), and say why in the queue.
     const next = Math.max(now + CHECK_EVERY_MS, plan.until ?? now + 15 * 60_000);

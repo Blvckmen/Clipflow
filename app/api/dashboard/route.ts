@@ -33,6 +33,8 @@ const actionSchema=z.discriminatedUnion("action",[
  // `platform` is the pre-multi-account form: it disconnects that platform's only account.
  z.object({action:z.literal("disconnect"),id:z.string().uuid().optional(),platform:z.enum(["instagram"]).optional()}),
  z.object({action:z.literal("retryPost"),id:z.string().min(1).max(64)}),
+ // Posts held for review (their account had reached its daily limit): queue them to post when there's room, or skip them.
+ z.object({action:z.literal("reviewPosts"),ids:z.array(z.string().min(1).max(64)).min(1).max(200).transform(x=>[...new Set(x)]),op:z.enum(["queue","skip"])}),
  // The owner posted a clip themselves (e.g. in the TikTok app): record it, so it isn't also posted there automatically.
  z.object({action:z.literal("markPosted"),id:z.string().uuid(),accountId:z.string().uuid()}),
  // Posts a clip's current version to the chosen accounts now: its first post, or again after an edit.
@@ -212,7 +214,7 @@ export async function POST(request:Request){
     if(config){try{await deleteAccount(config,external);}catch(error){if(!(error instanceof ZernioError&&error.keyInvalid)){console.error("Zernio disconnect failed",error);return Response.json({error:"Couldn't disconnect it on Zernio. Please try again."},{status:502});}}}
    }
    // Posts not yet sent are dropped with the account; published history is kept.
-   statements.push(db.prepare("DELETE FROM posts WHERE account_id=? AND state IN ('queued','processing','failed')").bind(account.id),db.prepare("DELETE FROM streamer_accounts WHERE account_id=?").bind(account.id),db.prepare("DELETE FROM accounts WHERE id=?").bind(account.id));
+   statements.push(db.prepare("DELETE FROM posts WHERE account_id=? AND state IN ('queued','processing','failed','review','skipped')").bind(account.id),db.prepare("DELETE FROM streamer_accounts WHERE account_id=?").bind(account.id),db.prepare("DELETE FROM accounts WHERE id=?").bind(account.id));
    message=account.provider==="zernio"
     ?"Disconnected "+(VIDEO_PLATFORMS[account.platform]??account.platform)+" account @"+account.username+"."
     :"Disconnected Instagram account @"+account.username+". Remove Clipflow under Instagram settings → Apps and websites to revoke its access fully.";
@@ -226,7 +228,7 @@ export async function POST(request:Request){
    // Only TikTok has an app drafts inbox; drafts skip the other accounts.
    const asDraft=!!payload.draft,skippedNoDrafts=asDraft?chosen.filter(a=>a.platform!=="tiktok").map(a=>(VIDEO_PLATFORMS[a.platform]??a.platform)+" @"+a.username):[];
    if(asDraft){chosen.splice(0,chosen.length,...chosen.filter(a=>a.platform==="tiktok"));if(!chosen.length)return Response.json({error:"Drafts are a TikTok feature: tick a TikTok account."},{status:400});}
-   const {results:existing}=await db.prepare("SELECT account_id,state,round FROM posts WHERE clip_id=? AND owner=?").bind(clip.id,owner).all<{account_id:string;state:string;round:number}>();
+   const {results:existing}=await db.prepare("SELECT id,account_id,state,round FROM posts WHERE clip_id=? AND owner=?").bind(clip.id,owner).all<{id:string;account_id:string;state:string;round:number}>();
    const label=(a:{username:string;platform:string})=>(VIDEO_PLATFORMS[a.platform]??a.platform)+" @"+a.username;
    const queued:string[]=[],busyNow:string[]=[],offline:string[]=[];
    for(const a of chosen){
@@ -234,8 +236,11 @@ export async function POST(request:Request){
     const mine=existing.filter(p=>p.account_id===a.id);
     // One unfinished post per clip and account at a time.
     if(mine.some(p=>p.state==="queued"||p.state==="processing")){busyNow.push(label(a));continue;}
+    // Held for review: posting it by hand queues that same post.
+    const held=mine.find(p=>p.state==="review");
+    if(held){statements.push(db.prepare("UPDATE posts SET state='queued',queued_by_hand=1,draft=?,error=NULL,next_attempt_at=?,updated_at=? WHERE id=?").bind(Number(asDraft),iso,iso,held.id));queued.push(label(a));continue;}
     const round=mine.length?Math.max(...mine.map(p=>p.round))+1:0;
-    statements.push(db.prepare("INSERT INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at,round,draft) VALUES (lower(hex(randomblob(16))),?,?,?,?,'queued',?,?,?,?,?)").bind(owner,clip.id,a.platform,a.id,iso,iso,iso,round,Number(asDraft)));
+    statements.push(db.prepare("INSERT INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at,round,draft,queued_by_hand) VALUES (lower(hex(randomblob(16))),?,?,?,?,'queued',?,?,?,?,?,1)").bind(owner,clip.id,a.platform,a.id,iso,iso,iso,round,Number(asDraft)));
     queued.push(label(a)+(round?" (again)":""));
    }
    if(!queued.length)return Response.json({error:[busyNow.length?"Already on its way to "+busyNow.join(", ")+".":"",offline.length?"Reconnect "+offline.join(", ")+" first.":""].filter(Boolean).join(" ")},{status:409});
@@ -252,7 +257,7 @@ export async function POST(request:Request){
    if(chosen.length!==payload.accounts.length)return Response.json({error:"One of those accounts is no longer connected."},{status:404});
    const asDraft=!!payload.draft,live=chosen.filter(a=>a.status==="connected"&&(!asDraft||a.platform==="tiktok"));
    if(!live.length)return Response.json({error:asDraft?"Drafts are a TikTok feature: tick a connected TikTok account.":"Reconnect those accounts first."},{status:asDraft?400:409});
-   const {results:existing}=await db.prepare("SELECT clip_id,account_id,state,round FROM posts WHERE owner=? AND clip_id IN ("+marks+")").bind(owner,idList).all<{clip_id:string;account_id:string;state:string;round:number}>();
+   const {results:existing}=await db.prepare("SELECT id,clip_id,account_id,state,round FROM posts WHERE owner=? AND clip_id IN ("+marks+")").bind(owner,idList).all<{id:string;clip_id:string;account_id:string;state:string;round:number}>();
    let posts=0,clipsPosted=0,busyNow=0;const notUploaded=payload.ids.length-clips.filter(c=>c.file_key).length;
    for(const clip of clips){
     if(!clip.file_key)continue;
@@ -260,8 +265,10 @@ export async function POST(request:Request){
     for(const a of live){
      const mine=existing.filter(p=>p.clip_id===clip.id&&p.account_id===a.id);
      if(mine.some(p=>p.state==="queued"||p.state==="processing")){busyNow++;continue;}
+     const held=mine.find(p=>p.state==="review");
+     if(held){statements.push(db.prepare("UPDATE posts SET state='queued',queued_by_hand=1,error=NULL,next_attempt_at=?,updated_at=? WHERE id=?").bind(iso,iso,held.id));posts++;any=true;continue;}
      const round=mine.length?Math.max(...mine.map(p=>p.round))+1:0;
-     statements.push(db.prepare("INSERT INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at,round,draft) VALUES (lower(hex(randomblob(16))),?,?,?,?,'queued',?,?,?,?,?)").bind(owner,clip.id,a.platform,a.id,iso,iso,iso,round,Number(asDraft)));
+     statements.push(db.prepare("INSERT INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at,round,draft,queued_by_hand) VALUES (lower(hex(randomblob(16))),?,?,?,?,'queued',?,?,?,?,?,1)").bind(owner,clip.id,a.platform,a.id,iso,iso,iso,round,Number(asDraft)));
      posts++;any=true;
     }
     if(any){clipsPosted++;if(clip.review!=="approved")statements.push(db.prepare("UPDATE clips SET review='approved',reviewed_at=? WHERE id=? AND owner=?").bind(iso,clip.id,owner));}
@@ -320,12 +327,20 @@ export async function POST(request:Request){
    if(!account)return Response.json({error:"That account is not connected."},{status:404});
    const {results:existing}=await db.prepare("SELECT id,state,round FROM posts WHERE clip_id=? AND account_id=?").bind(payload.id,payload.accountId).all<{id:string;state:string;round:number}>();
    if(existing.some(p=>p.state==="processing"))return Response.json({error:"Clipflow is already sending this clip to @"+account.username+" (the platform may be holding it). It will finish on its own."},{status:409});
-   const waiting=existing.find(p=>p.state==="queued"||p.state==="failed");
+   const waiting=existing.find(p=>p.state==="queued"||p.state==="failed"||p.state==="review"||p.state==="skipped");
    // A post waiting in the queue becomes the posted one; otherwise the hand-made post is recorded as a new round.
    if(waiting)statements.push(db.prepare("UPDATE posts SET state='published',published_at=?,updated_at=?,error=NULL,container_id=NULL,media_id=NULL,permalink=NULL WHERE id=?").bind(iso,iso,waiting.id));
    else statements.push(db.prepare("INSERT INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at,published_at,round) VALUES (lower(hex(randomblob(16))),?,?,?,?,'published',?,?,?,?,?)").bind(owner,payload.id,account.platform,payload.accountId,iso,iso,iso,iso,existing.length?Math.max(...existing.map(p=>p.round))+1:0));
    if(clip.review!=="approved")statements.push(db.prepare("UPDATE clips SET review='approved',reviewed_at=? WHERE id=? AND owner=?").bind(iso,payload.id,owner));
    message="Marked "+(clip.name?clip.name+"'s clip":"the clip")+" as posted to "+(VIDEO_PLATFORMS[account.platform]??account.platform)+" @"+account.username+(waiting?"; it's out of the queue.":".");
+  }
+  if(payload.action==="reviewPosts"){
+   const r=await db.prepare(payload.op==="queue"
+    ?"UPDATE posts SET state='queued',queued_by_hand=1,error=NULL,next_attempt_at=?,updated_at=? WHERE owner=? AND state='review' AND id IN (SELECT value FROM json_each(?))"
+    :"UPDATE posts SET state='skipped',error=NULL,next_attempt_at=?,updated_at=? WHERE owner=? AND state='review' AND id IN (SELECT value FROM json_each(?))").bind(iso,iso,owner,JSON.stringify(payload.ids)).run();
+   const n=r.meta.changes??0,posts=n+" post"+(n===1?"":"s");
+   if(!n)return Response.json({error:"Those posts are no longer waiting for review."},{status:409});
+   return Response.json({ok:true,message:payload.op==="queue"?"Queued "+posts+". They go out as their accounts have room again, within each daily limit.":"Skipped "+posts+"; those clips won't post to those accounts."});
   }
   if(payload.action==="retryPost"){
    const post=await db.prepare("SELECT state FROM posts WHERE id=? AND owner=?").bind(payload.id,owner).first<{state:string}>();
@@ -356,7 +371,7 @@ export async function POST(request:Request){
    // Its accounts go with it (they stay connected on Zernio, and come back if the key is added again).
    const sub="SELECT id FROM accounts WHERE owner=? AND zernio_key_id=?";
    statements.push(
-    db.prepare("DELETE FROM posts WHERE state IN ('queued','processing','failed') AND account_id IN ("+sub+")").bind(owner,key.id),
+    db.prepare("DELETE FROM posts WHERE state IN ('queued','processing','failed','review','skipped') AND account_id IN ("+sub+")").bind(owner,key.id),
     db.prepare("DELETE FROM streamer_accounts WHERE account_id IN ("+sub+")").bind(owner,key.id),
     db.prepare("DELETE FROM accounts WHERE owner=? AND zernio_key_id=?").bind(owner,key.id),
     db.prepare("DELETE FROM zernio_keys WHERE id=? AND owner=?").bind(key.id,owner));

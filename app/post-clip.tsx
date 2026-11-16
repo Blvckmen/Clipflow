@@ -5,7 +5,7 @@ import { useState, type ReactNode } from "react";
 import { ExternalLink, Inbox, Loader2, Send } from "lucide-react";
 
 type Account = { id: string; platform: string; username: string; status: string };
-type Post = { account_id: string; state: "queued" | "processing" | "published" | "failed"; permalink: string | null; published_at: string | null; created_at: string; round?: number };
+type Post = { account_id: string; state: "queued" | "processing" | "published" | "failed" | "review" | "skipped"; permalink: string | null; published_at: string | null; created_at: string; round?: number };
 
 export function PostClipForm({ accounts, posts, linked, rendering, busy, brand, platformName, onPost }: {
   accounts: Account[]; posts: Post[]; linked: string[]; rendering: boolean; busy: boolean;
@@ -22,7 +22,7 @@ export function PostClipForm({ accounts, posts, linked, rendering, busy, brand, 
   return <form className="form-body" onSubmit={e => { e.preventDefault(); onPost(chosen, false); }}>
     <div className="account-picker post-picker">{accounts.map(a => {
       const p = latest(a.id), busyHere = inFlight(a.id), off = a.status !== "connected";
-      const note = off ? "Reconnect needed" : busyHere ? "On its way" : p?.state === "published" ? "Posted " + (p.published_at ? when(p.published_at) : "") : p?.state === "failed" ? "Last attempt failed" : "Not posted yet";
+      const note = off ? "Reconnect needed" : busyHere ? "On its way" : p?.state === "published" ? "Posted " + (p.published_at ? when(p.published_at) : "") : p?.state === "failed" ? "Last attempt failed" : p?.state === "review" ? "Held for review (daily limit reached); posting queues it" : p?.state === "skipped" ? "Skipped" : "Not posted yet";
       return <label key={a.id} className={busyHere || off ? "disabled" : ""}>
         <input type="checkbox" disabled={busyHere || off} checked={chosen.includes(a.id)} onChange={e => setChosen(e.target.checked ? [...chosen, a.id] : chosen.filter(x => x !== a.id))} />
         {brand(platformName(a.platform))}

@@ -4,7 +4,7 @@
 // per-account posting options. Nothing here needs a code change or a redeploy.
 import { useState, type ReactNode } from "react";
 import { Check, ExternalLink, KeyRound, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
-import { gapChoices, tiktokModes, tiktokPrivacy, youtubeVisibility, type AccountOptions } from "../lib/account-options";
+import { gapChoices, tiktokModes, tiktokPrivacy, whenFullChoices, youtubeVisibility, type AccountOptions } from "../lib/account-options";
 
 export type ZernioKey = { id: string; label: string; created_at: string; last_error: string | null; accounts: number };
 export type Publishing = { zernio: boolean; zernioSource: "workspace" | "site" | null; zernioKeys: ZernioKey[]; canSaveKey: boolean };
@@ -88,6 +88,8 @@ export function AccountOptionsForm({ account, busy, workspaceLimit, onSave }: { 
       <small>Posts (drafts included) this account sends in any 24 hours. Leave empty to use the workspace limit from Settings.{account.platform === "tiktok" ? " TikTok itself takes about 15 videos a day from apps, drafts included; for more, download clips and post them in the TikTok app." : ""}</small></label>
     <label>Spacing<select value={draft.gapMinutes} onChange={e => set("gapMinutes", Number(e.target.value))}>{Object.entries(gapChoices).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
       <small>Spread posts through the day; a burst of posts usually reaches fewer people.</small></label>
+    <label>When the daily limit is reached<select value={draft.whenFull} onChange={e => set("whenFull", e.target.value as keyof typeof whenFullChoices)}>{Object.entries(whenFullChoices).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+      <small>{draft.whenFull === "review" ? "Clips that arrive after the limit wait under Publishing for you to queue or skip each one. They still post to this streamer's other accounts." : "Clips that arrive after the limit wait in the queue and post as soon as the 24-hour window has room, oldest first."}</small></label>
   </>;
   return <form className="form-body" onSubmit={e => { e.preventDefault(); onSave(draft); }}>{fields}{pacing}<button className="primary" type="submit" disabled={busy}>{busy ? <Loader2 size={15} className="spin" /> : <Check size={15} />}Save options</button></form>;
 }

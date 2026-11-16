@@ -82,12 +82,16 @@ export const streamerAccounts=sqliteTable("streamer_accounts",{
 // hand (after editing it, say) adds the next round, so the automatic queue never posts a clip twice.
 export const posts=sqliteTable("posts",{
  id:text("id").primaryKey(),owner:text("owner").notNull(),clipId:text("clip_id").notNull(),platform:text("platform").notNull(),accountId:text("account_id").notNull(),
- // queued -> processing (container created) -> published | failed
+ // queued -> processing (container created) -> published | failed. A post made once its account has reached its daily
+ // limit (its own, or TikTok's 15) starts as review if the account is set to hold (account-options whenFull): the
+ // owner queues it (queued) or skips it (skipped, never posted).
  state:text("state").notNull().default("queued"),containerId:text("container_id"),mediaId:text("media_id"),permalink:text("permalink"),error:text("error"),
  attempts:integer("attempts").notNull().default(0),nextAttemptAt:text("next_attempt_at").notNull(),createdAt:text("created_at").notNull(),updatedAt:text("updated_at").notNull(),publishedAt:text("published_at"),
  round:integer("round").notNull().default(0),
  // Sent to the account's TikTok drafts (to be finished in the app) rather than published directly.
  draft:integer("draft",{mode:"boolean"}).notNull().default(false),
+ // Queued by the owner (posted by hand, or queued from review): waits for room rather than being held for review.
+ queuedByHand:integer("queued_by_hand",{mode:"boolean"}).notNull().default(false),
  // Performance read from the platform (through Zernio's analytics, about hourly); null until first read.
  views:integer("views"),likes:integer("likes"),comments:integer("comments"),shares:integer("shares"),saves:integer("saves"),metricsAt:text("metrics_at"),
 },t=>[uniqueIndex("posts_clip_account_round").on(t.clipId,t.accountId,t.round),index("posts_owner_state").on(t.owner,t.state)]);
