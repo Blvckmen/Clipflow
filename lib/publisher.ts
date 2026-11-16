@@ -9,6 +9,7 @@ import * as instagram from "./instagram";
 import * as zernio from "./zernio";
 import { defaultCaption } from "./clipflow";
 import { captionForPost, fillCaptions } from "./post-caption";
+import { syncAnalytics } from "./analytics";
 import { readOptions, tiktokSettings } from "./account-options";
 import { keyConnection, siteConnection, zernioApiUrl, type Connection } from "./zernio-keys";
 
@@ -17,7 +18,7 @@ type AccountRow = { id: string; owner: string; provider: string; platform: strin
 type PostRow = { id: string; clip_id: string; state: string; container_id: string | null; attempts: number; updated_at: string };
 type ClipInfo = { reviewed: boolean; streamer: string; platform: string };
 // What an adapter reports back: done, still going (check again later), or failed with a reason.
-type Outcome = { state: "published"; mediaId: string | null; permalink: string | null } | { state: "processing"; containerId: string } | { state: "failed"; message: string } | { state: "wait" };
+type Outcome = { state: "published"; mediaId: string | null; permalink: string | null; externalId?: string } | { state: "processing"; containerId: string } | { state: "failed"; message: string } | { state: "wait" };
 type Adapter = {
   timeoutMs: number; linkTtlMs: number;
   start(post: PostRow, link: string, caption: string, clip: ClipInfo): Promise<Outcome>;
@@ -55,6 +56,8 @@ export async function runPublisher(env: Env, now = Date.now()) {
   if (!env.DB) return;
   // Write captions for new clips first, so they can be read (and edited) before they post.
   await fillCaptions(env, now).catch(error => console.error("Caption writing failed:", error));
+  // How published posts are doing, from Zernio (each connection about once an hour).
+  await syncAnalytics(env, now).catch(error => console.error("Analytics sync failed:", error));
   if (!env.MEDIA_KEY || !env.PUBLIC_URL) return;
   const ig = instagramConfig(env);
   const { results } = await env.DB.prepare("SELECT a.*, p.control, p.daily_limit, p.caption_template, k.label AS key_label, k.key_enc FROM accounts a LEFT JOIN preferences p ON p.owner=a.owner LEFT JOIN zernio_keys k ON k.id=a.zernio_key_id AND k.owner=a.owner WHERE a.status='connected'").all<AccountRow>();
@@ -107,7 +110,7 @@ function zernioAdapter(config: Connection, account: AccountRow): Adapter {
   const outcome = (post: zernio.ZernioPost): Outcome => {
     const result = zernio.platformResult(post);
     if (post.status === "published" || result?.status === "published")
-      return { state: "published", mediaId: result?.platformPostId ?? null, permalink: result?.platformPostUrl ?? null };
+      return { state: "published", mediaId: result?.platformPostId ?? null, permalink: result?.platformPostUrl ?? null, externalId: post._id };
     if (post.status === "failed" || post.status === "partial" || post.status === "cancelled" || result?.status === "failed")
       return { state: "failed", message: zernio.platformError(post) };
     // scheduled / publishing / pending: Zernio is still working on it (it retries transient errors itself).
@@ -165,7 +168,8 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   };
   const apply = async (post: PostRow, result: Outcome) => {
     if (result.state === "published")
-      await db.prepare("UPDATE posts SET state='published',media_id=?,permalink=?,error=NULL,published_at=?,updated_at=? WHERE id=?").bind(result.mediaId, result.permalink, iso, iso, post.id).run();
+      // The Zernio post id (when there is one) is kept to match the post's analytics later.
+      await db.prepare("UPDATE posts SET state='published',media_id=?,permalink=?,container_id=coalesce(?,container_id),error=NULL,published_at=?,updated_at=? WHERE id=?").bind(result.mediaId, result.permalink, result.externalId ?? null, iso, iso, post.id).run();
     else if (result.state === "processing")
       await db.prepare("UPDATE posts SET state='processing',container_id=?,next_attempt_at=?,updated_at=? WHERE id=?").bind(result.containerId, new Date(now + CHECK_EVERY_MS).toISOString(), iso, post.id).run();
     else if (result.state === "failed") await fail(post, result.message);

@@ -72,6 +72,14 @@ export function startFakeZernio({ port = 0, apiKey = "sk_test", keys = { [apiKey
       posts.set(id, post); if (key) byKey.set(key, id);
       return send(res, post.status === "published" ? 201 : 207, { post: view(post), message: "ok" });
     }
+    // Stored analytics, like Zernio's: every published post with lifetime metrics (views 1000, likes 50, ...).
+    if (path === "/api/v1/analytics" && req.method === "GET") {
+      const published = [...posts.values()].filter(p => p.status === "published" && accounts.some(a => a._id === p.accountId && visible(a, auth)));
+      const limit = Number(url.searchParams.get("limit") ?? 50), page = Number(url.searchParams.get("page") ?? 1);
+      const items = published.slice((page - 1) * limit, page * limit).map(p => ({ _id: "an-" + p._id, latePostId: p._id, platform: p.platform, status: "published", platformPostUrl: p.url,
+        platforms: [{ platform: p.platform, status: "published", platformPostId: "pp-" + p._id, analytics: { views: 1000, likes: 50, comments: 5, shares: 2, saves: 3 } }] }));
+      return send(res, 200, { hasAnalyticsAccess: true, overview: { publishedPosts: published.length }, posts: items, pagination: { page, limit, total: published.length, pages: Math.max(1, Math.ceil(published.length / limit)) } });
+    }
     const one = /^\/api\/v1\/posts\/([^/]+)$/.exec(path);
     if (one && req.method === "GET") {
       const post = posts.get(decodeURIComponent(one[1]));

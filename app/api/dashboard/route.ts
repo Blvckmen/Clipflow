@@ -5,6 +5,7 @@ import { instagramConfig } from "../../../lib/publisher";
 import { connectionFor, connections, hashKey, listKeys, siteConnection, zernioApiUrl } from "../../../lib/zernio-keys";
 import { deleteAccount, verifyKey, VIDEO_PLATFORMS, ZernioError } from "../../../lib/zernio";
 import { syncZernioAccounts } from "../../../lib/zernio-sync";
+import { analyticsSummary } from "../../../lib/analytics";
 import { optionsSchema, readOptions } from "../../../lib/account-options";
 import { encrypt } from "../../../lib/secure";
 import { normalizeStyle } from "../../../worker/edit.mjs";
@@ -44,6 +45,8 @@ const actionSchema=z.discriminatedUnion("action",[
  // Posting options for one account (TikTok mode and privacy, YouTube visibility).
  z.object({action:z.literal("accountOptions"),id:z.string().uuid(),options:optionsSchema}),
  z.object({action:z.literal("assign"),streamerId:z.string().uuid(),accounts:accountIds}),
+ // Edits a streamer: display name, channel URL, whether it is clipped, and (optionally) which accounts post its clips.
+ z.object({action:z.literal("editStreamer"),id:z.string().uuid(),name:z.string().trim().min(1).max(80),url:z.string().max(500),status:z.enum(["armed","paused","stopped"]).optional(),accounts:accountIds.optional()}),
  // A streamer's own clip look, or the workspace's (no streamerId). A null style goes back to the default.
  z.object({action:z.literal("style"),streamerId:z.string().uuid().optional(),style:z.unknown().nullable()}),
 ]);
@@ -56,7 +59,7 @@ export async function GET(){
   const [a,po,l]=await Promise.all([
    // Tokens never leave the server: only display fields are selected.
    db.prepare("SELECT id,provider,platform,username,status,connected_at,last_error,options,zernio_key_id FROM accounts WHERE owner=? ORDER BY connected_at").bind(owner).all<Record<string,unknown>&{options:string|null}>(),
-   db.prepare("SELECT p.id,p.clip_id,p.platform,p.account_id,p.state,p.permalink,p.error,p.attempts,p.created_at,p.published_at,p.round,s.name AS streamer,a.username AS account FROM posts p LEFT JOIN clips c ON c.id=p.clip_id LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner LEFT JOIN accounts a ON a.id=p.account_id WHERE p.owner=? ORDER BY p.created_at DESC LIMIT 100").bind(owner).all(),
+   db.prepare("SELECT p.id,p.clip_id,p.platform,p.account_id,p.state,p.permalink,p.error,p.attempts,p.created_at,p.published_at,p.round,p.views,p.likes,s.name AS streamer,a.username AS account FROM posts p LEFT JOIN clips c ON c.id=p.clip_id LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner LEFT JOIN accounts a ON a.id=p.account_id WHERE p.owner=? ORDER BY p.created_at DESC LIMIT 100").bind(owner).all(),
    db.prepare("SELECT streamer_id,account_id FROM streamer_accounts WHERE owner=?").bind(owner).all<{streamer_id:string;account_id:string}>(),
   ]);
   const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(owner).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(owner).all(),db.prepare("SELECT c.id,c.streamer_id,c.created_at,c.duration,c.captions,c.size,c.file_key IS NOT NULL AS stored,c.review,c.reason,(c.edit IS NOT NULL OR c.file_key IS NOT NULL) AS editable,c.edit IS NULL AS legacy,c.post_caption,c.caption_source,c.source_key IS NOT NULL AS source_stored,c.render_state,c.render_error,c.rendered_at,c.edit_rev,s.name AS streamer FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.owner=? ORDER BY c.created_at DESC LIMIT 200").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at FROM worker_tokens WHERE owner=?").bind(owner).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null}>()]);
@@ -68,7 +71,7 @@ export async function GET(){
   const keys=(await listKeys(db,owner)).map(k=>({id:k.id,label:k.label,created_at:k.created_at,last_error:k.last_error,accounts:a.results.filter(x=>x.zernio_key_id===k.id).length}));
   const site=!keys.length&&!!siteConnection(env);
   const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,style:parse(p.style)}:{...defaults,style:null};
-  return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(x=>({...x,captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored})),storage:!!bucket(),analytics:null},{headers:{"Cache-Control":"private, no-store"}});
+  return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(x=>({...x,captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored})),storage:!!bucket(),analytics:await analyticsSummary(db,owner)},{headers:{"Cache-Control":"private, no-store"}});
  }catch(error){console.error("Dashboard load failed",error);return Response.json({error:"We couldn't load your workspace. Please retry."},{status:503});}
 }
 export async function POST(request:Request){
@@ -112,6 +115,24 @@ export async function POST(request:Request){
    statements.push(keep.length?db.prepare("DELETE FROM streamer_accounts WHERE streamer_id=? AND owner=? AND account_id NOT IN ("+keep.map(()=>"?").join(",")+")").bind(payload.streamerId,owner,...keep):db.prepare("DELETE FROM streamer_accounts WHERE streamer_id=? AND owner=?").bind(payload.streamerId,owner));
    for(const a of linked)statements.push(db.prepare("INSERT OR IGNORE INTO streamer_accounts (streamer_id,account_id,owner,created_at) VALUES (?,?,?,?)").bind(payload.streamerId,a.id,owner,iso));
    message=streamer.name+(linked.length?"'s clips now post to "+linked.map(a=>"@"+a.username).join(", ")+".":"'s clips are kept in the library and not posted.");
+  }
+  if(payload.action==="editStreamer"){
+   const current=await db.prepare("SELECT name,url,status FROM streamers WHERE id=? AND owner=?").bind(payload.id,owner).first<{name:string;url:string;status:string}>();
+   if(!current)return Response.json({error:"Streamer not found."},{status:404});
+   let channel;try{channel=parseStreamer(payload.url);}catch(error){return Response.json({error:(error as Error).message},{status:400});}
+   const moved=channel.url!==current.url;
+   // A new channel starts with a fresh live status; the worker checks it on its next cycle.
+   statements.push(db.prepare("UPDATE streamers SET name=?,url=?,platform=?,status=?"+(moved?",live_status=NULL,live_checked_at=NULL,live_title=NULL":"")+" WHERE id=? AND owner=?").bind(payload.name,channel.url,channel.platform,payload.status??current.status,payload.id,owner));
+   if(payload.accounts){
+    const linked=await ownAccounts(payload.accounts);
+    if(!linked)return Response.json({error:"One of those publishing accounts is no longer connected."},{status:404});
+    const keep=payload.accounts;
+    // Existing links keep their creation time, so already-eligible clips stay eligible.
+    statements.push(keep.length?db.prepare("DELETE FROM streamer_accounts WHERE streamer_id=? AND owner=? AND account_id NOT IN ("+keep.map(()=>"?").join(",")+")").bind(payload.id,owner,...keep):db.prepare("DELETE FROM streamer_accounts WHERE streamer_id=? AND owner=?").bind(payload.id,owner));
+    for(const a of linked)statements.push(db.prepare("INSERT OR IGNORE INTO streamer_accounts (streamer_id,account_id,owner,created_at) VALUES (?,?,?,?)").bind(payload.id,a.id,owner,iso));
+   }
+   const changes=[payload.name!==current.name&&"renamed to "+payload.name,moved&&"now follows "+channel.url,payload.status&&payload.status!==current.status&&(payload.status==="armed"?"enabled":payload.status)].filter(Boolean);
+   message="Saved "+current.name+(changes.length?": "+changes.join(", "):"")+".";
   }
   if(payload.action==="style"){
    let style=null;

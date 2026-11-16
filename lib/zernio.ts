@@ -75,6 +75,15 @@ export async function getPost(config: ZernioConfig, id: string) {
   return (await call<{ post: ZernioPost }>(config, "/posts/" + encodeURIComponent(id))).body.post;
 }
 
+// Stored performance of posts published through Zernio, newest first, a page at a time. Each item is a Zernio post
+// (`latePostId` is its id) with one entry per platform it went to, carrying that platform's post id and metrics.
+export type ZernioMetrics = { views?: number; likes?: number; comments?: number; shares?: number; saves?: number };
+export type ZernioAnalyticsPost = { latePostId?: string; _id: string; platform?: string; analytics?: ZernioMetrics; platforms?: { platform: string; platformPostId?: string; analytics?: ZernioMetrics }[] };
+export async function listAnalytics(config: ZernioConfig, page: number, limit = 100) {
+  const body = (await call<{ posts?: ZernioAnalyticsPost[]; pagination?: { pages?: number }; hasAnalyticsAccess?: boolean }>(config, "/analytics?limit=" + limit + "&page=" + page)).body;
+  return { posts: body.posts ?? [], pages: body.pagination?.pages ?? 1, access: body.hasAnalyticsAccess !== false };
+}
+
 // The one platform result for this post (Clipflow sends a single account per post).
 export function platformResult(post: ZernioPost) { return post.platforms?.[0]; }
 export function platformError(post: ZernioPost) {

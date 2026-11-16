@@ -69,24 +69,13 @@ yourself in review mode are published and clips approved automatically go to you
 account's options can instead always publish or always use drafts, and set who can watch and comments. Test locally against a fake Zernio with
 `npm run build` then `npm run test:zernio`.
 
-## Post captions written by Claude (optional)
+## Local transcript-based post captions
 
-With an Anthropic API key, Claude (`claude-opus-5-5`, low effort) writes each clip's post caption from what was
-said in it: a title line (also the YouTube title), a sentence or two, and hashtags. Captions are written within a
-minute of a clip arriving, so you can read and change them in **Clip library → Edit → Post caption** before they
-post; text you type there is never overwritten. Without a key, or if Claude can't write one, the caption template
-from Settings is used.
+Post captions are composed from the worker's saved Whisper transcript using local code. No OpenAI or Anthropic key, model service, or per-caption API fee is required. Whisper still needs to be installed on the worker and downloads its speech model on first use.
 
-1. Create a key at platform.claude.com → API keys. Each caption is one short request, roughly a cent or less.
-2. Add to `.env`, then `npm run deploy`:
+Enable **Transcribe clips** in Settings. Under Publishing preferences, **Create post captions from transcripts** chooses a spoken excerpt, credits the streamer and adds keyword hashtags. Only words inside the saved trim are used, including saved corrections. Extra hashtags accepts #tags, not natural-language AI instructions. With no usable transcript, the configured fallback caption is used.
 
-   ```ini
-   ANTHROPIC_API_KEY=sk-ant-...
-   ```
-3. Optional: under **Settings → Publishing preferences**, add guidance for Claude (tone, hashtags to always use).
-
-If Claude declines a caption, the API retries it on a fallback model (`fallbacks: "default"`); if that also fails,
-the template is used.
+Under **Clip library > Edit > Post caption**, generate a caption from the saved transcript or type your own. Manual captions are preserved. Saving a clip edit invalidates a locally generated caption so it is regenerated for the new trim. Previously saved AI captions remain unless explicitly replaced.
 
 ## Instagram publishing directly (optional, instead of Zernio)
 
@@ -132,6 +121,6 @@ it does not share data with a Codex Sites deployment.
 
 ## Social caption generator
 
-The sidebar Caption generator uses OpenAI, matching Me Man Ghana's server-side Chat Completions implementation. Set `OPENAI_API_KEY` in `.env` for local development or as a hosting secret for production. The Cloudflare deploy script uploads it as a secret. Optionally set `OPENAI_SOCIAL_CAPTION_MODEL`, otherwise `OPENAI_GENERATION_MODEL`; the default is `gpt-4o-mini`. Choose a model supporting strict JSON-schema output.
+Choose a recorded clip or enter a transcript/description to produce three template variations. Captions are built by the app without external AI requests. Tone, length, emoji and hashtag controls are supported; outputs are excerpts and templates, not creative AI rewrites. Generation and copying do not publish a post. Missing clip transcripts produce an explanation instead of fabricated content.
 
-Each click sends the entered description to OpenAI and consumes API usage. No image or video files are sent. Three drafts can be edited and copied; generating does not publish anything. Limits count Unicode code points: Short 240, Medium 700, Long 1,400, capped at 280 for X. Drafts are temporary. The separate automatic clip-caption pipeline still uses its existing Anthropic configuration.
+Drafts are temporary. Limits count Unicode code points: Short 240, Medium 700, Long 1,400, capped at 280 for X. Review Whisper transcription errors before sharing.

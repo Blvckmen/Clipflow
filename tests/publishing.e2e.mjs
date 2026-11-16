@@ -8,14 +8,14 @@ import { appendFileSync, openSync } from "node:fs";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { startFakeInstagram } from "./fake-instagram.mjs";
-import { startFakeAnthropic } from "./fake-anthropic.mjs";
+
 import { defaultEdit, defaultStyle } from "../worker/edit.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const port = 8790 + Math.floor(Math.random() * 100), base = "http://127.0.0.1:" + port;
 const owner = "pubtest_" + Date.now().toString(36);
 const who = { "oai-authenticated-user-id": owner, "oai-authenticated-user-email": owner + "@test.local" };
-let fake, claude, dev, workerToken, streamer;
+let fake, dev, workerToken, streamer;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const dash = async body => {
   const r = await fetch(base + "/api/dashboard", body ? { method: "POST", headers: { ...who, "content-type": "application/json" }, body: JSON.stringify(body) } : { headers: who });
@@ -40,10 +40,10 @@ const posts = async () => (await dash()).body.posts;
 
 before(async () => {
   fake = await startFakeInstagram();
-  claude = await startFakeAnthropic();
+
   const graph = "http://127.0.0.1:" + fake.port;
-  const vars = { ENABLE_TEST_CRON: "1", ANTHROPIC_API_KEY: "test-anthropic-key", ANTHROPIC_BASE_URL: "http://127.0.0.1:" + claude.port, INSTAGRAM_APP_ID: "test-app", INSTAGRAM_APP_SECRET: "test-secret", TOKEN_KEY: randomBytes(32).toString("base64"), MEDIA_KEY: randomBytes(32).toString("base64"), PUBLIC_URL: base, INSTAGRAM_AUTH_URL: graph, INSTAGRAM_API_URL: graph, INSTAGRAM_GRAPH_URL: graph };
-  dev = spawn(process.execPath, ["--import", "./scripts/sites-env.mjs", "./node_modules/wrangler/bin/wrangler.js", "dev", "--config", "dist/server/wrangler.json", "--local", "--persist-to", ".wrangler/state", "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", "0", ...Object.entries(vars).flatMap(([k, v]) => ["--var", k + ":" + v])], { cwd: root, stdio: process.env.E2E_DEV_LOG ? ["ignore", openSync(process.env.E2E_DEV_LOG, "w"), "pipe"] : "ignore", env: { ...process.env, CI: "true" } });
+  const vars = { AUTH_MODE: "sites", ZERNIO_API_KEY: "", ENABLE_TEST_CRON: "1", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "", INSTAGRAM_APP_ID: "test-app", INSTAGRAM_APP_SECRET: "test-secret", TOKEN_KEY: randomBytes(32).toString("base64"), MEDIA_KEY: randomBytes(32).toString("base64"), PUBLIC_URL: base, INSTAGRAM_AUTH_URL: graph, INSTAGRAM_API_URL: graph, INSTAGRAM_GRAPH_URL: graph };
+  dev = spawn(process.execPath, ["--import", "./scripts/sites-env.mjs", "./node_modules/wrangler/bin/wrangler.js", "dev", "--config", "dist/server/wrangler.json", "--local", "--persist-to", process.env.E2E_PERSIST_DIR || ".wrangler/state", "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", "0", ...Object.entries(vars).flatMap(([k, v]) => ["--var", k + ":" + v])], { cwd: root, stdio: process.env.E2E_DEV_LOG ? ["ignore", openSync(process.env.E2E_DEV_LOG, "w"), "pipe"] : "ignore", env: { ...process.env, CI: "true" } });
   // E2E_DEV_LOG=<file> keeps the Worker's own log (console.error from the publisher and the caption writer).
   if (process.env.E2E_DEV_LOG) dev.stderr.on("data", d => appendFileSync(process.env.E2E_DEV_LOG, d));
   for (let i = 0; i < 90; i++) { try { await fetch(base + "/api/worker/config"); break; } catch { await sleep(1000); } }
@@ -61,7 +61,7 @@ after(async () => {
     for (const a of body.accounts ?? []) await dash({ action: "disconnect", id: a.id });
     for (const s of body.streamers ?? []) await dash({ action: "remove", id: s.id });
     await dash({ action: "control", control: "paused" });
-  } finally { dev?.kill(); fake?.server.close(); claude?.server.close(); }
+  } finally { dev?.kill(); fake?.server.close(); }
 });
 
 test("dashboard reports Instagram publishing as available", async () => {
@@ -168,7 +168,7 @@ test("several accounts: each streamer posts only to the accounts linked to it", 
   assert.deepEqual(body.streamers.find(s => s.id === streamer.id).accounts.sort(), [first.id, other.id].sort());
 });
 
-test("Claude writes post captions from the transcript ahead of posting; the owner's own text wins", async () => {
+test("Local code writes post captions from the transcript ahead of posting; the owner's own text wins", async () => {
   const settings = { mode: "automatic", duration: 30, dailyLimit: 50, captions: true, framing: "blur", destinations: [], aiCaptions: true, captionNotes: "Always add #fyp" };
   assert.equal((await dash({ action: "settings", settings })).status, 200);
   const words = [[6.2, 6.6, "No"], [6.7, 7.0, "way"], [7.1, 7.5, "he"], [7.6, 8.0, "clutched"], [8.1, 8.6, "that!"], [40, 41, "outside"]];
@@ -186,17 +186,18 @@ test("Claude writes post captions from the transcript ahead of posting; the owne
   // 1. Written in advance from the clip's own transcript (only the part inside the trim), with the owner's guidance.
   const first = await addClip(streamer.id, material());
   await cron(1000);
-  // Earlier test clips without a caption get one in the same pass; find this clip's request by its transcript.
-  const request = claude.log.find(r => r.text.includes("clutched"));
-  assert.ok(request, "Claude was asked for this clip's caption: " + JSON.stringify({ requests: claude.log.length, caption: (await (await fetch(base + "/api/clips/" + first.clip.id + "/edit", { headers: who })).json()).caption }));
-  assert.deepEqual([request.model, request.effort, request.format, request.fallbacks], ["claude-opus-5-5", "low", "json_schema", "default"]);
-  assert.match(request.beta, /server-side-fallback-2026-07-01/);
-  assert.match(request.text, /<transcript>No way he clutched that!<\/transcript>/);
-  assert.doesNotMatch(request.text, /outside/, "words outside the trim are left out");
-  assert.match(request.text, /<guidance>Always add #fyp<\/guidance>/);
   const written = await clipRow(first.clip.id);
-  assert.equal(written.caption_source, "ai");
-  assert.equal(written.post_caption, owner + " did NOT see that coming\n\n\"No way he clutched that!…\"\n\n#" + owner + " #clips #fyp");
+  assert.equal(written.caption_source, "local");
+  assert.match(written.post_caption, /^No way he clutched that!/);
+  assert.match(written.post_caption, /#fyp/);
+  assert.doesNotMatch(written.post_caption, /outside/);
+  const options={clipId:first.clip.id,topic:"",platform:"Instagram",tone:"Casual",length:"Short",emojis:false,hashtags:true};
+  const draft=await fetch(base+"/api/captions",{method:"POST",headers:{...who,"content-type":"application/json"},body:JSON.stringify(options)});
+  assert.equal(draft.status,200);
+  const generated=await draft.json();assert.equal(generated.captions.length,3);
+  assert.ok(generated.captions.every(c=>c.includes(owner)&&!c.includes("outside")));
+  const other=await fetch(base+"/api/captions",{method:"POST",headers:{"oai-authenticated-user-id":"another-owner","oai-authenticated-user-email":"another@test.local","content-type":"application/json"},body:JSON.stringify(options)});
+  assert.equal(other.status,404);
   assert.equal(await postedCaption(first.clip.id), written.post_caption, "the written caption is what posts");
 
   // 2. Text the owner saves is used as-is and never rewritten.
@@ -205,23 +206,21 @@ test("Claude writes post captions from the transcript ahead of posting; the owne
   assert.equal(saved.status, 200);
   assert.equal(await postedCaption(second.clip.id), "My own words #mine");
   const kept = await clipRow(second.clip.id);
-  assert.deepEqual([kept.post_caption, kept.caption_source], ["My own words #mine", "edited"], "Claude never wrote over it");
+  assert.deepEqual([kept.post_caption, kept.caption_source], ["My own words #mine", "edited"], "automatic generation never wrote over it");
 
   // 3. Rewrite on request replaces it.
   const rewrite = await fetch(base + "/api/clips/" + second.clip.id + "/caption", { method: "POST", headers: { ...who, "content-type": "application/json" }, body: JSON.stringify({ action: "write" }) });
   assert.equal(rewrite.status, 200);
-  assert.equal((await rewrite.json()).source, "ai");
+  assert.equal((await rewrite.json()).source, "local");
 
-  // 4. If Claude declines, the post goes out with the template instead of waiting forever.
-  await fetch("http://127.0.0.1:" + claude.port + "/__refuse?on=1", { method: "POST" });
+  // 4. No transcript: posting uses the fallback and manual generation explains why.
   await dash({ action: "settings", settings: { ...settings, captionTemplate: "{streamer} fallback #test" } });
-  const third = await addClip(streamer.id, material());
+  const third = await addClip(streamer.id, {...material(),transcript:[]});
   assert.equal(await postedCaption(third.clip.id), owner + " fallback #test");
-  const failed = await clipRow(third.clip.id);
-  assert.equal(failed.post_caption, null);
-  await fetch("http://127.0.0.1:" + claude.port + "/__refuse?on=0", { method: "POST" });
-  const refused = await fetch(base + "/api/clips/" + third.clip.id + "/edit", { headers: who });
-  assert.match((await refused.json()).caption.error, /declined/);
+  assert.equal((await clipRow(third.clip.id)).post_caption, null);
+  const missing=await fetch(base+"/api/clips/"+third.clip.id+"/caption",{method:"POST",headers:{...who,"content-type":"application/json"},body:JSON.stringify({action:"write"})});
+  assert.equal(missing.status,409);
+
 });
 
 test("a revoked Instagram token marks the account for reconnection without losing the post", async () => {

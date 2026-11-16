@@ -305,6 +305,27 @@ test("several selected clips can be posted together", async () => {
   await dash({ action: "control", control: "running" });
 });
 
+test("analytics: published posts get their views and likes from Zernio about hourly", async () => {
+  const calls = async () => (await fakeLog()).log.filter(e => e.path === "/api/v1/analytics").length;
+  await cron(61 * 60_000);  // more than an hour on: due for a read
+  const after = await calls();
+  assert.ok(after > 0, "Zernio's analytics were read");
+  await cron(60_000);
+  assert.equal(await calls(), after, "not again within the hour");
+  const { analytics, posts } = (await dash()).body;
+  // Posts of an account removed earlier can't be read any more; the rest all can.
+  const published = posts.filter(p => p.state === "published" && p.account);
+  assert.ok(published.length > 0);
+  assert.ok(published.every(p => p.views === 1000 && p.likes === 50), "every published post is matched to its numbers");
+  assert.ok(analytics.totals.measured >= published.length);
+  assert.equal(analytics.totals.views, 1000 * analytics.totals.measured);
+  assert.equal(analytics.top[0].views, 1000);
+  assert.equal(analytics.daily.posts.length, 14);
+  assert.ok(analytics.streamers[0].posts > 0 && analytics.streamers[0].views > 0);
+  assert.ok(analytics.accounts.some(a => a.views > 0));
+  assert.ok(analytics.clips.total >= analytics.clips.approved);
+});
+
 test("a second Zernio key adds a separate set of accounts that post with their own key", async () => {
   const added = await dash({ action: "addZernioKey", key: "sk_second_7890" });
   assert.equal(added.status, 200, JSON.stringify(added.body));

@@ -427,3 +427,25 @@ describe("clip editor", () => {
     assert.equal((await worker("/api/worker/clips/" + clip.id + "/source")).status, 404);
   });
 });
+
+describe("editing a streamer", () => {
+  test("name, channel, clipping and accounts can be changed; bad or duplicate channels are refused", async () => {
+    const name = "edit" + Date.now().toString(36);
+    assert.equal((await dash({ action: "add", url: "https://twitch.tv/" + name })).status, 200);
+    const s = (await dash()).body.streamers.find(x => x.url === "https://twitch.tv/" + name);
+    await worker("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers: [{ id: s.id, status: "offline", checkedAt: new Date().toISOString(), title: null }] }) });
+    const edit = body => dash({ action: "editStreamer", id: s.id, name: "Renamed", url: s.url, ...body });
+    let r = await edit({});
+    assert.equal(r.status, 200);
+    assert.match(r.body.message, /renamed to Renamed/);
+    r = await edit({ url: "https://kick.com/" + name, status: "paused", accounts: [] });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const now = (await dash()).body.streamers.find(x => x.id === s.id);
+    assert.deepEqual([now.name, now.url, now.platform, now.status, now.live_status, now.accounts], ["Renamed", "https://kick.com/" + name, "Kick", "paused", null, []], "a new channel starts with a fresh live status");
+    assert.equal((await edit({ url: "https://twitch.tv/directory" })).status, 400);
+    assert.equal((await edit({ url: streamer.url })).status, 409, "another streamer already has that channel");
+    assert.equal((await dash({ action: "editStreamer", id: randomUUID(), name: "x", url: s.url })).status, 404);
+    assert.equal((await edit({ name: "" })).status, 400);
+    await dash({ action: "remove", id: s.id });
+  });
+});
