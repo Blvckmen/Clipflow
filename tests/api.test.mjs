@@ -384,6 +384,44 @@ describe("clip editor", () => {
     assert.equal((await (await worker("/api/worker/config")).json()).renders.find(r => r.id === clip.id).edit.captions.on, true);
     assert.equal((await dash({ action: "captionsAll", on: "yes" })).status, 400);
   });
+  test("selected clips can be accepted, rejected and sent back to review together", async () => {
+    const bulk = body => dash({ action: "bulkClips", ...body });
+    const other = (await reportClip(Buffer.alloc(3000, 2))).clip;
+    let r = await bulk({ ids: [clip.id, other.id], op: "reject" });
+    assert.equal(r.status, 200);
+    let rows = (await dash()).body.clips.filter(c => c.id === clip.id || c.id === other.id);
+    assert.deepEqual(rows.map(c => c.review), ["rejected", "rejected"]);
+    r = await bulk({ ids: [clip.id, other.id], op: "pending" });
+    assert.match(r.body.message, /^Moved back to review: 2 clips\.$/);
+    r = await bulk({ ids: [clip.id, other.id], op: "approve" });
+    assert.equal(r.body.message, "Approved 2 clips.");
+    assert.equal((await bulk({ ids: [clip.id, other.id], op: "approve" })).body.message, "Approved 0 clips.", "already approved");
+    await dash({ action: "deleteClip", id: other.id });
+  });
+  test("selected clips can be reframed or have subtitles changed, even more than 100 at once", async () => {
+    const bulk = body => dash({ action: "bulkClips", ...body });
+    const many = [clip.id, ...Array.from({ length: 149 }, () => randomUUID())];
+    let r = await bulk({ ids: many, op: "frame", frame: "crop" });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.match(r.body.message, /^Reframing \(crop\) 1 clip\..*149 clips left as they were/);
+    let job = (await (await worker("/api/worker/config")).json()).renders.find(x => x.id === clip.id);
+    assert.equal(job.edit.frame.mode, "crop");
+    r = await bulk({ ids: [clip.id], op: "captionsOff" });
+    job = (await (await worker("/api/worker/config")).json()).renders.find(x => x.id === clip.id);
+    assert.deepEqual([job.edit.frame.mode, job.edit.captions.on], ["crop", false], "edits add up");
+    assert.equal((await bulk({ ids: [clip.id], op: "frame" })).status, 400, "framing needs a choice");
+    assert.equal((await bulk({ ids: [clip.id], op: "explode" })).status, 400);
+    assert.equal((await bulk({ ids: [], op: "approve" })).status, 400);
+  });
+  test("selected clips can be deleted together, with their stored files", async () => {
+    const a = (await reportClip(Buffer.alloc(3000, 7))).clip, b = (await reportClip(Buffer.alloc(3000, 8))).clip;
+    assert.equal((await upload(a.id, Buffer.alloc(3000, 7))).status, 200);
+    const r = await dash({ action: "bulkClips", ids: [a.id, b.id, randomUUID()], op: "delete" });
+    assert.equal(r.body.message, "Deleted 2 clips.");
+    const ids = (await dash()).body.clips.map(c => c.id);
+    assert.ok(!ids.includes(a.id) && !ids.includes(b.id));
+    assert.equal((await fetch(base + "/api/clips/" + a.id + "/file", { headers: { cookie } })).status, 404);
+  });
   test("deleting a clip also removes its source", async () => {
     assert.equal((await dash({ action: "deleteClip", id: clip.id })).status, 200);
     assert.equal((await worker("/api/worker/clips/" + clip.id + "/source")).status, 404);

@@ -14,6 +14,7 @@ import { env } from "cloudflare:workers";
 import { hashToken, newToken } from "../../../lib/worker-auth";
 import { z } from "zod";
 const accountIds=z.array(z.string().uuid()).max(50).transform(x=>[...new Set(x)]);
+const clipIds=z.array(z.string().uuid()).min(1).max(200).transform(x=>[...new Set(x)]);
 const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("add"),url:z.string().max(500),name:z.string().trim().max(80).optional(),accounts:accountIds.optional()}),
  z.object({action:z.literal("status"),id:z.string().uuid(),status:z.enum(["armed","paused","stopped"])}),
@@ -28,6 +29,9 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("retryPost"),id:z.string().min(1).max(64)}),
  // Posts a clip's current version to the chosen accounts now: its first post, or again after an edit.
  z.object({action:z.literal("postClip"),id:z.string().uuid(),accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)])}),
+ // Bulk actions on clips picked in the library: post them all to the chosen accounts, or review, edit or delete them.
+ z.object({action:z.literal("postClips"),ids:clipIds,accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)])}),
+ z.object({action:z.literal("bulkClips"),ids:clipIds,op:z.enum(["approve","reject","pending","delete","captionsOn","captionsOff","frame"]),frame:z.enum(["blur","crop","fit"]).optional()}),
  // Re-reads the accounts under every Zernio key of the workspace (new ones added, removed ones marked).
  z.object({action:z.literal("syncZernio")}),
  // Turns subtitles off (or on) in every editable clip's edit and queues a re-render. "unposted" leaves clips that
@@ -191,6 +195,63 @@ export async function POST(request:Request){
    if(clip.review!=="approved")statements.push(db.prepare("UPDATE clips SET review='approved',reviewed_at=? WHERE id=? AND owner=?").bind(iso,clip.id,owner));
    message="Posting "+(clip.name?clip.name+"'s clip":"the clip")+" to "+queued.join(", ")+(clip.render_state==="queued"?" once the edit has finished rendering":"")+"."
     +(busyNow.length?" Already on its way to "+busyNow.join(", ")+".":"")+(offline.length?" Skipped "+offline.join(", ")+" (reconnect needed).":"");
+  }
+  // Clip id lists go in as one JSON value (json_each): D1 allows at most 100 bound values per query.
+  if(payload.action==="postClips"){
+   const marks="SELECT value FROM json_each(?)",idList=JSON.stringify(payload.ids);
+   const {results:clips}=await db.prepare("SELECT id,review,file_key FROM clips WHERE owner=? AND id IN ("+marks+")").bind(owner,idList).all<{id:string;review:string;file_key:string|null}>();
+   const {results:chosen}=await db.prepare("SELECT id,username,platform,status FROM accounts WHERE owner=? AND id IN ("+payload.accounts.map(()=>"?").join(",")+")").bind(owner,...payload.accounts).all<{id:string;username:string;platform:string;status:string}>();
+   if(chosen.length!==payload.accounts.length)return Response.json({error:"One of those accounts is no longer connected."},{status:404});
+   const live=chosen.filter(a=>a.status==="connected");
+   if(!live.length)return Response.json({error:"Reconnect those accounts first."},{status:409});
+   const {results:existing}=await db.prepare("SELECT clip_id,account_id,state,round FROM posts WHERE owner=? AND clip_id IN ("+marks+")").bind(owner,idList).all<{clip_id:string;account_id:string;state:string;round:number}>();
+   let posts=0,clipsPosted=0,busyNow=0;const notUploaded=payload.ids.length-clips.filter(c=>c.file_key).length;
+   for(const clip of clips){
+    if(!clip.file_key)continue;
+    let any=false;
+    for(const a of live){
+     const mine=existing.filter(p=>p.clip_id===clip.id&&p.account_id===a.id);
+     if(mine.some(p=>p.state==="queued"||p.state==="processing")){busyNow++;continue;}
+     const round=mine.length?Math.max(...mine.map(p=>p.round))+1:0;
+     statements.push(db.prepare("INSERT INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at,round) VALUES (lower(hex(randomblob(16))),?,?,?,?,'queued',?,?,?,?)").bind(owner,clip.id,a.platform,a.id,iso,iso,iso,round));
+     posts++;any=true;
+    }
+    if(any){clipsPosted++;if(clip.review!=="approved")statements.push(db.prepare("UPDATE clips SET review='approved',reviewed_at=? WHERE id=? AND owner=?").bind(iso,clip.id,owner));}
+   }
+   if(!posts)return Response.json({error:busyNow?"Those clips are already on their way to those accounts.":"None of those clips can be posted yet (their videos aren't uploaded)."},{status:409});
+   const limit=(await db.prepare("SELECT daily_limit FROM preferences WHERE owner=?").bind(owner).first<{daily_limit:number}>())?.daily_limit??defaults.dailyLimit;
+   message="Posting "+clipsPosted+" clip"+(clipsPosted===1?"":"s")+" to "+live.map(a=>(VIDEO_PLATFORMS[a.platform]??a.platform)+" @"+a.username).join(", ")+" ("+posts+" post"+(posts===1?"":"s")+"). Each account posts about one a minute, up to "+limit+" a day; the rest wait their turn."
+    +(busyNow?" "+busyNow+" already on their way were skipped.":"")+(notUploaded?" "+notUploaded+" not uploaded yet were skipped.":"")+(live.length<chosen.length?" Accounts needing reconnection were skipped.":"");
+  }
+  if(payload.action==="bulkClips"){
+   const marks="SELECT value FROM json_each(?)",idList=JSON.stringify(payload.ids),n=(r:D1Result)=>r.meta.changes??0,clips=(k:number)=>k+" clip"+(k===1?"":"s");
+   if(payload.op==="approve"||payload.op==="reject"||payload.op==="pending"){
+    const review={approve:"approved",reject:"rejected",pending:"pending"}[payload.op];
+    const r=await db.prepare("UPDATE clips SET review=?,reviewed_at=? WHERE owner=? AND id IN ("+marks+") AND review!=?").bind(review,review==="pending"?null:iso,owner,idList,review).run();
+    return Response.json({ok:true,message:{approved:"Approved ",rejected:"Rejected ",pending:"Moved back to review: "}[review]+clips(n(r))+"."});
+   }
+   if(payload.op==="delete"){
+    const {results:rows}=await db.prepare("SELECT id,file_key,source_key FROM clips WHERE owner=? AND id IN ("+marks+")").bind(owner,idList).all<{id:string;file_key:string|null;source_key:string|null}>();
+    // Stored files first: a leftover row is visible and retryable, an orphaned object is not.
+    const keys=rows.flatMap(r=>[r.file_key,r.source_key]).filter((k):k is string=>!!k);
+    for(let i=0;i<keys.length;i+=500)await bucket()?.delete(keys.slice(i,i+500));
+    statements.push(db.prepare("DELETE FROM clips WHERE owner=? AND id IN ("+marks+")").bind(owner,idList));
+    message="Deleted "+clips(rows.length)+".";
+   }else{
+    // Edits change each clip's saved edit and queue a re-render from its original video, like saving in the editor.
+    const set=payload.op==="frame"
+     ?{path:"$.frame.mode",value:JSON.stringify(payload.frame??"blur")}
+     :{path:"$.captions.on",value:payload.op==="captionsOn"?"true":"false"};
+    if(payload.op==="frame"&&!payload.frame)return Response.json({error:"Choose a framing."},{status:400});
+    const needsWords=payload.op==="captionsOn"?1:0;
+    const r=await db.prepare(`UPDATE clips SET edit=json_set(edit,'${set.path}',json(?)),edit_rev=edit_rev+1,render_state='queued',render_error=NULL
+     WHERE owner=? AND id IN (${marks}) AND edit IS NOT NULL AND source_key IS NOT NULL AND coalesce(json_extract(edit,'${set.path}'),'')!=json_extract(json(?),'$')
+     AND (?=0 OR coalesce(json_array_length(transcript),0)>0)`).bind(set.value,owner,idList,set.value,needsWords).run();
+    const k=n(r),skipped=payload.ids.length-k;
+    const what=payload.op==="frame"?"Reframing ("+payload.frame+") ":payload.op==="captionsOn"?"Adding subtitles to ":"Removing subtitles from ";
+    message=(k?what+clips(k)+". The worker re-renders them over the next few minutes; queued posts wait for the new version.":"No clips changed.")
+     +(skipped?" "+clips(skipped)+" left as they were (already like that"+(needsWords?", no transcript":"")+", or can't be edited).":"");
+   }
   }
   if(payload.action==="retryPost"){
    const post=await db.prepare("SELECT state FROM posts WHERE id=? AND owner=?").bind(payload.id,owner).first<{state:string}>();

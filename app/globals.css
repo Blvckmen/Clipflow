@@ -172,3 +172,17 @@
 .post-picker label small{font-size:12px;color:var(--muted)}
 .post-picker label small a{color:var(--lime);display:inline-flex;align-items:center;gap:2px}
 .post-picker label.disabled{opacity:.55}
+/* Clip library: selection */
+.clip-card{position:relative}
+.clip-select{position:absolute;top:8px;left:8px;z-index:2;display:grid;place-items:center;width:28px;height:28px;border-radius:7px;background:#0c0f13cc;border:1px solid #3a4654;cursor:pointer;opacity:.85}
+.clip-select input{margin:0;width:16px;height:16px}
+.clip-card:hover .clip-select,.clip-card.selected .clip-select{opacity:1}
+.clip-card.selected{outline:2px solid var(--lime);outline-offset:-2px}
+.bulk-bar{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px 16px;padding:12px 23px;background:#1a2216;border-bottom:1px solid #415432}
+.bulk-count{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.bulk-count strong{font-size:14px;color:#dff3c9}
+.bulk-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.bulk-actions button{padding:7px 11px;font-size:13px}
+.bulk-actions select{font-size:13px;padding:7px 10px}
+.bulk-note{flex-basis:100%;display:flex;align-items:center;gap:6px;font-size:11px}
+.bulk-hint{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 23px 0;font-size:12px}

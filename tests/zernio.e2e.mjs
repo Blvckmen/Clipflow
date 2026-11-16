@@ -285,6 +285,26 @@ test("a clip can be posted again by hand, once at a time, and posting a clip awa
   await dash({ action: "control", control: "running" });
 });
 
+test("several selected clips can be posted together", async () => {
+  const ig = (await dash()).body.accounts.find(a => a.platform === "instagram");
+  // Review mode, so nothing posts by itself; room for more posts today than the earlier tests left.
+  await dash({ action: "settings", settings: { ...settings, mode: "review", dailyLimit: 50 } });
+  await dash({ action: "control", control: "running" });
+  const one = (await addClip()).clip, two = (await addClip()).clip;
+  const r = await dash({ action: "postClips", ids: [one.id, two.id, randomUUID()], accounts: [ig.id] });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.match(r.body.message, /^Posting 2 clips to Instagram @ig_clips \(2 posts\)\. Each account posts about one a minute, up to 50 a day/);
+  const clips = (await dash()).body.clips.filter(c => c.id === one.id || c.id === two.id);
+  assert.deepEqual(clips.map(c => c.review), ["approved", "approved"], "posting approves them");
+  const again = await dash({ action: "postClips", ids: [one.id, two.id], accounts: [ig.id] });
+  assert.equal(again.status, 409, "both already on their way");
+  const out = async () => (await dash()).body.posts.filter(p => (p.clip_id === one.id || p.clip_id === two.id) && p.platform === "instagram");
+  for (let i = 0; i < 6 && (await out()).filter(p => p.state === "published").length < 2; i++) await cron(61_000);
+  assert.deepEqual((await out()).map(p => p.state), ["published", "published"], "one a minute, both out");
+  await dash({ action: "settings", settings });
+  await dash({ action: "control", control: "running" });
+});
+
 test("a second Zernio key adds a separate set of accounts that post with their own key", async () => {
   const added = await dash({ action: "addZernioKey", key: "sk_second_7890" });
   assert.equal(added.status, 200, JSON.stringify(added.body));
