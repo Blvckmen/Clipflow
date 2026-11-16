@@ -2,18 +2,27 @@
 // about hourly, and stores them on Clipflow's posts. Runs from the once-a-minute cron trigger but only does the
 // work for each Zernio connection once an hour.
 import { listAnalytics, ZernioError, type ZernioMetrics } from "./zernio";
-import { connections } from "./zernio-keys";
+import { keyConnection, listKeys, siteConnection, type Connection } from "./zernio-keys";
 
 type Env = Cloudflare.Env;
 const EVERY_MS = 60 * 60_000, NO_ACCESS_RETRY_MS = 24 * 3600_000, MAX_PAGES = 5;
 const count = (n: unknown) => (typeof n === "number" && Number.isFinite(n) && n >= 0 ? Math.round(n) : null);
+
+// Every key a workspace's published posts went out with: its own keys, plus the site's shared key while any of its
+// accounts still posts with that one (an account keeps the key it was connected with).
+async function readers(env: Env, db: D1Database, owner: string): Promise<Connection[]> {
+  const own = await Promise.all((await listKeys(db, owner)).map(k => keyConnection(env, k)));
+  const site = siteConnection(env);
+  const usesSite = site && await db.prepare("SELECT 1 FROM accounts WHERE owner=? AND provider='zernio' AND zernio_key_id IS NULL LIMIT 1").bind(owner).first();
+  return usesSite ? [...own, site] : own;
+}
 
 export async function syncAnalytics(env: Env, now = Date.now()) {
   const db = env.DB!;
   // Only workspaces that have something published through Zernio.
   const { results: owners } = await db.prepare("SELECT DISTINCT p.owner FROM posts p JOIN accounts a ON a.id=p.account_id WHERE a.provider='zernio' AND p.state='published'").all<{ owner: string }>();
   for (const { owner } of owners) {
-    for (const connection of await connections(env, db, owner).catch(() => [])) {
+    for (const connection of await readers(env, db, owner).catch(() => [] as Connection[])) {
       const key = "analytics:" + owner + ":" + (connection.keyId ?? "site");
       const last = await db.prepare("SELECT at,note FROM sync_state WHERE key=?").bind(key).first<{ at: string; note: string | null }>();
       const wait = last?.note === "no-access" ? NO_ACCESS_RETRY_MS : EVERY_MS;
