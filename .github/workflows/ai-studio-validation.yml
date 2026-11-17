@@ -52,7 +52,8 @@ jobs:
           npm run dev -- --port 5199 > /tmp/clipflow-dev.log 2>&1 &
           echo $! > /tmp/clipflow-dev.pid
           for attempt in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:5199/api/dashboard > /dev/null; then exit 0; fi
+            status=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5199/api/dashboard || true)
+            if [ "$status" = "401" ] || [ "$status" = "200" ]; then exit 0; fi
             sleep 2
           done
           cat /tmp/clipflow-dev.log
