@@ -1,0 +1,1 @@
+ALTER TABLE `clip_copy` ADD COLUMN `auto_attempts` INTEGER NOT NULL DEFAULT 0;
