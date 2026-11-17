@@ -1,0 +1,65 @@
+name: ClipFlow AI Studio validation
+
+on:
+  push:
+    branches:
+      - feature/ai-clip-copy-studio-20261117
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'lib/**'
+      - 'worker/**'
+      - 'db/**'
+      - 'drizzle/**'
+      - 'tests/**'
+      - 'vite.config.ts'
+      - 'package.json'
+      - '.github/workflows/ai-studio-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Check TypeScript
+        run: npx tsc --noEmit
+      - name: Run isolated unit tests
+        run: |
+          npm run test:unit
+          node --test tests/clip-copy.test.mjs
+          node --test worker/test/*.test.mjs
+      - name: Production build
+        run: npm run build
+      - name: Set up local D1 test database
+        run: |
+          for migration in drizzle/0*.sql; do
+            echo "Applying $migration"
+            node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file "$migration"
+          done
+      - name: Start local application for API tests
+        run: |
+          npm run dev -- --port 5199 > /tmp/clipflow-dev.log 2>&1 &
+          echo $! > /tmp/clipflow-dev.pid
+          for attempt in $(seq 1 60); do
+            status=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5199/api/dashboard || true)
+            if [ "$status" = "401" ] || [ "$status" = "200" ]; then exit 0; fi
+            sleep 2
+          done
+          cat /tmp/clipflow-dev.log
+          exit 1
+      - name: Run API integration tests
+        run: npm run test:api
+      - name: Print dev server logs on failure
+        if: failure()
+        run: cat /tmp/clipflow-dev.log || true

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { database } from "../../../../db/raw";
 import { workerOwner } from "../../../../lib/worker-auth";
-const clipSchema=z.object({id:z.string().uuid(),streamerId:z.string().uuid(),createdAt:z.string().datetime(),duration:z.number().int().min(15).max(90),captions:z.boolean(),sha:z.string().regex(/^[0-9a-f]{64}$/),size:z.number().int().min(1024).max(32*1024*1024),reason:z.enum(["chat","audio"]).optional()});
+const clipSchema=z.object({id:z.string().uuid(),streamerId:z.string().uuid(),createdAt:z.string().datetime(),duration:z.number().int().min(15).max(90),captions:z.boolean(),sha:z.string().regex(/^[0-9a-f]{64}$/),size:z.number().int().min(1024).max(32*1024*1024),reason:z.enum(["chat","audio"]).optional(),transcript:z.string().max(6000).optional()});
 const reasonText={chat:" after a chat spike",audio:" at its loudest moment"};
 export async function POST(request:Request){
  try{
@@ -18,6 +18,7 @@ export async function POST(request:Request){
   const review=prefs?.mode==="review"?"pending":"approved";
   await db.batch([
    db.prepare("INSERT INTO clips (id,owner,streamer_id,created_at,duration,captions,sha,size,review,reason) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(clip.id,owner,clip.streamerId,clip.createdAt,clip.duration,Number(clip.captions),clip.sha,clip.size,review,clip.reason??null),
+   db.prepare("INSERT INTO clip_copy (clip_id,owner,transcript,updated_at) VALUES (?,?,?,?)").bind(clip.id,owner,clip.transcript??'',new Date().toISOString()),
    db.prepare("INSERT INTO events (id,owner,message,created_at) VALUES (?,?,?,?)").bind(crypto.randomUUID(),owner,"Worker captured a "+clip.duration+"s clip from "+streamer.name+(clip.reason?reasonText[clip.reason]:"")+(review==="pending"?"; waiting for your review.":"."),new Date().toISOString()),
   ]);
   return Response.json({ok:true});

@@ -95,6 +95,10 @@ const instagramReady = !!(env.INSTAGRAM_APP_ID && env.INSTAGRAM_APP_SECRET);
 if (instagramReady) ok("Instagram app keys present; publishing will be enabled");
 else warn("INSTAGRAM_APP_ID / INSTAGRAM_APP_SECRET not set; deploying with Instagram publishing switched off (see DEPLOY.md).");
 
+if(env.AI_PROVIDER==="openai"&&!env.OPENAI_API_KEY)fail("AI_PROVIDER=openai requires OPENAI_API_KEY; remove AI_PROVIDER to use Cloudflare Workers AI by default.");
+if (env.AI_PROVIDER==="openai")ok("OpenAI selected explicitly; API billing applies");
+else ok("Cloudflare Workers AI selected (native binding, no OpenAI key)");
+
 if (checkOnly) { console.log("\nAll prerequisites look good. Run without --check to deploy.\n"); return; }
 
 // 5. Build
@@ -152,11 +156,12 @@ const built = JSON.parse(readFileSync(join(root, "dist/server/wrangler.json"), "
 const deployConfig = {
   ...built,
   name: workerName,
+  ai: { binding: "AI" },
   workers_dev: !env.CLIPFLOW_HOSTNAME,
   ...(env.CLIPFLOW_HOSTNAME && { routes: [{ pattern: env.CLIPFLOW_HOSTNAME, custom_domain: true }] }),
   d1_databases: [{ binding: "DB", database_name: dbName, database_id: db.uuid, migrations_dir: "../../drizzle" }],
   r2_buckets: bucketReady ? [{ binding: "BUCKET", bucket_name: bucketName }] : [],
-  vars: { ...built.vars, AUTH_MODE: "access", CF_ACCESS_TEAM_DOMAIN: teamDomain, CF_ACCESS_AUD: dashboardApp.aud, PUBLIC_URL: "https://" + host, ...(instagramReady && { INSTAGRAM_APP_ID: env.INSTAGRAM_APP_ID }) },
+  vars: { ...built.vars, AI_PROVIDER: env.AI_PROVIDER==="openai"?"openai":"cloudflare", ...(env.OPENAI_MODEL && {OPENAI_MODEL:env.OPENAI_MODEL}), AUTH_MODE: "access", CF_ACCESS_TEAM_DOMAIN: teamDomain, CF_ACCESS_AUD: dashboardApp.aud, PUBLIC_URL: "https://" + host, ...(instagramReady && { INSTAGRAM_APP_ID: env.INSTAGRAM_APP_ID }) },
   // The publisher runs once a minute.
   triggers: { crons: ["* * * * *"] },
 };
@@ -172,7 +177,7 @@ wrangler(["deploy", "--config", deployConfigPath], auth);
 console.log("\nUploading secrets…");
 const secretsFile = join(root, "dist/server/secrets.json");
 try {
-  writeFileSync(secretsFile, JSON.stringify({ TOKEN_KEY: env.TOKEN_KEY, MEDIA_KEY: env.MEDIA_KEY, ...(instagramReady && { INSTAGRAM_APP_SECRET: env.INSTAGRAM_APP_SECRET }) }));
+  writeFileSync(secretsFile, JSON.stringify({ TOKEN_KEY: env.TOKEN_KEY, MEDIA_KEY: env.MEDIA_KEY, ...(instagramReady && { INSTAGRAM_APP_SECRET: env.INSTAGRAM_APP_SECRET }), ...(env.AI_PROVIDER==="openai" && env.OPENAI_API_KEY && {OPENAI_API_KEY:env.OPENAI_API_KEY}) }));
   wrangler(["secret", "bulk", secretsFile, "--config", deployConfigPath], auth);
 } finally { rmSync(secretsFile, { force: true }); }
 

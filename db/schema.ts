@@ -37,3 +37,11 @@ export const posts=sqliteTable("posts",{
  state:text("state").notNull().default("queued"),containerId:text("container_id"),mediaId:text("media_id"),permalink:text("permalink"),error:text("error"),
  attempts:integer("attempts").notNull().default(0),nextAttemptAt:text("next_attempt_at").notNull(),createdAt:text("created_at").notNull(),updatedAt:text("updated_at").notNull(),publishedAt:text("published_at"),
 },t=>[uniqueIndex("posts_clip_platform").on(t.clipId,t.platform),index("posts_owner_state").on(t.owner,t.state)]);
+
+// AI-generated copy stays in draft until the owner selects and approves it. Transcripts are limited to 6000 characters.
+export const clipCopy=sqliteTable("clip_copy",{
+ clipId:text("clip_id").primaryKey(),owner:text("owner").notNull(),transcript:text("transcript").notNull().default(""),
+ platform:text("platform").notNull().default("TikTok"),tone:text("tone").notNull().default("curiosity"),
+ hooksJson:text("hooks_json").notNull().default("[]"),captionsJson:text("captions_json").notNull().default("[]"),
+ selectedHook:text("selected_hook"),selectedCaption:text("selected_caption"),status:text("status").notNull().default("draft"),autoAttempts:integer("auto_attempts").notNull().default(0),updatedAt:text("updated_at").notNull(),
+},t=>[index("clip_copy_owner").on(t.owner)]);

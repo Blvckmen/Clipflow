@@ -142,7 +142,7 @@ async function processJobs() {
     processing = { job, controller };
     try {
       const result = await processWindow(job.raw, { settings: job.settings, focusFrom: job.focusFrom, focusTo: job.focusTo, chat: job.chat }, join(job.dir, "clip.mp4"), controller.signal);
-      store.ready(job.id, result.sha, Math.min(90, Math.max(15, Math.round(result.end - result.start))));
+      store.ready(job.id, result.sha, Math.min(90, Math.max(15, Math.round(result.end - result.start))),result.transcript);
       console.log("Clip ready", job.id, "from", job.streamer.url, "(" + reasonLabel[job.reason] + ", " + Math.round(result.end - result.start) + "s)");
     } catch (error) {
       store.fail(job.id);
@@ -202,7 +202,7 @@ async function report() {
     try { size = (await stat(row.path)).size; } catch { store.fail(row.id); continue; }
     try {
       const permanent = status => status >= 400 && status < 500 && status !== 401 && status !== 429;
-      const response = await api("/api/worker/clips", { method: "POST", body: JSON.stringify({ id: row.id, streamerId: row.streamer, createdAt: row.created_at, duration: row.duration, captions: !!row.captions, sha: row.sha, size, ...(row.reason && { reason: row.reason }) }) });
+      const response = await api("/api/worker/clips", { method: "POST", body: JSON.stringify({ id: row.id, streamerId: row.streamer, createdAt: row.created_at, duration: row.duration, captions: !!row.captions, sha: row.sha, size, ...(row.reason && { reason: row.reason }), transcript:row.transcript||'' }) });
       // 4xx other than auth and rate limiting will not succeed on retry (for example a removed streamer).
       if (permanent(response.status)) { store.rejected(row.id); problem("Dashboard refused clip " + row.id + " (HTTP " + response.status + ")"); continue; }
       if (!response.ok) throw new Error("HTTP " + response.status);

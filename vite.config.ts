@@ -16,6 +16,9 @@ const managedLinux = readExecutionProfile() === "managed-linux";
 
 const localBindingConfig = {
   main: "./build/sites-worker.ts",
+  // Workers AI runs remotely even in local previews and needs Cloudflare login. CI tests
+  // dashboard and worker routes without inference; production deploy always enables AI.
+  ...(process.env.CI === "true" ? {} : { ai: { binding: "AI" } }),
   compatibility_flags: ["nodejs_compat"],
   d1_databases: d1
     ? [

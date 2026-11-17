@@ -100,7 +100,7 @@ async function runAccount(env: Env, config: instagram.InstagramConfig, account: 
   // 2. Otherwise start the oldest queued post, within the daily limit and Instagram's own allowance.
   const queued = await db.prepare("SELECT id,clip_id,state,container_id,attempts,updated_at FROM posts WHERE account_id=? AND state='queued' AND next_attempt_at<=? ORDER BY created_at LIMIT 1").bind(account.id, iso).first<PostRow>();
   if (!queued) return;
-  const clip = await db.prepare("SELECT c.review,c.file_key,s.name,s.platform FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(queued.clip_id, account.owner).first<{ review: string; file_key: string | null; name: string | null; platform: string | null }>();
+  const clip = await db.prepare("SELECT c.review,c.file_key,s.name,s.platform,(SELECT selected_caption FROM clip_copy WHERE clip_id=c.id AND owner=c.owner AND status='approved' AND platform='Instagram') AS ai_caption FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(queued.clip_id, account.owner).first<{ review: string; file_key: string | null; name: string | null; platform: string | null; ai_caption: string | null }>();
   if (!clip || clip.review !== "approved" || !clip.file_key) {
     // Rejected or deleted after it was queued: drop it rather than post it.
     await db.prepare("DELETE FROM posts WHERE id=?").bind(queued.id).run();
@@ -113,7 +113,7 @@ async function runAccount(env: Env, config: instagram.InstagramConfig, account: 
     const quota = await instagram.publishingQuota(config, token, account.external_id);
     if (quota.used >= quota.total) return;
     const link = env.PUBLIC_URL!.replace(/\/$/, "") + await signedMediaPath(queued.clip_id, now + LINK_TTL_MS, env.MEDIA_KEY!);
-    const caption = renderCaption(account.caption_template || defaultCaption, { streamer: clip.name ?? "a streamer", platform: clip.platform ?? "stream" });
+    const caption = clip.ai_caption || renderCaption(account.caption_template || defaultCaption, { streamer: clip.name ?? "a streamer", platform: clip.platform ?? "stream" });
     const containerId = await instagram.createReel(config, token, account.external_id, link, caption);
     await db.prepare("UPDATE posts SET state='processing',container_id=?,next_attempt_at=?,updated_at=? WHERE id=?").bind(containerId, new Date(now + CHECK_EVERY_MS).toISOString(), iso, queued.id).run();
   } catch (error) {
