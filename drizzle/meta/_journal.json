@@ -57,6 +57,13 @@
       "when": 1794910000000,
       "tag": "0007_clip_copy_studio",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1794910200000,
+      "tag": "0008_auto_clip_copy",
+      "breakpoints": true
     }
   ]
 }
