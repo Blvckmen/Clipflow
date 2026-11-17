@@ -1,0 +1,46 @@
+name: ClipFlow AI Studio validation
+
+on:
+  push:
+    branches:
+      - feature/ai-clip-copy-studio-20261117
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'lib/**'
+      - 'worker/**'
+      - 'db/**'
+      - 'drizzle/**'
+      - 'tests/**'
+      - 'vite.config.ts'
+      - 'package.json'
+      - '.github/workflows/ai-studio-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Check TypeScript
+        run: npx tsc --noEmit
+      - name: Run API and unit tests
+        run: |
+          npm run test:unit
+          npm run test:api
+          node --test tests/clip-copy.test.mjs
+      - name: Worker tests
+        run: |
+          node --test worker/test/*.test.mjs
+      - name: Production build
+        run: npm run build
