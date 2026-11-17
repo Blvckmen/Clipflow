@@ -30,8 +30,8 @@ test("new clips receive automatic copy generation on the scheduled cron",()=>{
  const worker=read("build/sites-worker.ts");
  const job=read("lib/auto-copy.ts");
  const migration=read("drizzle/0008_auto_clip_copy.sql");
- assert.match(worker,/runAutoCopy\\(env, controller\\.scheduledTime\\)/);
- assert.match(job,/status=\\x27generating\\x27/);
+ assert.match(worker,/runAutoCopy\(env, controller\.scheduledTime\)/);
+ assert.match(job,/status=\x27generating\x27/);
  assert.match(job,/LIMIT 3/);
  assert.match(job,/auto_attempts < 3/);
  assert.match(migration,/auto_attempts/);
