@@ -67,18 +67,29 @@ export async function runPublisher(env: Env, now = Date.now()) {
   await expireRecordings(env, now).catch(error => console.error("Recording expiry failed:", error));
   if (!env.MEDIA_KEY || !env.PUBLIC_URL) return;
   const ig = instagramConfig(env);
+  // Clips flagged before this point are looked at by every account below; flags set meanwhile (a trigger, real time)
+  // stay for the next run.
+  const runStarted = new Date().toISOString(), owners = new Set<string>(), unfinished = new Set<string>();
   const { results } = await env.DB.prepare("SELECT a.*, p.control, p.daily_limit, p.caption_template, k.label AS key_label, k.key_enc FROM accounts a LEFT JOIN preferences p ON p.owner=a.owner LEFT JOIN zernio_keys k ON k.id=a.zernio_key_id AND k.owner=a.owner WHERE a.status='connected'").all<AccountRow>();
   for (const account of results) {
+    owners.add(account.owner);
+    // Paused, or no way to post right now: this account didn't look at the flagged clips, so they stay flagged.
+    if (account.control !== "running") unfinished.add(account.owner);
     try {
       // An account connected with a workspace key posts with that key; one from the site key, with the site key.
       const zn = account.provider !== "zernio" ? null : account.zernio_key_id ? (account.key_enc ? await keyConnection(env, { id: account.zernio_key_id, label: account.key_label ?? "", key_enc: account.key_enc }) : null) : siteConnection(env);
       const adapter = account.provider === "zernio" ? (zn && zernioAdapter(zn, account)) : (ig && await instagramAdapter(env, ig, account, now));
       if (adapter) await runAccount(env, adapter, account, now);
+      else unfinished.add(account.owner);
     } catch (error) {
+      unfinished.add(account.owner);
       console.error("Publisher failed for account", account.id, error);
       await env.DB.prepare("UPDATE accounts SET last_error=? WHERE id=?").bind(String((error as Error).message).slice(0, 500), account.id).run();
     }
   }
+  // Every account of these workspaces has now looked at their flagged clips: clear the flags set before this run.
+  const done = [...owners].filter(o => !unfinished.has(o));
+  if (done.length) await env.DB.prepare("UPDATE clips SET queue_check=NULL WHERE queue_check IS NOT NULL AND queue_check<=? AND owner IN (SELECT value FROM json_each(?))").bind(runStarted, JSON.stringify(done)).run();
 }
 
 async function instagramAdapter(env: Env, config: instagram.InstagramConfig, account: AccountRow, now: number): Promise<Adapter> {
@@ -174,10 +185,12 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
 
   // Queue approved, uploaded clips from the streamers this account is linked to, approved after both the account
   // was connected and the streamer was linked to it — never the old backlog. Clips waiting for a re-render wait.
+  // Only clips flagged since the last run (queue_check, set by triggers when a clip arrives, is approved, uploaded or
+  // re-rendered) are looked at, through a partial index, so this every-minute step reads a handful of rows.
   await db.prepare(`INSERT OR IGNORE INTO posts (id,owner,clip_id,platform,account_id,state,error,next_attempt_at,created_at,updated_at)
     SELECT lower(hex(randomblob(16))),c.owner,c.id,?,?,?,?,?,?,? FROM clips c
     JOIN streamer_accounts sa ON sa.streamer_id=c.streamer_id AND sa.account_id=?
-    WHERE c.owner=? AND c.review='approved' AND c.file_key IS NOT NULL AND coalesce(c.render_state,'')!='queued'
+    WHERE c.queue_check IS NOT NULL AND c.owner=? AND c.review='approved' AND c.file_key IS NOT NULL AND coalesce(c.render_state,'')!='queued'
     AND coalesce(c.reviewed_at,c.created_at)>=max(?,sa.created_at)
     AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.clip_id=c.id AND p.account_id=?)`).bind(account.platform, account.id, full ? "review" : "queued", full ? fullNote : null, iso, iso, iso, account.id, account.owner, account.connected_at, account.id).run();
 

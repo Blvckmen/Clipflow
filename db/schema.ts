@@ -50,8 +50,16 @@ export const clips=sqliteTable("clips",{
  edit:text("edit"),editRev:integer("edit_rev").notNull().default(0),renderState:text("render_state"),renderError:text("render_error"),renderedAt:text("rendered_at"),
  // The text posted with the clip. caption_source: "ai" (written by Claude, regenerated on request) or "edited"
  // (typed by the owner, never overwritten). Null caption: not written yet, so the template is used.
+ // When the clip last changed in a way that can make it ready to post (arrived, approved, file uploaded, render
+ // finished), set by database triggers (migration 0021); null once the publisher has looked at it. The publisher only
+ // reads flagged clips, so its once-a-minute run doesn't read the whole clip history.
+ queueCheck:text("queue_check"),
  postCaption:text("post_caption"),captionSource:text("caption_source"),captionTries:integer("caption_tries").notNull().default(0),captionError:text("caption_error"),
-},t=>[index("clips_owner_created").on(t.owner,t.createdAt)]);
+},t=>[index("clips_owner_created").on(t.owner,t.createdAt),
+ // Indexes for the frequent reads (the once-a-minute publisher, the worker's config poll, the dashboard's analytics):
+ // without them each of those reads every clip, which runs past D1's daily row-read allowance.
+ index("clips_streamer_review").on(t.streamerId,t.review),index("clips_owner_render").on(t.owner,t.renderState),
+ index("clips_created").on(t.createdAt),index("clips_owner_reviewed").on(t.owner,t.reviewedAt)]);
 // Connected publishing accounts; an owner can connect several per platform. The access token is AES-GCM
 // encrypted with the TOKEN_KEY secret.
 // provider "instagram": connected directly with Instagram Login, token stored here. provider "zernio": connected on
@@ -94,7 +102,11 @@ export const posts=sqliteTable("posts",{
  queuedByHand:integer("queued_by_hand",{mode:"boolean"}).notNull().default(false),
  // Performance read from the platform (through Zernio's analytics, about hourly); null until first read.
  views:integer("views"),likes:integer("likes"),comments:integer("comments"),shares:integer("shares"),saves:integer("saves"),metricsAt:text("metrics_at"),
-},t=>[uniqueIndex("posts_clip_account_round").on(t.clipId,t.accountId,t.round),index("posts_owner_state").on(t.owner,t.state)]);
+},t=>[uniqueIndex("posts_clip_account_round").on(t.clipId,t.accountId,t.round),index("posts_owner_state").on(t.owner,t.state),
+ // The publisher's per-account lookups, and the dashboard's newest posts.
+ index("posts_account_state").on(t.accountId,t.state,t.nextAttemptAt),index("posts_owner_created").on(t.owner,t.createdAt),
+ // The hourly analytics sync matches each post by the platform's post id or the Zernio post id.
+ index("posts_media").on(t.mediaId),index("posts_container").on(t.containerId)]);
 // When each periodic job last ran (e.g. "analytics:<owner>:<zernio key id or site>"), so the once-a-minute cron
 // trigger can run slower jobs on their own schedule.
 export const syncState=sqliteTable("sync_state",{key:text("key").primaryKey(),at:text("at").notNull(),note:text("note")});
@@ -111,7 +123,7 @@ export const recordings=sqliteTable("recordings",{
  // R2 multipart upload in progress: its id and the parts received so far (JSON [{partNumber, etag}]).
  uploadId:text("upload_id"),uploadParts:text("upload_parts"),
  expiresAt:text("expires_at").notNull(),createdAt:text("created_at").notNull(),
-},t=>[index("recordings_owner_started").on(t.owner,t.startedAt)]);
+},t=>[index("recordings_owner_started").on(t.owner,t.startedAt),index("recordings_expires").on(t.expiresAt)]);
 // Clips asked for from a recording: one moment (start/end seconds into it) or "find the best `count` moments".
 // state: queued -> working -> done | failed.
 export const recordingRequests=sqliteTable("recording_requests",{

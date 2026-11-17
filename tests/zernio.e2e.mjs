@@ -505,7 +505,9 @@ test("analytics: published posts get their views and likes from Zernio about hou
   assert.ok(after > 0, "Zernio's analytics were read");
   await cron(60_000);
   assert.equal(await calls(), after, "not again within the hour");
-  const { analytics, posts } = (await dash()).body;
+  const { posts } = (await dash()).body;
+  assert.equal((await dash()).body.analytics, undefined, "analytics load on their own, not with every dashboard load");
+  const { analytics } = await (await fetch(base + "/api/analytics", { headers: who })).json();
   // Posts of an account removed earlier can't be read any more; the rest all can.
   // Posts made by hand (marked as posted) have no Zernio record to read numbers from; the rest all do.
   const published = posts.filter(p => p.state === "published" && p.account && p.permalink);

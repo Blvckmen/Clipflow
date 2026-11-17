@@ -5,7 +5,6 @@ import { instagramConfig } from "../../../lib/publisher";
 import { connectionFor, connections, hashKey, listKeys, siteConnection, zernioApiUrl } from "../../../lib/zernio-keys";
 import { deleteAccount, deletePost, verifyKey, VIDEO_PLATFORMS, ZernioError } from "../../../lib/zernio";
 import { syncZernioAccounts } from "../../../lib/zernio-sync";
-import { analyticsSummary } from "../../../lib/analytics";
 import { optionsSchema, readOptions } from "../../../lib/account-options";
 import { encrypt } from "../../../lib/secure";
 import { normalizeStyle } from "../../../worker/edit.mjs";
@@ -89,7 +88,7 @@ export async function GET(){
   const keys=(await listKeys(db,owner)).map(k=>({id:k.id,label:k.label,created_at:k.created_at,last_error:k.last_error,accounts:a.results.filter(x=>x.zernio_key_id===k.id).length}));
   const site=!keys.length&&!!siteConnection(env);
   const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,style:parse(p.style)}:{...defaults,style:null};
-  return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(x=>({...x,captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored})),storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,duration,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,analytics:await analyticsSummary(db,owner),
+  return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(x=>({...x,captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored})),storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,duration,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,
    // Whole-stream recordings (their heat strips load with GET /api/recordings/<id>) and clips asked for from them.
    recordings:(await db.prepare("SELECT r.id,r.streamer_id,s.name AS streamer,r.title,r.started_at,r.ended_at,r.duration,r.size,r.state,r.error,r.preview_key IS NOT NULL AS preview,r.upload_id IS NOT NULL AS uploading,r.expires_at FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.owner=? ORDER BY r.started_at DESC LIMIT 100").bind(owner).all<Record<string,unknown>>()).results.map(x=>({...x,preview:!!x.preview,uploading:!!x.uploading})),
    recordingRequests:(await db.prepare("SELECT id,recording_id,kind,start,end,count,state,error,clips,created_at,updated_at FROM recording_requests WHERE owner=? ORDER BY created_at DESC LIMIT 200").bind(owner).all()).results,
@@ -290,10 +289,10 @@ export async function POST(request:Request){
     +(busyNow?" "+busyNow+" already on their way were skipped.":"")+(notUploaded?" "+notUploaded+" not uploaded yet were skipped.":"")+(live.length<chosen.length?" Accounts needing reconnection were skipped.":"");
   }
   if(payload.action==="bulkClips"){
-   const marks="SELECT value FROM json_each(?)",idList=JSON.stringify(payload.ids),n=(r:D1Result)=>r.meta.changes??0,clips=(k:number)=>k+" clip"+(k===1?"":"s");
+   const marks="SELECT value FROM json_each(?)",idList=JSON.stringify(payload.ids),n=(r:D1Result)=>r.results.length,clips=(k:number)=>k+" clip"+(k===1?"":"s");
    if(payload.op==="approve"||payload.op==="reject"||payload.op==="pending"){
     const review={approve:"approved",reject:"rejected",pending:"pending"}[payload.op];
-    const r=await db.prepare("UPDATE clips SET review=?,reviewed_at=? WHERE owner=? AND id IN ("+marks+") AND review!=?").bind(review,review==="pending"?null:iso,owner,idList,review).run();
+    const r=await db.prepare("UPDATE clips SET review=?,reviewed_at=? WHERE owner=? AND id IN ("+marks+") AND review!=? RETURNING id").bind(review,review==="pending"?null:iso,owner,idList,review).all();
     return Response.json({ok:true,message:{approved:"Approved ",rejected:"Rejected ",pending:"Moved back to review: "}[review]+clips(n(r))+"."});
    }
    if(payload.op==="delete"){
@@ -313,7 +312,7 @@ export async function POST(request:Request){
     const needsWords=payload.op==="captionsOn"?1:0;
     const r=await db.prepare(`UPDATE clips SET edit=json_set(edit,'${set.path}',json(?)${payload.op==="frame"&&payload.frame==="split"?",'$.captions.y',0.5":""}),edit_rev=edit_rev+1,render_state='queued',render_error=NULL
      WHERE owner=? AND id IN (${marks}) AND edit IS NOT NULL AND source_key IS NOT NULL AND coalesce(json_extract(edit,'${set.path}'),'')!=json_extract(json(?),'$')
-     AND (?=0 OR coalesce(json_array_length(transcript),0)>0)`).bind(set.value,owner,idList,set.value,needsWords).run();
+     AND (?=0 OR coalesce(json_array_length(transcript),0)>0) RETURNING id`).bind(set.value,owner,idList,set.value,needsWords).all();
     const k=n(r),skipped=payload.ids.length-k;
     const what=payload.op==="frame"?"Reframing ("+payload.frame+") ":payload.op==="captionsOn"?"Adding subtitles to ":"Removing subtitles from ";
     message=(k?what+clips(k)+". The worker re-renders them over the next few minutes; queued posts wait for the new version.":"No clips changed.")
@@ -409,9 +408,10 @@ export async function POST(request:Request){
    const result=await db.prepare(`UPDATE clips SET edit=json_set(edit,'$.captions.on',json(?)),edit_rev=edit_rev+1,render_state='queued',render_error=NULL
     WHERE owner=? AND edit IS NOT NULL AND source_key IS NOT NULL AND coalesce(json_extract(edit,'$.captions.on'),0)!=?
     AND (?=0 OR coalesce(json_array_length(transcript),0)>0)
-    AND (?='all' OR NOT EXISTS (SELECT 1 FROM posts p WHERE p.clip_id=clips.id AND p.state='published'))`)
-    .bind(payload.on?"true":"false",owner,Number(payload.on),Number(payload.on),payload.scope).run();
-   const n=result.meta.changes??0;
+    AND (?='all' OR NOT EXISTS (SELECT 1 FROM posts p WHERE p.clip_id=clips.id AND p.state='published')) RETURNING id`)
+    .bind(payload.on?"true":"false",owner,Number(payload.on),Number(payload.on),payload.scope).all();
+   // Counted from the rows returned: the queue-check trigger's own updates are counted in meta.changes.
+   const n=result.results.length;
    message=n?(payload.on?"Adding subtitles to ":"Removing subtitles from ")+n+" clip"+(n===1?"":"s")+". The worker re-renders them over the next few minutes; queued posts wait for the new version."
     :payload.on?"No clips to change: they already have subtitles, or have no transcript.":"No clips to change: none of them "+(payload.scope==="all"?"":"that are still unposted ")+"have subtitles.";
   }

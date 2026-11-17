@@ -38,7 +38,8 @@ export function RecordingsView({ recordings, requests, storage, busy, workerOnli
   const open = recordings.find(r => r.id === openId) ?? null;
   // While anything is being recorded, saved or clipped, look again every half minute.
   const active = recordings.some(r => r.state === "recording" || r.state === "processing" || (r.state === "ready" && !r.preview)) || requests.some(q => q.state === "queued" || q.state === "working");
-  useEffect(() => { if (!active) return; const timer = setInterval(onRefresh, 30_000); return () => clearInterval(timer); }, [active, onRefresh]);
+  // Only while the tab is in view: a phone or a background tab left open shouldn't keep reading the database.
+  useEffect(() => { if (!active) return; const timer = setInterval(() => { if (document.visibilityState === "visible") onRefresh(); }, 60_000); return () => clearInterval(timer); }, [active, onRefresh]);
   if (!recordings.length) return <section className="panel"><div className="empty tall"><div className="empty-icon"><Film size={30} /></div><h3>No recordings yet</h3>
     <p>Set a streamer to <strong>Record the whole stream</strong> (or clip live and record) under Streamers → Edit. Their next stream is saved on your worker PC, and you can pick clips from it here.</p></div></section>;
   return <div className="recordings-layout">

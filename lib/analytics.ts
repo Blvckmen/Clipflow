@@ -20,7 +20,7 @@ async function readers(env: Env, db: D1Database, owner: string): Promise<Connect
 export async function syncAnalytics(env: Env, now = Date.now()) {
   const db = env.DB!;
   // Only workspaces that have something published through Zernio.
-  const { results: owners } = await db.prepare("SELECT DISTINCT p.owner FROM posts p JOIN accounts a ON a.id=p.account_id WHERE a.provider='zernio' AND p.state='published'").all<{ owner: string }>();
+  const { results: owners } = await db.prepare("SELECT DISTINCT a.owner FROM accounts a WHERE a.provider='zernio' AND EXISTS (SELECT 1 FROM posts p WHERE p.owner=a.owner AND p.state='published')").all<{ owner: string }>();
   for (const { owner } of owners) {
     for (const connection of await readers(env, db, owner).catch(() => [] as Connection[])) {
       const key = "analytics:" + owner + ":" + (connection.keyId ?? "site");
@@ -39,8 +39,8 @@ export async function syncAnalytics(env: Env, now = Date.now()) {
               const m: ZernioMetrics = entry.analytics ?? {};
               // Match Clipflow's post by the platform's post id, or by the Zernio post it was sent as.
               updates.push(db.prepare(`UPDATE posts SET views=?,likes=?,comments=?,shares=?,saves=?,metrics_at=?
-                WHERE owner=? AND state='published' AND platform=? AND ((media_id IS NOT NULL AND media_id=?) OR (container_id IS NOT NULL AND container_id=?))`)
-                .bind(count(m.views), count(m.likes), count(m.comments), count(m.shares), count(m.saves), iso, owner, entry.platform, entry.platformPostId ?? "", post.latePostId ?? post._id));
+                WHERE id IN (SELECT id FROM posts WHERE media_id=? UNION ALL SELECT id FROM posts WHERE container_id=?) AND owner=? AND state='published' AND platform=?`)
+                .bind(count(m.views), count(m.likes), count(m.comments), count(m.shares), count(m.saves), iso, entry.platformPostId ?? "", post.latePostId ?? post._id, owner, entry.platform));
             }
           }
           if (page >= pages) break;
