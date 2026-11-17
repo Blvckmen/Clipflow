@@ -17,7 +17,6 @@ declare namespace Cloudflare {
     INSTAGRAM_API_URL?: string;
     INSTAGRAM_GRAPH_URL?: string;
     AI?: { run: (model: string, inputs: { messages: { role: string; content: string }[]; max_tokens: number }) => Promise<unknown> }; // Workers AI binding
-    DB?: D1Database;
     AI_PROVIDER?: string; // default: cloudflare; opt-in: openai
     OPENAI_API_KEY?: string; // optional secret for OpenAI
     OPENAI_MODEL?: string; // optional OpenAI chat model override
