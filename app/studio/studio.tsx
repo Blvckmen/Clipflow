@@ -22,7 +22,7 @@ export function CopyStudio(){
  },[]);
  useEffect(()=>{
   const requested=new URLSearchParams(window.location.search).get("clip");
-  void fetch("/api/dashboard").then(r=>r.json()).then(p=>{if(Array.isArray(p.clips)){setClips(p.clips);const first=requested||p.clips[0]?.id||"";setId(first);if(first)void fetchClip(first);}else setError("Sign in to open your clip library.");}).catch(()=>setError("Could not load clips."));
+  void fetch("/api/dashboard").then(async r=>(await r.json()) as {clips?:{id:string;streamer:string|null}[]}).then(p=>{if(Array.isArray(p.clips)){setClips(p.clips);const first=requested||p.clips[0]?.id||"";setId(first);if(first)void fetchClip(first);}else setError("Sign in to open your clip library.");}).catch(()=>setError("Could not load clips."));
  },[fetchClip]);
  const changeClip=(next:string)=>{setId(next);setClip(null);setCopy(blank);window.history.replaceState(null,"","/studio?clip="+encodeURIComponent(next));void fetchClip(next);};
  const save=async(status:"draft"|"approved")=>{
