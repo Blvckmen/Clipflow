@@ -86,6 +86,13 @@ export function startFakeZernio({ port = 0, apiKey = "sk_test", keys = { [apiKey
       return send(res, 200, { hasAnalyticsAccess: true, overview: { publishedPosts: published.length }, posts: items, pagination: { page, limit, total: published.length, pages: Math.max(1, Math.ceil(published.length / limit)) } });
     }
     const one = /^\/api\/v1\/posts\/([^/]+)$/.exec(path);
+    if (one && req.method === "DELETE") {
+      const post = posts.get(decodeURIComponent(one[1]));
+      if (!post) return send(res, 404, { error: "Post not found", code: "post_not_found" });
+      if (post.status === "published") return send(res, 400, { error: "Published posts cannot be deleted", code: "invalid_resource_state" });
+      post.deleted = true; posts.delete(post._id);
+      return send(res, 200, { message: "Post deleted successfully" });
+    }
     if (one && req.method === "GET") {
       const post = posts.get(decodeURIComponent(one[1]));
       if (!post) return send(res, 404, { error: "Post not found", code: "not_found" });

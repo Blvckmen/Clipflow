@@ -3,7 +3,7 @@ import { bucket, database } from "../../../db/raw";
 import { defaultCaption, defaults, parseStreamer, settingsSchema } from "../../../lib/clipflow";
 import { instagramConfig } from "../../../lib/publisher";
 import { connectionFor, connections, hashKey, listKeys, siteConnection, zernioApiUrl } from "../../../lib/zernio-keys";
-import { deleteAccount, verifyKey, VIDEO_PLATFORMS, ZernioError } from "../../../lib/zernio";
+import { deleteAccount, deletePost, verifyKey, VIDEO_PLATFORMS, ZernioError } from "../../../lib/zernio";
 import { syncZernioAccounts } from "../../../lib/zernio-sync";
 import { analyticsSummary } from "../../../lib/analytics";
 import { optionsSchema, readOptions } from "../../../lib/account-options";
@@ -185,12 +185,23 @@ export async function POST(request:Request){
    statements.push(db.prepare("INSERT INTO preferences (owner,control) VALUES (?,?) ON CONFLICT(owner) DO UPDATE SET control=excluded.control").bind(owner,payload.control));
    message=payload.control==="running"?"Global automation resumed.":payload.control==="paused"?"Global automation paused.":"Global automation stopped.";
   }
+  // Deleting clips also drops their posts that haven't gone out, and cancels any Zernio is still holding (e.g. for
+  // TikTok's daily limit), so a deleted clip never posts. Published posts stay as history.
+  const dropUnsent=async(ids:string[])=>{
+   const {results:held}=await db.prepare("SELECT p.container_id,a.provider,a.zernio_key_id FROM posts p JOIN accounts a ON a.id=p.account_id WHERE p.owner=? AND p.state='processing' AND p.container_id IS NOT NULL AND p.clip_id IN (SELECT value FROM json_each(?))").bind(owner,JSON.stringify(ids)).all<{container_id:string;provider:string;zernio_key_id:string|null}>();
+   for(const h of held.filter(h=>h.provider==="zernio")){
+    try{const config=await connectionFor(env,db,owner,h.zernio_key_id);if(config)await deletePost(config,h.container_id);}
+    catch(error){console.error("Zernio post cancel failed",error);}
+   }
+   statements.push(db.prepare("DELETE FROM posts WHERE owner=? AND state!='published' AND clip_id IN (SELECT value FROM json_each(?))").bind(owner,JSON.stringify(ids)));
+  };
   if(payload.action==="deleteClip"){
    const clip=await db.prepare("SELECT c.file_key,c.source_key,s.name FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(payload.id,owner).first<{file_key:string|null;source_key:string|null;name:string|null}>();
    if(!clip)return Response.json({error:"Clip not found."},{status:404});
    // Remove the stored files first: a leftover row is visible and retryable, an orphaned object is not.
    const keys=[clip.file_key,clip.source_key].filter((k):k is string=>!!k);
    if(keys.length)await bucket()?.delete(keys);
+   await dropUnsent([payload.id]);
    statements.push(db.prepare("DELETE FROM clips WHERE id=? AND owner=?").bind(payload.id,owner));
    message="Deleted a clip"+(clip.name?" from "+clip.name:"")+".";
   }
@@ -290,6 +301,7 @@ export async function POST(request:Request){
     // Stored files first: a leftover row is visible and retryable, an orphaned object is not.
     const keys=rows.flatMap(r=>[r.file_key,r.source_key]).filter((k):k is string=>!!k);
     for(let i=0;i<keys.length;i+=500)await bucket()?.delete(keys.slice(i,i+500));
+    await dropUnsent(rows.map(r=>r.id));
     statements.push(db.prepare("DELETE FROM clips WHERE owner=? AND id IN ("+marks+")").bind(owner,idList));
     message="Deleted "+clips(rows.length)+".";
    }else{

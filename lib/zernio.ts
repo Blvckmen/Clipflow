@@ -65,6 +65,12 @@ export async function deleteAccount(config: ZernioConfig, id: string) {
   catch (error) { if (!(error instanceof ZernioError && error.status === 404)) throw error; }
 }
 
+// Cancels a post Zernio hasn't published yet (e.g. one held for a platform's daily limit). Already gone counts as done.
+export async function deletePost(config: ZernioConfig, id: string) {
+  try { await call(config, "/posts/" + encodeURIComponent(id), { method: "DELETE" }); }
+  catch (error) { if (!(error instanceof ZernioError && error.status === 404)) throw error; }
+}
+
 // Publishes immediately (Zernio posts synchronously inside the request). The key makes a retried request return
 // the original post instead of posting twice.
 export async function createPost(config: ZernioConfig, post: Record<string, unknown>, idempotencyKey: string) {

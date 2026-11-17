@@ -480,6 +480,24 @@ test("once a TikTok account has sent 15 in a day, new clips wait for review ther
   await dash({ action: "control", control: "running" });
 });
 
+test("deleting a clip drops its unsent posts and cancels one Zernio is holding", async () => {
+  const until = new Date(clock + 25 * 3600_000).toISOString();
+  await control("/__mode?platform=tiktok&mode=held&until=" + until);
+  await addClip();
+  // The account's oldest queued TikTok post goes to Zernio next, and is held there.
+  const heldPost = async () => (await dash()).body.posts.find(p => p.platform === "tiktok" && p.state === "processing");
+  for (let i = 0; i < 6 && !(await heldPost()); i++) await cron(61_000);
+  const held = await heldPost();
+  assert.ok(held, "a TikTok post is held by Zernio");
+  const clip = { id: held.clip_id };
+  const zernioId = (await fakeLog()).posts.find(p => p.platform === "tiktok" && p.params.mediaItems[0].url.includes(clip.id))._id;
+  assert.equal((await dash({ action: "deleteClip", id: clip.id })).status, 200);
+  assert.ok(!(await fakeLog()).posts.some(p => p._id === zernioId), "cancelled on Zernio");
+  assert.ok(!(await dash()).body.posts.some(p => p.clip_id === clip.id && p.state !== "published"), "no unsent posts left");
+  await control("/__release"); await control("/__mode?platform=tiktok&mode=pending");
+  await cron(25 * 3600_000);
+});
+
 test("analytics: published posts get their views and likes from Zernio about hourly", async () => {
   const calls = async () => (await fakeLog()).log.filter(e => e.path === "/api/v1/analytics").length;
   await cron(61 * 60_000);  // more than an hour on: due for a read
