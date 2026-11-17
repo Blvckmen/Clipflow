@@ -16,6 +16,8 @@ declare namespace Cloudflare {
     INSTAGRAM_AUTH_URL?: string;
     INSTAGRAM_API_URL?: string;
     INSTAGRAM_GRAPH_URL?: string;
+    OPENAI_API_KEY?: string; // secret: server-side AI text generation only
+    OPENAI_MODEL?: string; // optional Responses API model override
     ENABLE_TEST_CRON?: string;  // local tests only; never set in a deployment
   }
 }

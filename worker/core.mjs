@@ -65,11 +65,12 @@ export class Store {
     this.db.exec("CREATE INDEX IF NOT EXISTS clips_streamer_date ON clips(streamer,created_at)");
     // Added after the first release; older local databases gain the column on start.
     if (!this.db.prepare("PRAGMA table_info(clips)").all().some(c => c.name === "reason")) this.db.exec("ALTER TABLE clips ADD COLUMN reason TEXT");
+    if (!this.db.prepare("PRAGMA table_info(clips)").all().some(c => c.name === "transcript")) this.db.exec("ALTER TABLE clips ADD COLUMN transcript TEXT NOT NULL DEFAULT ''");
     this.db.exec("UPDATE clips SET state='interrupted' WHERE state='capturing'");
   }
   add(id,streamer,path,duration,captions,reason=null) { this.db.prepare("INSERT INTO clips(id,streamer,path,state,created_at,duration,captions,reason) VALUES (?,?,?,'capturing',?,?,?,?)").run(id,streamer,path,new Date().toISOString(),duration,Number(captions),reason); }
   // Sentence snapping makes the final length differ slightly from the configured one.
-  ready(id,sha,duration) {this.db.prepare("UPDATE clips SET state='ready',sha=?,duration=coalesce(?,duration) WHERE id=?").run(sha,duration??null,id);}
+  ready(id,sha,duration,transcript='') {this.db.prepare("UPDATE clips SET state='ready',sha=?,duration=coalesce(?,duration),transcript=? WHERE id=?").run(sha,duration??null,String(transcript).slice(0,6000),id);}
   fail(id) {this.db.prepare("UPDATE clips SET state='failed' WHERE id=?").run(id);}
   uploaded(id) {this.db.prepare("UPDATE clips SET state='uploaded' WHERE id=?").run(id);}
   rejected(id) {this.db.prepare("UPDATE clips SET state='rejected' WHERE id=?").run(id);}

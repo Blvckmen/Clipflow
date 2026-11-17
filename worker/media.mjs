@@ -69,7 +69,8 @@ export async function processWindow(raw,{settings,focusFrom=0,focusTo=Infinity,c
     }
     const size=(await stat(file)).size;
     if(size<1024||size>32*1024*1024)throw new Error("Clip size outside allowed range");
-    return {sha:clipHash(await readFile(file)),start,end};
+    const transcript=segments.flatMap(s=>(s.words||[]).filter(w=>w[0]>=start&&w[1]<=end).map(w=>w[2])).join(' ').replace(/\s+/g,' ').trim().slice(0,6000);
+    return {sha:clipHash(await readFile(file)),start,end,transcript};
   } finally {
     for(const path of [raw,cut,energyFile,wordsFile,join(dir,"captions.srt")])await rm(path,{force:true});
   }
