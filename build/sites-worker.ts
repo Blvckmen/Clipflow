@@ -12,7 +12,7 @@ export default {
       const url = new URL(request.url);
       if (url.pathname === "/__test/cron") {
         const time = Number(url.searchParams.get("time")) || Date.now();
-        return runPublisher(env, time).then(() => new Response("ok"), error => new Response(String(error?.stack ?? error), { status: 500 }));
+        return Promise.all([runPublisher(env, time),runAutoCopy(env,time)]).then(() => new Response("ok"), error => new Response(String(error?.stack ?? error), { status: 500 }));
       }
     }
     let binding = ctx.props?.CONNECTORS;
