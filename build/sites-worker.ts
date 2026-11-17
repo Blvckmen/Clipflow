@@ -39,6 +39,9 @@ export default {
   // Cron trigger (every minute when deployed with scripts/deploy-cloudflare.mjs): publish approved clips.
   scheduled(controller: ScheduledController, env: Cloudflare.Env, ctx: ExecutionContext) {
     // The run's scheduled time is "now" for the publisher (also lets local tests simulate later runs).
-    ctx.waitUntil(runPublisher(env, controller.scheduledTime).catch(error => console.error("Publisher run failed:", error)));
+    ctx.waitUntil(Promise.allSettled([
+      runPublisher(env, controller.scheduledTime).catch(error => console.error("Publisher run failed:", error)),
+      runAutoCopy(env, controller.scheduledTime).catch(error => console.error("Automatic AI copy run failed:", error)),
+    ]));
   },
 };
