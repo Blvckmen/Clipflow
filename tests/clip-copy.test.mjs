@@ -25,3 +25,13 @@ test("worker uploads a transcript and avoids a second transcription pass",()=>{
  assert.match(media,/transcript=segments.flatMap/);
  assert.match(worker,/transcript:row.transcript\|\|''/);
 });
+
+test("Cloudflare Workers AI is the default without an OpenAI key",()=>{
+ const provider=read("lib/ai-copy.ts");
+ const deploy=read("scripts/deploy-cloudflare.mjs");
+ const vite=read("vite.config.ts");
+ assert.match(provider,/AI_PROVIDER==="openai"\?"openai":"cloudflare"/);
+ assert.match(provider,/env\.AI!\.run/);
+ assert.match(deploy,/ai: \{ binding: "AI" \}/);
+ assert.match(vite,/ai: \{ binding: "AI" \}/);
+});

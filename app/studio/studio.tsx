@@ -6,17 +6,17 @@ type Platform="TikTok"|"Instagram"|"YouTube"|"Facebook"|"X";
 type Tone="curiosity"|"funny"|"dramatic"|"informative";
 type Clip={id:string;duration:number;reason:string|null;streamer:string|null;source:string|null};
 type Draft={transcript:string;platform:Platform;tone:Tone;hooks:string[];captions:string[];selectedHook:string;selectedCaption:string;status:"draft"|"approved"};
-type Payload={clip:Clip;copy:Draft;aiConfigured:boolean;error?:string};
+type Payload={clip:Clip;copy:Draft;aiConfigured:boolean;aiProvider?:"cloudflare"|"openai";error?:string};
 const blank:Draft={transcript:"",platform:"TikTok",tone:"curiosity",hooks:[],captions:[],selectedHook:"",selectedCaption:"",status:"draft"};
 const clipUuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function CopyStudio(){
  const [clips,setClips]=useState<{id:string;streamer:string|null}[]>([]);
- const [id,setId]=useState(""),[clip,setClip]=useState<Clip|null>(null),[copy,setCopy]=useState<Draft>(blank),[ai,setAi]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(""),[message,setMessage]=useState("");
+ const [id,setId]=useState(""),[clip,setClip]=useState<Clip|null>(null),[copy,setCopy]=useState<Draft>(blank),[ai,setAi]=useState(false),[aiProvider,setAiProvider]=useState<"cloudflare"|"openai">("cloudflare"),[busy,setBusy]=useState(false),[error,setError]=useState(""),[message,setMessage]=useState("");
  const fetchClip=useCallback(async(clipId:string)=>{
   if(!clipUuid.test(clipId))return;
   setBusy(true);setError("");setMessage("");
-  try{const r=await fetch("/api/clips/"+clipId+"/copy");const p=await r.json() as Payload;if(!r.ok)throw Error(p.error||"Unable to load clip");setClip(p.clip);setCopy(p.copy);setAi(p.aiConfigured);}
+  try{const r=await fetch("/api/clips/"+clipId+"/copy");const p=await r.json() as Payload;if(!r.ok)throw Error(p.error||"Unable to load clip");setClip(p.clip);setCopy(p.copy);setAi(p.aiConfigured);setAiProvider(p.aiProvider||"cloudflare");}
   catch(e){setClip(null);setError(e instanceof Error?e.message:"Unable to load clip");}
   finally{setBusy(false);}
  },[]);
@@ -48,7 +48,7 @@ export function CopyStudio(){
    {clip&&<p style={{marginTop:12,fontSize:13}}>Source: {clip.streamer||"Unknown"} · {clip.source||"Stream"} · {clip.duration} seconds · {clip.reason||"Highlight"} {copy.status==="approved"?" · Approved":" · Draft"}</p>}
   </section>
   {clip&&<><section className="panel" style={{padding:24,marginBottom:18}}>
-   <h2 style={{marginBottom:10}}>1. Clip transcript</h2>
+   <h2 style={{marginBottom:10}}>1. Clip transcript</h2><p style={{fontSize:12,marginBottom:10}}>AI provider: {aiProvider==="cloudflare"?"Cloudflare Workers AI (default)":"OpenAI (optional)"}</p>
    <p style={{marginBottom:12,fontSize:13}}>Captured automatically from the clip worker when available. Older clips may need their transcript pasted manually. Check accuracy before generating.</p>
    <textarea aria-label="Clip transcript" rows={6} maxLength={6000} value={copy.transcript} onChange={e=>update({transcript:e.target.value})} style={{width:"100%",background:"#171d23",border:"1px solid #39414c",borderRadius:8,color:"white",padding:12,resize:"vertical"}} placeholder="Paste what was said in the clip..."/>
    <div style={{display:"flex",gap:12,flexWrap:"wrap",marginTop:16}}>
@@ -56,7 +56,7 @@ export function CopyStudio(){
     <label>Style <select value={copy.tone} onChange={e=>update({tone:e.target.value as Tone})}>{["curiosity","funny","dramatic","informative"].map(t=><option key={t}>{t}</option>)}</select></label>
    </div>
    <button className="primary" onClick={()=>void generate()} disabled={busy||!ai||copy.transcript.trim().length<12} style={{marginTop:17}}>{busy?<Loader2 size={16}/>:<Sparkles size={16}/>} Generate hooks & captions</button>
-   {!ai&&<p style={{marginTop:10,fontSize:13}}>AI generation is unavailable until OPENAI_API_KEY is configured. You can still write and save copy manually.</p>}
+   {!ai&&<p style={{marginTop:10,fontSize:13}}>AI generation is unavailable. {aiProvider==="cloudflare"?"Add a Cloudflare Workers AI binding named AI; no OpenAI API key is needed.":"Add an OpenAI API key or switch AI_PROVIDER back to cloudflare."} You can still write and save copy manually.</p>}
   </section>
   <section className="panel" style={{padding:24,marginBottom:18}}>
    <h2 style={{marginBottom:12}}>2. On-screen hook</h2>
