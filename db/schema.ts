@@ -43,5 +43,5 @@ export const clipCopy=sqliteTable("clip_copy",{
  clipId:text("clip_id").primaryKey(),owner:text("owner").notNull(),transcript:text("transcript").notNull().default(""),
  platform:text("platform").notNull().default("TikTok"),tone:text("tone").notNull().default("curiosity"),
  hooksJson:text("hooks_json").notNull().default("[]"),captionsJson:text("captions_json").notNull().default("[]"),
- selectedHook:text("selected_hook"),selectedCaption:text("selected_caption"),status:text("status").notNull().default("draft"),updatedAt:text("updated_at").notNull(),
+ selectedHook:text("selected_hook"),selectedCaption:text("selected_caption"),status:text("status").notNull().default("draft"),autoAttempts:integer("auto_attempts").notNull().default(0),updatedAt:text("updated_at").notNull(),
 },t=>[index("clip_copy_owner").on(t.owner)]);
