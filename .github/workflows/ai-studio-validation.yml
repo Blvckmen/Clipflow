@@ -34,13 +34,31 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Check TypeScript
         run: npx tsc --noEmit
-      - name: Run API and unit tests
+      - name: Run isolated unit tests
         run: |
           npm run test:unit
-          npm run test:api
           node --test tests/clip-copy.test.mjs
-      - name: Worker tests
-        run: |
           node --test worker/test/*.test.mjs
       - name: Production build
         run: npm run build
+      - name: Set up local D1 test database
+        run: |
+          for migration in drizzle/0*.sql; do
+            echo "Applying $migration"
+            node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file "$migration"
+          done
+      - name: Start local application for API tests
+        run: |
+          npm run dev -- --port 5199 > /tmp/clipflow-dev.log 2>&1 &
+          echo $! > /tmp/clipflow-dev.pid
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:5199/api/dashboard > /dev/null; then exit 0; fi
+            sleep 2
+          done
+          cat /tmp/clipflow-dev.log
+          exit 1
+      - name: Run API integration tests
+        run: npm run test:api
+      - name: Print dev server logs on failure
+        if: failure()
+        run: cat /tmp/clipflow-dev.log || true
