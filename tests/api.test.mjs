@@ -253,6 +253,16 @@ describe("clip editor", () => {
   const save = (id, body) => fetch(base + "/api/clips/" + id + "/edit", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body) });
   const render = (id, bytes, rev, sha = sha256(bytes)) => worker("/api/worker/clips/" + id + "/render", { method: "PUT", headers: { "content-type": "video/mp4", "x-edit-rev": String(rev), "x-clip-sha256": sha }, body: bytes });
 
+  test("the webcam box the worker found comes back with the clip's source, for the facecam layouts", async () => {
+    const face = { x: 0, y: 0.33, w: 0.26, h: 0.5 };
+    const { clip: c, response } = await reportClip(Buffer.alloc(3000, 4), { edit: { ...firstEdit, frame: { ...firstEdit.frame, mode: "cam", facecam: { box: face } } }, transcript: words, source: { width: 1920, height: 1080, duration: 42, sha: sha256(source), size: source.length, face } });
+    assert.equal(response.status, 200);
+    const opened = await (await edit(c.id)).json();
+    assert.deepEqual([opened.source.face, opened.edit.frame.mode, opened.edit.frame.facecam.box], [face, "cam", face]);
+    assert.equal((await reportClip(Buffer.alloc(3000, 5), { edit: firstEdit, transcript: [], source: { width: 1920, height: 1080, duration: 42, sha: sha256(source), size: source.length, face: { x: 2, y: 0, w: 1, h: 1 } } })).response.status, 400, "a box outside the frame is refused");
+    await dash({ action: "deleteClip", id: c.id });
+  });
+
   test("a clip reported with its source and transcript can be opened in the editor", async () => {
     const reported = await reportClip(file, { edit: firstEdit, transcript: words, signals: { energy: [0.1, 1], chat: [0, 4] }, source: { width: 1920, height: 1080, duration: 42, sha: sha256(source), size: source.length } });
     clip = reported.clip;

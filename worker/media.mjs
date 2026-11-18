@@ -56,7 +56,9 @@ export function sourceSignals(energy,chat,from,to) {
 // With `exact` (a moment picked by hand in a recording) the clip is exactly [focusFrom, focusTo]: no window search
 // and no sentence snapping. `hint` (streamer name, stream title) helps Whisper spell them; `writer` (see writer.mjs)
 // may write the hook and post caption from the clip's transcript, else the transcript-based ones are used.
-export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false,hint="",writer=null},dir,signal) {
+// `findFacecam(sourcePath, signal)` (see facecam.py) finds the streamer's webcam overlay: it's kept with the source for
+// the editor, and fills in the webcam box when the clip's look uses a facecam layout and has none yet.
+export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false,hint="",writer=null,findFacecam=null},dir,signal) {
   const source=join(dir,"source.mp4"), energyFile=join(dir,"energy.json"), wordsFile=join(dir,"words.json");
   await mkdir(dir,{recursive:true});
   try {
@@ -106,12 +108,14 @@ export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infi
       withAi={...initialEdit,hook:{...initialEdit.hook,text,seconds}};
     }
     let edit=applyAutomaticHook(withAi,words,{enabled:hooks});
+    const face=findFacecam?await findFacecam(source,signal).catch(()=>null):null;
+    if(face&&(edit.frame.mode==="cam"||edit.frame.mode==="pip")&&!edit.frame.facecam?.box)edit={...edit,frame:{...edit.frame,facecam:{...edit.frame.facecam,box:face}}};
     // The background picked for this clip is kept in its edit, so re-renders and the editor use the same one.
     const bg=background?await background(edit):null;
     if(bg?.ref&&!edit.frame.background)edit={...edit,frame:{...edit.frame,background:bg.ref}};
     const rendered=await renderClip(source,{edit,words,width:info.width,height:info.height,background:bg},join(dir,"clip.mp4"),signal);
     const sourceBytes=await readFile(source);
-    const meta={edit,words,...(ai?.caption&&{postCaption:ai.caption}),signals:sourceSignals(energy,chat,from,to),source:{width:info.width,height:info.height,duration:Math.round((info.duration||to-from)*100)/100},sourceSha:clipHash(sourceBytes),sourceSize:sourceBytes.length};
+    const meta={edit,words,...(ai?.caption&&{postCaption:ai.caption}),signals:sourceSignals(energy,chat,from,to),source:{width:info.width,height:info.height,duration:Math.round((info.duration||to-from)*100)/100,face},sourceSha:clipHash(sourceBytes),sourceSize:sourceBytes.length};
     await writeFile(join(dir,"meta.json"),JSON.stringify(meta));
     return {...rendered,start,end};
   } finally {

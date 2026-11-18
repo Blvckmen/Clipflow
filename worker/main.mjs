@@ -230,7 +230,7 @@ async function processJobs() {
       const writer = ({ transcript, from, to }) => writeClipText({ transcript, streamer: who.name, platform: who.platform, title,
         chat: job.chatLines?.length ? chatSample(job.chatLines, job.rawStartMs + from * 1000, job.rawStartMs + to * 1000 + 10_000) : [] }, { signal: controller.signal });
       const result = await processWindow(job.raw, { settings: job.settings, style: job.style, focusFrom: job.focusFrom, focusTo: job.focusTo, chat: job.chat, exact: !!job.exact,
-        hint: [who.name, title].filter(Boolean).join(". "), writer: writerEnabled() ? writer : null, background: edit => backgroundFor(edit, job.id, title ?? "") }, job.dir, controller.signal);
+        hint: [who.name, title].filter(Boolean).join(". "), writer: writerEnabled() ? writer : null, findFacecam, background: edit => backgroundFor(edit, job.id, title ?? "") }, job.dir, controller.signal);
       store.ready(job.id, result.sha, Math.min(90, Math.max(15, Math.round(result.end - result.start))));
       made = true;
       console.log("Clip ready", job.id, "from", job.streamer.url, "(" + reasonLabel[job.reason] + ", " + Math.round(result.end - result.start) + "s)");
@@ -491,6 +491,28 @@ async function pruneRecordings() {
 // The split-screen background for a clip ({ path, start }), downloaded the first time it is needed. Null when the
 // clip isn't split screen or the library is empty; a background that can't be fetched falls back to the blurred
 // fill rather than failing the clip.
+// The streamer's webcam overlay in a clip's source (fractions of the frame), or null. Uses OpenCV's YuNet face model,
+// downloaded once into the models folder. Never fails a clip: no OpenCV, no model or no overlay all give null.
+const FACE_MODEL_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx";
+const faceModel = join(env.WHISPER_DIR || join(dataDir, "models"), "face_detection_yunet_2023mar.onnx");
+let faceModelReady = null;
+async function findFacecam(source, signal) {
+  faceModelReady ??= (async () => {
+    if ((await stat(faceModel).catch(() => null))?.size > 100_000) return true;
+    const response = await fetch(FACE_MODEL_URL, { signal: AbortSignal.timeout(60_000) });
+    if (!response.ok) throw new Error("face model download HTTP " + response.status);
+    await mkdir(dirname(faceModel), { recursive: true });
+    await writeFile(faceModel, Buffer.from(await response.arrayBuffer()));
+    return true;
+  })().catch(error => { faceModelReady = null; console.warn("Facecam detection unavailable:", error.message); return false; });
+  if (!await faceModelReady) return null;
+  const out = source.replace(/\.mp4$/, "") + ".face.json";
+  try {
+    await command(python, [fileURLToPath(new URL("./facecam.py", import.meta.url)), source, out, faceModel], { signal, timeout: 60_000 }).done;
+    return (await readJson(out, null))?.box ?? null;
+  } catch { return null; } finally { await rm(out, { force: true }); }
+}
+
 // `title`: the stream title, for backgrounds named after what's being streamed. A library background picked here is
 // returned as `ref` so the clip keeps it (it's pinned into the clip's edit).
 async function backgroundFor(edit, clipId, title = "") {

@@ -3,16 +3,18 @@
 // worker renders with, so what you see is what gets posted. Saving stores the edit; the worker re-renders it.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, Scissors, Sparkles, Undo2 } from "lucide-react";
-import { ANIMATIONS, DEFAULT_SPLIT, FONTS, H, MAX_CLIP, MIN_CLIP, PRESETS, W, activeCue, cues, layout, splitAreas } from "../worker/edit.mjs";
+import { ANIMATIONS, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, H, MAX_CLIP, MIN_CLIP, PRESETS, W, activeCue, camAreas, cues, facecamPlacement, layout, splitAreas } from "../worker/edit.mjs";
 
 import { applyAutomaticHook } from "../worker/hooks.mjs";
 
 type Split = { share: number; top: "stream" | "background"; divider: string | null; volume: number };
-type Frame = { mode: "blur" | "crop" | "fit" | "split"; zoom: number; x: number; y: number; background?: string | null; split?: Split };
+type CamBox = { x: number; y: number; w: number; h: number };
+type Facecam = { box: CamBox | null; share: number; corner: "tl" | "tr" | "bl" | "br"; size: number };
+type Frame = { mode: "blur" | "crop" | "fit" | "split" | "cam" | "pip"; zoom: number; x: number; y: number; background?: string | null; split?: Split; facecam?: Facecam };
 type Captions = { on: boolean; preset: string; font: string; size: number; color: string; highlight: string; outline: number; outlineColor: string; box: boolean; boxColor: string; uppercase: boolean; animation: string; words: number; y: number; mask: boolean };
 type Word = [number, number, string];
 export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { text: string; seconds: number; color: string; bg: string }; progress: { on: boolean; color: string }; words?: Word[] };
-type Bundle = { id: string; streamerId: string; streamer: string | null; edit: Edit; rev: number; words: Word[]; signals: { energy: number[]; chat: number[] } | null; source: { width: number; height: number; duration: number }; legacy: boolean; sourceStored: boolean; render: { state: string | null; error: string | null; at: string | null }; createdAt: string; caption: { text: string | null; source: string | null; error: string | null; ai: boolean } };
+type Bundle = { id: string; streamerId: string; streamer: string | null; edit: Edit; rev: number; words: Word[]; signals: { energy: number[]; chat: number[] } | null; source: { width: number; height: number; duration: number; face?: CamBox | null }; legacy: boolean; sourceStored: boolean; render: { state: string | null; error: string | null; at: string | null }; createdAt: string; caption: { text: string | null; source: string | null; error: string | null; ai: boolean } };
 type Tab = "frame" | "captions" | "extras" | "transcript" | "post";
 
 const animationLabels: Record<string, string> = { none: "Static", pop: "Pop in", karaoke: "Karaoke", word: "One word at a time" };
@@ -143,6 +145,16 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
           ctx.fillText(backgroundsRef.current.length ? "Background loading…" : "Upload background videos or images in Settings", W / 2, sb.y + sb.h / 2);
         }
         if (divider) { ctx.fillStyle = divider; ctx.fillRect(0, areas.seam - 3, W, 6); }
+      } else if (v.readyState >= 2 && (e.frame.mode === "cam" || e.frame.mode === "pip") && e.frame.facecam?.box) {
+        // Facecam layouts: the game (the stream, cut to its part) and the webcam cut out of the same stream.
+        const fp = facecamPlacement(e.frame, sw, sh)!, game = e.frame.mode === "cam" ? camAreas(e.frame).game : { y: 0, h: H };
+        ctx.filter = look;
+        ctx.save(); ctx.beginPath(); ctx.rect(0, game.y, W, game.h); ctx.clip(); ctx.drawImage(v, box.x, box.y + game.y, box.w, box.h); ctx.restore();
+        if (e.frame.mode === "pip") { ctx.fillStyle = "#ffffff"; ctx.fillRect(fp.x - 4, fp.y - 4, fp.w + 8, fp.h + 8); }
+        ctx.drawImage(v, fp.sx, fp.sy, fp.sw, fp.sh, fp.x, fp.y, fp.w, fp.h);
+        ctx.filter = "none";
+        const divider = e.frame.split?.divider;
+        if (e.frame.mode === "cam" && divider) { ctx.fillStyle = divider; ctx.fillRect(0, camAreas(e.frame).seam - 3, W, 6); }
       } else if (v.readyState >= 2) {
         if (e.frame.mode === "blur") {
           const cover = Math.max(W / sw, H / sh), cw = sw * cover, ch = sh * cover;
@@ -351,7 +363,38 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
             </div>
           </>}
           {tab === "frame" && <>
-            <div className="segmented">{(["blur", "crop", "fit", "split"] as const).map(m => <button key={m} className={edit.frame.mode === m ? "active" : ""} onClick={() => change("frame-mode", e => ({ ...e, frame: { ...e.frame, mode: m }, captions: m === "split" && e.captions.y === 0.72 ? { ...e.captions, y: 0.5 } : m !== "split" && e.frame.mode === "split" && e.captions.y === 0.5 ? { ...e.captions, y: 0.72 } : e.captions }))}>{{ blur: "Blurred fill", crop: "Fill (crop)", fit: "Fit with bars", split: "Split screen" }[m]}</button>)}</div>
+            <div className="segmented">{(["blur", "crop", "fit", "split", "cam", "pip"] as const).map(m => <button key={m} className={edit.frame.mode === m ? "active" : ""} onClick={() => change("frame-mode", e => {
+              const facecam = { ...DEFAULT_FACECAM, ...e.frame.facecam } as Facecam;
+              if ((m === "cam" || m === "pip") && !facecam.box) facecam.box = bundle.source.face ?? null;
+              // Captions follow the seam in the layouts that have one, and go back to the lower third otherwise.
+              const seam = m === "split" ? splitAreas(e.frame).seam / H : m === "cam" ? camAreas({ facecam }).seam / H : 0.72;
+              const atSeam = Math.abs(e.captions.y - 0.72) < 0.01 || (e.frame.mode === "split" && Math.abs(e.captions.y - splitAreas(e.frame).seam / H) < 0.01) || (e.frame.mode === "cam" && Math.abs(e.captions.y - camAreas(e.frame).seam / H) < 0.01);
+              return { ...e, frame: { ...e.frame, mode: m, facecam }, captions: atSeam ? { ...e.captions, y: seam } : e.captions };
+            })}>{{ blur: "Blurred fill", crop: "Fill (crop)", fit: "Fit with bars", split: "Split screen", cam: "Facecam + game", pip: "Facecam in corner" }[m]}</button>)}</div>
+            {(edit.frame.mode === "cam" || edit.frame.mode === "pip") && (() => {
+              const fc = { ...DEFAULT_FACECAM, ...edit.frame.facecam } as Facecam, b = fc.box;
+              const setCam = (value: Partial<Facecam>) => change("frame-facecam" + Object.keys(value).join(), e => {
+                const facecam = { ...DEFAULT_FACECAM, ...e.frame.facecam, ...value } as Facecam;
+                const moved = value.share !== undefined && e.frame.mode === "cam";
+                return { ...e, frame: { ...e.frame, facecam }, captions: moved ? { ...e.captions, y: camAreas({ facecam }).seam / H } : e.captions };
+              });
+              const setBox = (value: Partial<CamBox>) => { const nb = { ...(b ?? { x: 0, y: 0, w: 0.3, h: 0.4 }), ...value }; nb.w = Math.min(1, Math.max(0.05, nb.w)); nb.h = Math.min(1, Math.max(0.05, nb.h)); nb.x = Math.min(1 - nb.w, Math.max(0, nb.x)); nb.y = Math.min(1 - nb.h, Math.max(0, nb.y)); setCam({ box: nb }); };
+              return <div className="facecam-controls">
+                <small>{b ? (bundle.source.face && b === bundle.source.face ? "Webcam found automatically. " : "") + "Adjust the box until only the webcam shows." : bundle.source.face === undefined ? "This clip was captured before webcam detection. Place the box over the webcam." : "No webcam overlay was found in this clip (or it fills the picture). Place the box over the webcam, or pick another framing."}
+                  {bundle.source.face && b !== bundle.source.face && <> <button type="button" className="text-button" onClick={() => setCam({ box: bundle.source.face! })}>Use the detected webcam</button></>}</small>
+                <div className="control-grid">
+                  <label>Webcam left <span>{Math.round((b?.x ?? 0) * 100)}%</span><input type="range" min={0} max={0.95} step={0.005} value={b?.x ?? 0} onChange={e => setBox({ x: Number(e.target.value) })} /></label>
+                  <label>Webcam top <span>{Math.round((b?.y ?? 0) * 100)}%</span><input type="range" min={0} max={0.95} step={0.005} value={b?.y ?? 0} onChange={e => setBox({ y: Number(e.target.value) })} /></label>
+                  <label>Webcam width <span>{Math.round((b?.w ?? 0.3) * 100)}%</span><input type="range" min={0.05} max={1} step={0.005} value={b?.w ?? 0.3} onChange={e => setBox({ w: Number(e.target.value) })} /></label>
+                  <label>Webcam height <span>{Math.round((b?.h ?? 0.4) * 100)}%</span><input type="range" min={0.05} max={1} step={0.005} value={b?.h ?? 0.4} onChange={e => setBox({ h: Number(e.target.value) })} /></label>
+                  {edit.frame.mode === "cam" ? <label>Facecam strip <span>{Math.round(fc.share * 100)}%</span><input type="range" min={0.2} max={0.5} step={0.01} value={fc.share} onChange={e => setCam({ share: Number(e.target.value) })} /></label>
+                    : <><label>Corner<select value={fc.corner} onChange={e => setCam({ corner: e.target.value as Facecam["corner"] })}><option value="tl">Top left</option><option value="tr">Top right</option><option value="bl">Bottom left</option><option value="br">Bottom right</option></select></label>
+                      <label>Box size <span>{Math.round(fc.size * 100)}%</span><input type="range" min={0.2} max={0.5} step={0.01} value={fc.size} onChange={e => setCam({ size: Number(e.target.value) })} /></label></>}
+                  {edit.frame.mode === "cam" && <label>Divider line<div className="color-pair"><input type="checkbox" checked={!!edit.frame.split?.divider} onChange={e => setSplit({ divider: e.target.checked ? "#ffffff" : null })} />{edit.frame.split?.divider && <input type="color" value={edit.frame.split.divider} onChange={e => setSplit({ divider: e.target.value })} />}</div></label>}
+                </div>
+                <small>Zoom and position below move the game.</small>
+              </div>;
+            })()}
             {edit.frame.mode === "split" && <label className="wide">Background
               <select value={edit.frame.background ?? ""} onChange={e => set("frame", { background: e.target.value || null })}>
                 <option value="">Picked from your library for this clip</option>

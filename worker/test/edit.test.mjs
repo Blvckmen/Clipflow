@@ -141,3 +141,30 @@ test("split screen: proportions, order, a divider and the background's sound", a
   assert.match(filterGraph(edit, { width: 1920, height: 1080 }, null, { background: true, audio: { source: false, background: true } }), /\[1:a\]volume=0\.3,aresample=48000,atrim=duration=10/, "background sound alone, cut to the clip");
   assert.doesNotMatch(filterGraph(edit, { width: 1920, height: 1080 }, null, { background: true, audio: { source: true, background: false } }), /\[aout\]/, "a silent background adds nothing");
 });
+
+test("facecam layouts: the webcam across the top or in a corner, cut from the same stream", async () => {
+  const { filterGraph, normalizeStyle, defaultStyle, facecamPlacement, camAreas } = await import("../edit.mjs");
+  assert.deepEqual(normalizeStyle({ frame: { mode: "cam" } }).frame.facecam, { box: null, share: 0.35, corner: "tr", size: 0.36 }, "older styles get the defaults");
+  assert.throws(() => normalizeStyle({ frame: { mode: "pip", facecam: { corner: "middle" } } }), /Facecam corner/);
+  const box = normalizeStyle({ frame: { mode: "cam", facecam: { box: { x: 0.9, y: 0.2, w: 0.3, h: 0.4 } } } }).frame.facecam.box;
+  assert.ok(Math.abs(box.x - 0.7) < 1e-9, "the box is kept inside the stream");
+  assert.equal(defaultStyle({ framing: "cam" }).captions.y, 0.35, "captions on the seam");
+  const style = defaultStyle({ framing: "cam" }), cam = { ...style.frame, facecam: { ...style.frame.facecam, box: { x: 0, y: 0.33, w: 0.26, h: 0.5 } } };
+  assert.deepEqual(camAreas(cam), { cam: { y: 0, h: 448 }, game: { y: 448, h: 832 }, seam: 448 });
+  const top = facecamPlacement(cam, 1280, 720);
+  assert.deepEqual([top.x, top.y, top.w, top.h], [0, 0, 720, 448]);
+  assert.ok(Math.abs(top.sw / top.sh - 720 / 448) < 0.02, "cut to the strip's shape");
+  assert.ok(top.sx >= 0 && top.sy >= 0.33 * 720 - 1 && top.sx + top.sw <= 0.26 * 1280 + 2, "from inside the box");
+  const edit = { ...style, frame: { ...cam, split: { ...cam.split, divider: "#ffffff" } }, trim: { start: 0, end: 8 }, hook: { text: "", seconds: 3, color: "#111111", bg: "#ffffff" } };
+  const g = filterGraph(edit, { width: 1280, height: 720 }, null);
+  assert.match(g, /\[0:v\]split\[g\]\[c\]/);
+  assert.match(g, /\[g\]scale=\d+:\d+,crop=720:832:/);
+  assert.match(g, /\[c\]crop=\d+:\d+:\d+:\d+,scale=720:448,setsar=1\[cam\]/);
+  assert.match(g, /\[cam\]\[game\]vstack=inputs=2,drawbox=x=0:y=445/);
+  const pip = { ...edit, frame: { ...cam, mode: "pip", facecam: { ...cam.facecam, corner: "bl", size: 0.4 } } };
+  const corner = facecamPlacement(pip.frame, 1280, 720);
+  assert.deepEqual([corner.x, corner.w], [28, 288]);
+  assert.equal(corner.y + corner.h, 1280 - 230, "kept clear of the captions");
+  assert.match(filterGraph(pip, { width: 1280, height: 720 }, null), /pad=296:\d+:4:4:color=white\[cam\];\[game\]\[cam\]overlay=24:/);
+  assert.match(filterGraph({ ...edit, frame: { ...cam, facecam: { ...cam.facecam, box: null } } }, { width: 1280, height: 720 }, null), /boxblur/, "no webcam box: blurred fill");
+});

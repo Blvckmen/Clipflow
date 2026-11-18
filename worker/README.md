@@ -16,7 +16,7 @@ docker run -d --name clipflow-worker -v clipflow-data:/data \
   -e CLIPFLOW_URL=https://your-site.example -e CLIPFLOW_TOKEN=cfw_... clipflow-worker
 ```
 
-Without Docker, install Node 24+, ffmpeg, streamlink, and `pip install faster-whisper`,
+Without Docker, install Node 24+, ffmpeg, streamlink, and `pip install faster-whisper opencv-python-headless`,
 then run `node main.mjs` with the same variables plus `DATA_DIR` pointing to a writable folder.
 
 ### Windows, always on

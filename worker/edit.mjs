@@ -17,7 +17,12 @@ export const FONTS = ["Arial", "Impact", "Verdana", "Trebuchet MS", "Georgia", "
 // which is on top), divider (a #rrggbb line on the seam, or null) and volume (the background video's sound, 0-1). frame.background is a library video's id, "clip:<id>" for another gallery clip, or null to let the worker
 // pick a library video for the clip (the same one each time it renders that clip). Only videos at least as long as
 // the clip are used; longer ones are cut to its length.
-export const FRAMINGS = ["blur", "crop", "fit", "split"];
+// "cam": the streamer's webcam (frame.facecam.box, a rectangle of the stream as fractions) across the top
+// (facecam.share of the height) and the stream cut to fill the rest. "pip": the stream fills the frame and the webcam
+// sits in a bordered box in a corner (facecam.corner, facecam.size of the width). Without a box both render as "blur".
+export const FRAMINGS = ["blur", "crop", "fit", "split", "cam", "pip"];
+export const CORNERS = ["tl", "tr", "bl", "br"];
+export const DEFAULT_FACECAM = { box: null, share: 0.35, corner: "tr", size: 0.36 };
 export const ANIMATIONS = ["none", "pop", "karaoke", "word"];
 export const MIN_CLIP = 5, MAX_CLIP = 90;
 // How long a hook title stays up unless the look says otherwise; up to the whole clip.
@@ -39,10 +44,10 @@ export function defaultStyle({ framing = "blur", captions = true } = {}) {
   const preset = { ...PRESETS.bold };
   delete preset.label;
   return {
-    frame: { mode: FRAMINGS.includes(framing) ? framing : "blur", zoom: 1, x: 0, y: 0, background: null, split: { ...DEFAULT_SPLIT } },
+    frame: { mode: FRAMINGS.includes(framing) ? framing : "blur", zoom: 1, x: 0, y: 0, background: null, split: { ...DEFAULT_SPLIT }, facecam: { ...DEFAULT_FACECAM } },
     look: { brightness: 1, contrast: 1, saturation: 1 },
     // Split screen puts captions on the seam between the two videos.
-    captions: { on: !!captions, preset: "bold", ...preset, y: framing === "split" ? 0.5 : 0.72, mask: false },
+    captions: { on: !!captions, preset: "bold", ...preset, y: framing === "split" ? 0.5 : framing === "cam" ? DEFAULT_FACECAM.share : 0.72, mask: false },
     hook: { color: "#111111", bg: "#ffffff", seconds: DEFAULT_HOOK_SECONDS },
     progress: { on: false, color: "#bcfa76" },
   };
@@ -57,6 +62,12 @@ const color = (v, name) => { if (typeof v !== "string" || !/^#[0-9a-f]{6}$/i.tes
 const pick = (v, list, name) => { if (!list.includes(v)) fail(name + " is not a supported value"); return v; };
 const text = (v, max, name) => { if (typeof v !== "string") fail(name + " must be text"); return v.replace(/[\r\n]+/g, " ").replace(/[{}\\]/g, "").slice(0, max); };
 const obj = (v, name) => { if (!v || typeof v !== "object" || Array.isArray(v)) fail(name + " is missing"); return v; };
+// The webcam's rectangle in the stream, as fractions of its width and height (null: not set).
+const camBox = v => {
+  if (v === null || v === undefined) return null;
+  const b = obj(v, "Facecam box"), w = num(b.w, 0.05, 1, "Facecam width"), h = num(b.h, 0.05, 1, "Facecam height");
+  return { x: num(b.x, 0, 1 - w, "Facecam left"), y: num(b.y, 0, 1 - h, "Facecam top"), w, h };
+};
 // A background video: a library video's id, or "clip:<id>" for another clip from the gallery.
 const ref = (v, name) => { if (v === null || v === undefined) return null; if (typeof v !== "string" || !/^(clip:)?[0-9a-f-]{36}$/i.test(v)) fail(name + " is not valid"); return v.toLowerCase(); };
 
@@ -65,9 +76,11 @@ export function normalizeStyle(input, base = defaultStyle()) {
   const s = obj(input, "Style");
   const f = { ...base.frame, ...(s.frame ?? {}) }, sp = { ...DEFAULT_SPLIT, ...(base.frame.split ?? {}), ...(s.frame?.split ?? {}) }, l = { ...base.look, ...(s.look ?? {}) }, c = { ...base.captions, ...(s.captions ?? {}) };
   const h = { ...base.hook, ...(s.hook ?? {}) }, p = { ...base.progress, ...(s.progress ?? {}) };
+  const fc = { ...DEFAULT_FACECAM, ...(base.frame.facecam ?? {}), ...(s.frame?.facecam ?? {}) };
   return {
     frame: { mode: pick(f.mode, FRAMINGS, "Framing"), zoom: num(f.zoom, 1, 3, "Zoom"), x: num(f.x, -1, 1, "Horizontal position"), y: num(f.y, -1, 1, "Vertical position"), background: ref(f.background, "Background video"),
-      split: { share: num(sp.share, 0.3, 0.8, "Stream share"), top: pick(sp.top, SPLIT_TOPS, "Split order"), divider: sp.divider === null ? null : color(sp.divider, "Divider colour"), volume: num(sp.volume, 0, 1, "Background volume") } },
+      split: { share: num(sp.share, 0.3, 0.8, "Stream share"), top: pick(sp.top, SPLIT_TOPS, "Split order"), divider: sp.divider === null ? null : color(sp.divider, "Divider colour"), volume: num(sp.volume, 0, 1, "Background volume") },
+      facecam: { box: camBox(fc.box), share: num(fc.share, 0.2, 0.5, "Facecam height"), corner: pick(fc.corner, CORNERS, "Facecam corner"), size: num(fc.size, 0.2, 0.5, "Facecam size") } },
     look: { brightness: num(l.brightness, 0.5, 1.5, "Brightness"), contrast: num(l.contrast, 0.5, 1.5, "Contrast"), saturation: num(l.saturation, 0, 2, "Saturation") },
     captions: {
       on: bool(c.on, "Captions"), preset: typeof c.preset === "string" && PRESETS[c.preset] ? c.preset : "custom",
@@ -128,11 +141,37 @@ export function splitAreas(frame) {
   const streamH = even(H * Math.min(0.8, Math.max(0.3, sp.share))), bgH = H - streamH, streamTop = sp.top !== "background";
   return { stream: { y: streamTop ? 0 : bgH, h: streamH }, background: { y: streamTop ? streamH : 0, h: bgH }, seam: streamTop ? streamH : bgH };
 }
+// Facecam + game: the webcam strip across the top and the game below it.
+export function camAreas(frame) {
+  const camH = even(H * Math.min(0.5, Math.max(0.2, frame.facecam?.share ?? DEFAULT_FACECAM.share)));
+  return { cam: { y: 0, h: camH }, game: { y: camH, h: H - camH }, seam: camH };
+}
+// Where the webcam is cut from the stream (sx, sy, sw, sh in source pixels) and drawn on the canvas (x, y, w, h):
+// across the top in "cam" mode (cut to that strip's shape, centred on the box), or as a corner box in "pip" mode
+// (the box's own shape, frame.facecam.size of the width, kept clear of the hook at the top and captions low down).
+export const PIP_MARGIN = 28, PIP_TOP = 170, PIP_BOTTOM = 230;
+export function facecamPlacement(frame, width, height) {
+  const fc = { ...DEFAULT_FACECAM, ...(frame.facecam ?? {}) }, b = fc.box;
+  if (!b) return null;
+  const SW = width > 0 ? width : 1280, SH = height > 0 ? height : 720;
+  let sx = b.x * SW, sy = b.y * SH, bw = b.w * SW, bh = b.h * SH;
+  if (frame.mode === "cam") {
+    const { cam } = camAreas(frame), want = W / cam.h;
+    // Cut the box to the strip's shape, staying inside it: centred sideways, and trimmed mostly from the bottom (the
+    // face sits in the upper part of a head-and-shoulders box; what's below is often the stream's own UI).
+    if (bw / bh > want) { const nw = bh * want; sx += (bw - nw) / 2; bw = nw; } else { const nh = bw / want; sy += (bh - nh) * 0.25; bh = nh; }
+    return { sx: Math.round(sx), sy: Math.round(sy), sw: even(bw), sh: even(bh), x: 0, y: cam.y, w: W, h: cam.h };
+  }
+  const w = even(W * fc.size), h = even(w * bh / bw);
+  const x = fc.corner.endsWith("l") ? PIP_MARGIN : W - PIP_MARGIN - w, y = fc.corner.startsWith("t") ? PIP_TOP : H - PIP_BOTTOM - h;
+  return { sx: Math.round(sx), sy: Math.round(sy), sw: even(bw), sh: even(bh), x, y, w, h };
+}
 export function layout(frame, width, height) {
   const sw = width > 0 ? width : 1280, sh = height > 0 ? height : 720;
-  const areas = frame.mode === "split" ? splitAreas(frame) : null;
+  const cam = frame.mode === "cam" && frame.facecam?.box ? camAreas(frame) : null;
+  const areas = frame.mode === "split" ? splitAreas(frame) : cam ? { stream: cam.game } : null;
   const AW = W, AH = areas ? areas.stream.h : H;
-  const base = frame.mode === "crop" || frame.mode === "split" ? Math.max(AW / sw, AH / sh) : Math.min(AW / sw, AH / sh);
+  const base = ["crop", "split", "cam", "pip"].includes(frame.mode) ? Math.max(AW / sw, AH / sh) : Math.min(AW / sw, AH / sh);
   const w = even(sw * base * frame.zoom), h = even(sh * base * frame.zoom);
   return { w, h, x: Math.round((AW - w) / 2 + frame.x * Math.abs(AW - w) / 2), y: Math.round((AH - h) / 2 + frame.y * Math.abs(AH - h) / 2), area: { w: AW, h: AH, y: areas ? areas.stream.y : 0 } };
 }
@@ -233,7 +272,9 @@ const fmt = n => String(Math.round(n * 1000) / 1000);
 // frame.split.volume when it has some and the volume is above 0, ending with the clip.
 export function filterGraph(edit, { width, height }, subtitles, { background = false, audio = null } = {}) {
   const split = edit.frame.mode === "split" && background;
-  const frame = edit.frame.mode === "split" && !background ? { ...edit.frame, mode: "blur" } : edit.frame;
+  // Split screen without a background, or a facecam layout without a webcam box, falls back to the blurred fill.
+  const noCam = (edit.frame.mode === "cam" || edit.frame.mode === "pip") && !edit.frame.facecam?.box;
+  const frame = (edit.frame.mode === "split" && !background) || noCam ? { ...edit.frame, mode: "blur" } : edit.frame;
   const { w, h, x, y } = layout(frame, width, height), l = edit.look;
   // Brightness scales luma above video black (16), like the preview's CSS brightness(), through a lookup table:
   // colorchannelmixer did the same per pixel in floating point and made renders about four times slower.
@@ -247,6 +288,19 @@ export function filterGraph(edit, { width, height }, subtitles, { background = f
     parts.push(src + `scale=${w}:${h},crop=${W}:${a.stream.h}:${-x}:${-y},setsar=1[st]`,
       `[1:v]scale=${W}:${a.background.h}:force_original_aspect_ratio=increase,crop=${W}:${a.background.h},fps=30,setsar=1[bk]`,
       (a.stream.y === 0 ? "[st][bk]" : "[bk][st]") + `vstack=inputs=2:shortest=1` + (divider ? `,drawbox=x=0:y=${a.seam - 3}:w=${W}:h=6:color=${hex6(divider)}:t=fill` : "") + `[v0]`);
+  } else if (frame.mode === "cam" || frame.mode === "pip") {
+    // The webcam cut out of the stream once, and the stream itself as the game.
+    const fp = facecamPlacement(frame, width, height), divider = frame.split?.divider;
+    const camCut = `[c]crop=${fp.sw}:${fp.sh}:${fp.sx}:${fp.sy},scale=${fp.w}:${fp.h},setsar=1`;
+    if (frame.mode === "cam") {
+      const a = camAreas(frame);
+      parts.push(src + "split[g][c]", `[g]scale=${w}:${h},crop=${W}:${a.game.h}:${-x}:${-y},setsar=1[game]`, camCut + "[cam]",
+        "[cam][game]vstack=inputs=2" + (divider ? `,drawbox=x=0:y=${a.seam - 3}:w=${W}:h=6:color=${hex6(divider)}:t=fill` : "") + "[v0]");
+    } else {
+      // A white border around the corner box.
+      parts.push(src + "split[g][c]", `[g]scale=${w}:${h},crop=${W}:${H}:${-x}:${-y},setsar=1[game]`, camCut + `,pad=${fp.w + 8}:${fp.h + 8}:4:4:color=white[cam]`,
+        `[game][cam]overlay=${fp.x - 4}:${fp.y - 4}[v0]`);
+    }
   } else if (frame.mode === "blur") {
     parts.push(src + "split[a][b]", `[a]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},scale=180:320,boxblur=8:2,eq=brightness=-0.12,scale=${W}:${H}[bg]`, `[b]scale=${w}:${h}[fg]`, `[bg][fg]overlay=${x}:${y}[v0]`);
   } else {
