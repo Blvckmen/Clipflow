@@ -31,7 +31,8 @@ export async function renderClip(source, { edit, words, width, height, backgroun
   const length = edit.trim.end - edit.trim.start, split = edit.frame.mode === "split" && !!background;
   try {
     await command("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-ss", String(edit.trim.start), "-t", String(length), "-i", source,
-      ...(split ? ["-stream_loop", "-1", "-ss", String(background.start ?? 0), "-i", background.path] : []),
+      // A video background loops from its start point; an image is repeated as a 30 fps stream.
+      ...(split ? (background.image ? ["-loop", "1", "-framerate", "30", "-i", background.path] : ["-stream_loop", "-1", "-ss", String(background.start ?? 0), "-i", background.path]) : []),
       "-filter_complex", filterGraph(edit, { width, height }, subtitles, { background: split }), "-map", "[vout]", "-map", "0:a?",
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-maxrate", "2500k", "-bufsize", "5000k", "-r", "30",
       "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", basename(out)], { signal, cwd: dir, timeout: encodeTimeout(length) }).done;

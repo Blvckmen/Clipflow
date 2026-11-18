@@ -14,7 +14,7 @@ export async function GET(request:Request){
    db.prepare("SELECT id,edit,edit_rev,transcript,source_meta FROM clips WHERE owner=? AND render_state='queued' AND edit IS NOT NULL ORDER BY coalesce(rendered_at,created_at) LIMIT 5").bind(owner).all<{id:string;edit:string;edit_rev:number;transcript:string|null;source_meta:string|null}>(),
    db.prepare("UPDATE worker_tokens SET last_seen=? WHERE owner=?").bind(new Date().toISOString(),owner).run(),
    // Split-screen background videos the worker may download (GET /api/worker/backgrounds/<id>).
-   db.prepare("SELECT id,size,duration FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all<{id:string;size:number;duration:number|null}>(),
+   db.prepare("SELECT id,size,duration,content_type FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all<{id:string;size:number;duration:number|null;content_type:string}>(),
    // Recordings the dashboard still has (the worker deletes its copies of the rest) and clips asked for from them.
    db.prepare("SELECT id FROM recordings WHERE owner=? ORDER BY started_at DESC LIMIT 2000").bind(owner).all<{id:string}>(),
    db.prepare("SELECT id,recording_id,kind,start,end,count FROM recording_requests WHERE owner=? AND state IN ('queued','working') ORDER BY created_at LIMIT 50").bind(owner).all<{id:string;recording_id:string;kind:string;start:number|null;end:number|null;count:number|null}>(),
@@ -25,7 +25,8 @@ export async function GET(request:Request){
    streamers:s.results.map(x=>({id:x.id,url:x.url,status:x.status,style:parse(x.style),captureMode:x.capture_mode??"clip"})),
    recordingDays:(p?.recording_days as number|undefined)??defaults.recordingDays,recordings:rec.results.map(x=>x.id),
    clipRequests:req.results.map(x=>x.kind==="moment"?{id:x.id,recordingId:x.recording_id,kind:x.kind,start:x.start,end:x.end}:{id:x.id,recordingId:x.recording_id,kind:x.kind,count:x.count}),
-   backgrounds:b.results,
+   // kind: a looping video, or a still image (rendered for the clip's whole length).
+   backgrounds:b.results.map(({content_type,...x})=>({...x,kind:content_type.startsWith("image/")?"image":"video",type:content_type})),
    renders:r.results.map(x=>({id:x.id,rev:x.edit_rev,edit:parse(x.edit),words:parse(x.transcript)??[],source:parse(x.source_meta)})).filter(x=>x.edit),
   },{headers:{"Cache-Control":"private, no-store"}});
  }catch(error){console.error("Worker config failed",error);return Response.json({error:"Config unavailable."},{status:503});}

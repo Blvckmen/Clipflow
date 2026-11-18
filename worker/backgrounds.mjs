@@ -33,6 +33,9 @@ export function validBackgrounds(list) {
   for (const b of list) {
     if (!/^[0-9a-f-]{36}$/i.test(b?.id) || !Number.isInteger(b.size) || b.size < 1) throw new Error("Invalid background");
     if (b.duration !== undefined && b.duration !== null && !(typeof b.duration === "number" && b.duration >= 0)) throw new Error("Invalid background length");
+    // Dashboards that predate image backgrounds send videos only.
+    b.kind ??= "video";
+    if (!["video", "image"].includes(b.kind)) throw new Error("Invalid background kind");
   }
   return list;
 }
@@ -40,7 +43,8 @@ export function validBackgrounds(list) {
 // The local copy of a background, downloading it once (`fetchFile(entry)` returns its bytes). A library copy whose
 // size no longer matches the library's is fetched again; a gallery clip's source never changes, so any copy is used.
 export async function localBackground(dataDir, entry, fetchFile) {
-  const dir = join(dataDir, "backgrounds"), file = join(dir, (entry.kind === "clip" ? "clip-" + entry.clip : entry.id) + ".mp4");
+  const ext = entry.kind === "image" ? ({ "image/png": ".png", "image/webp": ".webp" }[entry.type] ?? ".jpg") : ".mp4";
+  const dir = join(dataDir, "backgrounds"), file = join(dir, (entry.kind === "clip" ? "clip-" + entry.clip : entry.id) + ext);
   const have = await stat(file).catch(() => null);
   if (have && (entry.size === null ? have.size > 0 : have.size === entry.size)) return file;
   await mkdir(dir, { recursive: true });

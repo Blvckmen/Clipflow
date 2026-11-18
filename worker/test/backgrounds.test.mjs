@@ -52,6 +52,10 @@ test("backgrounds are downloaded once and fetched again only if the library's co
 
 test("the library list from the dashboard is checked", () => {
   assert.deepEqual(validBackgrounds(undefined), []);
+  // Images (any clip length) and videos; older dashboards send videos only.
+  assert.deepEqual(validBackgrounds([{ id: "11111111-1111-4111-8111-111111111111", size: 9, duration: null, kind: "image", type: "image/png" }])[0].kind, "image");
+  assert.equal(validBackgrounds([{ id: "11111111-1111-4111-8111-111111111111", size: 9 }])[0].kind, "video");
+  assert.throws(() => validBackgrounds([{ id: "11111111-1111-4111-8111-111111111111", size: 9, kind: "gif" }]), /kind/);
   assert.throws(() => validBackgrounds([{ id: "../x", size: 1 }]));
   assert.throws(() => validBackgrounds([{ id: lib[0].id, size: 0 }]));
 });

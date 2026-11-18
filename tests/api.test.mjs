@@ -453,9 +453,23 @@ describe("editing a streamer", () => {
 describe("split-screen backgrounds", () => {
   const up = (bytes, type = "video/mp4", name = "Parkour run.mp4") => fetch(base + "/api/backgrounds", { method: "POST", headers: { cookie, "content-type": type, "x-file-name": encodeURIComponent(name) }, body: bytes });
   let bg;
+  test("a background image can be uploaded, is served as an image and reaches the worker as one", async () => {
+    const png = Buffer.alloc(3000, 7), r = await up(png, "image/png", "Sunset.png");
+    assert.equal(r.status, 200, await r.clone().text());
+    const img = (await r.json()).backgrounds.find(b => b.name === "Sunset");
+    assert.deepEqual([img.content_type, img.duration], ["image/png", null]);
+    const file = await fetch(base + "/api/backgrounds/" + img.id + "/file", { headers: { cookie } });
+    assert.equal(file.headers.get("content-type"), "image/png");
+    assert.equal((await up(Buffer.alloc(16 * 1024 * 1024), "image/jpeg", "big.jpg")).status, 413, "images up to 15 MB");
+    const listed = (await (await worker("/api/worker/config")).json()).backgrounds.find(b => b.id === img.id);
+    assert.deepEqual([listed.kind, listed.type], ["image", "image/png"]);
+    const got = await worker("/api/worker/backgrounds/" + img.id);
+    assert.deepEqual([got.status, got.headers.get("content-type")], [200, "image/png"]);
+    assert.equal((await dash({ action: "deleteBackground", id: img.id })).status, 200);
+  });
   test("a background video can be uploaded, previewed by its owner and downloaded by the worker", async () => {
     const bytes = Buffer.alloc(5000, 3);
-    assert.equal((await up(bytes, "image/png")).status, 415, "MP4 only");
+    assert.equal((await up(bytes, "image/gif")).status, 415, "MP4 or a JPEG, PNG or WebP image");
     assert.equal((await up(Buffer.alloc(10))).status, 400, "empty");
     const r = await up(bytes);
     assert.equal(r.status, 200, await r.clone().text());

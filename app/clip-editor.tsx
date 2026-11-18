@@ -64,9 +64,9 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
   const video = useRef<HTMLVideoElement>(null), canvas = useRef<HTMLCanvasElement>(null), strip = useRef<HTMLDivElement>(null);
   // Split screen: the workspace's background videos, and the one playing under the preview.
   // Library videos and the workspace's other clips (by their unframed source) that can play underneath, with lengths.
-  type BgVideo = { id: string; name: string; duration?: number | null };
+  type BgVideo = { id: string; name: string; duration?: number | null; content_type?: string };
   type BgClip = { id: string; streamer: string | null; duration: number; created_at: string };
-  const bgVideo = useRef<HTMLVideoElement>(null), [backgrounds, setBackgrounds] = useState<BgVideo[]>([]), [bgClips, setBgClips] = useState<BgClip[]>([]);
+  const bgImage = useRef<HTMLImageElement>(null), bgVideo = useRef<HTMLVideoElement>(null), [backgrounds, setBackgrounds] = useState<BgVideo[]>([]), [bgClips, setBgClips] = useState<BgClip[]>([]);
   useEffect(() => {
     fetch("/api/backgrounds?for=" + clipId).then(r => (r.ok ? r.json() : {}) as Promise<{ backgrounds?: BgVideo[]; clips?: BgClip[] }>).then(b => { setBackgrounds(b.backgrounds ?? []); setBgClips(b.clips ?? []); }).catch(() => {});
   }, [clipId]);
@@ -125,16 +125,18 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
         // Stream in the top half (cut off at the seam), the background video looping in the bottom half.
         ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, SPLIT_H); ctx.clip();
         ctx.filter = look; ctx.drawImage(v, box.x, box.y, box.w, box.h); ctx.filter = "none"; ctx.restore();
-        const bg = bgVideo.current;
-        if (bg && bg.readyState >= 2) {
-          if (v.paused !== bg.paused) { if (v.paused) bg.pause(); else void bg.play().catch(() => {}); }
-          const bw = bg.videoWidth, bh = bg.videoHeight, cover = Math.max(W / bw, SPLIT_H / bh);
+        // A still image, or a looping video kept in step with the clip's play/pause.
+        const img = bgImage.current, bg = bgVideo.current;
+        const ready = img ? img.complete && img.naturalWidth > 0 : !!bg && bg.readyState >= 2;
+        if (ready) {
+          if (bg && v.paused !== bg.paused) { if (v.paused) bg.pause(); else void bg.play().catch(() => {}); }
+          const source = (img ?? bg)!, bw = img ? img.naturalWidth : bg!.videoWidth, bh = img ? img.naturalHeight : bg!.videoHeight, cover = Math.max(W / bw, SPLIT_H / bh);
           ctx.save(); ctx.beginPath(); ctx.rect(0, SPLIT_H, W, H - SPLIT_H); ctx.clip();
-          ctx.drawImage(bg, (W - bw * cover) / 2, SPLIT_H + (SPLIT_H - bh * cover) / 2, bw * cover, bh * cover); ctx.restore();
+          ctx.drawImage(source, (W - bw * cover) / 2, SPLIT_H + (SPLIT_H - bh * cover) / 2, bw * cover, bh * cover); ctx.restore();
         } else {
           ctx.fillStyle = "#1b2128"; ctx.fillRect(0, SPLIT_H, W, H - SPLIT_H);
           ctx.fillStyle = "#8b97a6"; ctx.font = "28px Arial, sans-serif"; ctx.textAlign = "center";
-          ctx.fillText(backgroundsRef.current.length ? "Background video loading…" : "Upload background videos in Settings", W / 2, SPLIT_H + SPLIT_H / 2);
+          ctx.fillText(backgroundsRef.current.length ? "Background loading…" : "Upload background videos or images in Settings", W / 2, SPLIT_H + SPLIT_H / 2);
         }
       } else if (v.readyState >= 2) {
         if (e.frame.mode === "blur") {
@@ -252,6 +254,7 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
   const hiddenShort = backgrounds.length - fitLibrary.length + bgClips.length - fitClips.length;
   const chosen = edit.frame.background, chosenTooShort = !!chosen && !fitLibrary.some(b => b.id === chosen) && !fitClips.some(c => "clip:" + c.id === chosen);
   const bgPreview = chosen ?? fitLibrary[0]?.id ?? null;
+  const bgIsImage = !!bgPreview && !!backgrounds.find(b => b.id === bgPreview)?.content_type?.startsWith("image/");
   const set = <K extends keyof Edit>(key: K, value: Partial<Edit[K]>) => change(String(key) + Object.keys(value).join(), e => ({ ...e, [key]: { ...(e[key] as object), ...value } }));
   const setCaption = (value: Partial<Captions>) => change("captions" + Object.keys(value).join(), e => ({ ...e, captions: { ...e.captions, ...value, preset: "preset" in value ? value.preset! : "custom" } }));
   const maxChat = Math.max(1, ...(bundle.signals?.chat ?? [0]));
@@ -279,7 +282,8 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
           <canvas ref={canvas} width={W} height={H} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={() => { drag.current = null; }} title="Drag to reposition the picture" />
           {safe && <div className="safe-zones" aria-hidden><span className="sz-top" /><span className="sz-right">App buttons</span><span className="sz-bottom">Username &amp; caption</span></div>}
         </div>
-        {edit.frame.mode === "split" && bgPreview && <video ref={bgVideo} className="editor-video" key={bgPreview} src={bgPreview.startsWith("clip:") ? "/api/clips/" + bgPreview.slice(5) + "/source" : "/api/backgrounds/" + bgPreview + "/file"} muted loop playsInline preload="auto" />}
+        {edit.frame.mode === "split" && bgPreview && bgIsImage && <img ref={bgImage} key={bgPreview} src={"/api/backgrounds/" + bgPreview + "/file"} alt="" hidden />}
+        {edit.frame.mode === "split" && bgPreview && !bgIsImage && <video ref={bgVideo} className="editor-video" key={bgPreview} src={bgPreview.startsWith("clip:") ? "/api/clips/" + bgPreview.slice(5) + "/source" : "/api/backgrounds/" + bgPreview + "/file"} muted loop playsInline preload="auto" />}
         <video ref={video} className="editor-video" src={bundle.sourceStored ? "/api/clips/" + clipId + "/source" : undefined} playsInline preload="auto" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onLoadedMetadata={e => { e.currentTarget.currentTime = edit.trim.start; }} />
         <div className="stage-controls">
           <button className="icon-button play" aria-label={playing ? "Pause" : "Play"} onClick={toggle}>{playing ? <Pause size={18} /> : <Play size={18} />}</button>
@@ -337,10 +341,10 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
           </>}
           {tab === "frame" && <>
             <div className="segmented">{(["blur", "crop", "fit", "split"] as const).map(m => <button key={m} className={edit.frame.mode === m ? "active" : ""} onClick={() => change("frame-mode", e => ({ ...e, frame: { ...e.frame, mode: m }, captions: m === "split" && e.captions.y === 0.72 ? { ...e.captions, y: 0.5 } : m !== "split" && e.frame.mode === "split" && e.captions.y === 0.5 ? { ...e.captions, y: 0.72 } : e.captions }))}>{{ blur: "Blurred fill", crop: "Fill (crop)", fit: "Fit with bars", split: "Split screen" }[m]}</button>)}</div>
-            {edit.frame.mode === "split" && <label className="wide">Background video
+            {edit.frame.mode === "split" && <label className="wide">Background
               <select value={edit.frame.background ?? ""} onChange={e => set("frame", { background: e.target.value || null })}>
                 <option value="">Picked from your library for this clip</option>
-                {fitLibrary.length > 0 && <optgroup label="Background library">{fitLibrary.map(b => <option key={b.id} value={b.id}>{b.name}{b.duration ? " · " + secs(b.duration) : ""}</option>)}</optgroup>}
+                {fitLibrary.length > 0 && <optgroup label="Background library">{fitLibrary.map(b => <option key={b.id} value={b.id}>{b.name}{b.content_type?.startsWith("image/") ? " · image" : b.duration ? " · " + secs(b.duration) : ""}</option>)}</optgroup>}
                 {fitClips.length > 0 && <optgroup label="Your clips">{fitClips.map(c => <option key={c.id} value={"clip:" + c.id}>{(c.streamer ?? "Clip") + " · " + secs(c.duration) + " · " + new Date(c.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</option>)}</optgroup>}
                 {chosenTooShort && <option value={edit.frame.background!}>Chosen video (shorter than this clip)</option>}
               </select>

@@ -215,7 +215,7 @@ th.num{text-align:right}
 .background-library>.error,.background-library>.subtle-note{margin:16px 23px 0}
 .background-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px;padding:18px 23px}
 .background-item{margin:0;position:relative;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#0f141a}
-.background-item video{display:block;width:100%;aspect-ratio:9/8;object-fit:cover;background:#000}
+.background-item video,.background-item img{display:block;width:100%;aspect-ratio:9/8;object-fit:cover;background:#000}
 .background-item figcaption{display:flex;flex-direction:column;padding:8px 10px;font-size:13px;min-width:0}
 .background-item figcaption span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .background-item figcaption small{font-size:11px}

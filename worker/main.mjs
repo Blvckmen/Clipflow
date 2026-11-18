@@ -505,6 +505,8 @@ async function backgroundFor(edit, clipId) {
       if (!response.ok) throw new Error("HTTP " + response.status);
       return Buffer.from(await response.arrayBuffer());
     });
+    // A still image is shown for the whole clip; a video starts at a spot of its own for each clip.
+    if (entry.kind === "image") return { path, start: 0, image: true };
     const info = await videoInfo(path);
     return { path, start: backgroundStart(clipId, info.duration, edit.trim.end - edit.trim.start) };
   } catch (error) {
