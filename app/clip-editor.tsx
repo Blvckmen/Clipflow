@@ -3,11 +3,12 @@
 // worker renders with, so what you see is what gets posted. Saving stores the edit; the worker re-renders it.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, Scissors, Sparkles, Undo2 } from "lucide-react";
-import { ANIMATIONS, FONTS, H, MAX_CLIP, MIN_CLIP, PRESETS, SPLIT_H, W, activeCue, cues, layout } from "../worker/edit.mjs";
+import { ANIMATIONS, DEFAULT_SPLIT, FONTS, H, MAX_CLIP, MIN_CLIP, PRESETS, W, activeCue, cues, layout, splitAreas } from "../worker/edit.mjs";
 
 import { applyAutomaticHook } from "../worker/hooks.mjs";
 
-type Frame = { mode: "blur" | "crop" | "fit" | "split"; zoom: number; x: number; y: number; background?: string | null };
+type Split = { share: number; top: "stream" | "background"; divider: string | null; volume: number };
+type Frame = { mode: "blur" | "crop" | "fit" | "split"; zoom: number; x: number; y: number; background?: string | null; split?: Split };
 type Captions = { on: boolean; preset: string; font: string; size: number; color: string; highlight: string; outline: number; outlineColor: string; box: boolean; boxColor: string; uppercase: boolean; animation: string; words: number; y: number; mask: boolean };
 type Word = [number, number, string];
 export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { text: string; seconds: number; color: string; bg: string }; progress: { on: boolean; color: string }; words?: Word[] };
@@ -122,22 +123,26 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
       ctx.save();
       ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
       if (v.readyState >= 2 && e.frame.mode === "split") {
-        // Stream in the top half (cut off at the seam), the background video looping in the bottom half.
-        ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, SPLIT_H); ctx.clip();
-        ctx.filter = look; ctx.drawImage(v, box.x, box.y, box.w, box.h); ctx.filter = "none"; ctx.restore();
+        // The stream in its part (cut off at the seam), the background in the other, in the chosen order.
+        const areas = splitAreas(e.frame), sb = areas.background, divider = e.frame.split?.divider;
+        ctx.save(); ctx.beginPath(); ctx.rect(0, areas.stream.y, W, areas.stream.h); ctx.clip();
+        ctx.filter = look; ctx.drawImage(v, box.x, box.y + areas.stream.y, box.w, box.h); ctx.filter = "none"; ctx.restore();
         // A still image, or a looping video kept in step with the clip's play/pause.
         const img = bgImage.current, bg = bgVideo.current;
         const ready = img ? img.complete && img.naturalWidth > 0 : !!bg && bg.readyState >= 2;
         if (ready) {
           if (bg && v.paused !== bg.paused) { if (v.paused) bg.pause(); else void bg.play().catch(() => {}); }
-          const source = (img ?? bg)!, bw = img ? img.naturalWidth : bg!.videoWidth, bh = img ? img.naturalHeight : bg!.videoHeight, cover = Math.max(W / bw, SPLIT_H / bh);
-          ctx.save(); ctx.beginPath(); ctx.rect(0, SPLIT_H, W, H - SPLIT_H); ctx.clip();
-          ctx.drawImage(source, (W - bw * cover) / 2, SPLIT_H + (SPLIT_H - bh * cover) / 2, bw * cover, bh * cover); ctx.restore();
+          // The background's sound at its chosen volume (muted at 0, the default).
+          if (bg) { const vol = e.frame.split?.volume ?? 0; bg.muted = vol <= 0; bg.volume = Math.min(1, Math.max(0, vol)); }
+          const source = (img ?? bg)!, bw = img ? img.naturalWidth : bg!.videoWidth, bh = img ? img.naturalHeight : bg!.videoHeight, cover = Math.max(W / bw, sb.h / bh);
+          ctx.save(); ctx.beginPath(); ctx.rect(0, sb.y, W, sb.h); ctx.clip();
+          ctx.drawImage(source, (W - bw * cover) / 2, sb.y + (sb.h - bh * cover) / 2, bw * cover, bh * cover); ctx.restore();
         } else {
-          ctx.fillStyle = "#1b2128"; ctx.fillRect(0, SPLIT_H, W, H - SPLIT_H);
+          ctx.fillStyle = "#1b2128"; ctx.fillRect(0, sb.y, W, sb.h);
           ctx.fillStyle = "#8b97a6"; ctx.font = "28px Arial, sans-serif"; ctx.textAlign = "center";
-          ctx.fillText(backgroundsRef.current.length ? "Background loading…" : "Upload background videos or images in Settings", W / 2, SPLIT_H + SPLIT_H / 2);
+          ctx.fillText(backgroundsRef.current.length ? "Background loading…" : "Upload background videos or images in Settings", W / 2, sb.y + sb.h / 2);
         }
+        if (divider) { ctx.fillStyle = divider; ctx.fillRect(0, areas.seam - 3, W, 6); }
       } else if (v.readyState >= 2) {
         if (e.frame.mode === "blur") {
           const cover = Math.max(W / sw, H / sh), cw = sw * cover, ch = sh * cover;
@@ -255,6 +260,12 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
   const chosen = edit.frame.background, chosenTooShort = !!chosen && !fitLibrary.some(b => b.id === chosen) && !fitClips.some(c => "clip:" + c.id === chosen);
   const bgPreview = chosen ?? fitLibrary[0]?.id ?? null;
   const bgIsImage = !!bgPreview && !!backgrounds.find(b => b.id === bgPreview)?.content_type?.startsWith("image/");
+  // Split screen's proportions, order, divider and background sound. Moving the seam moves the captions with it.
+  const setSplit = (value: Partial<Split>) => change("frame-split" + Object.keys(value).join(), e => {
+    const split = { ...DEFAULT_SPLIT, ...e.frame.split, ...value } as Split;
+    const moved = value.share !== undefined || value.top !== undefined;
+    return { ...e, frame: { ...e.frame, split }, captions: moved ? { ...e.captions, y: splitAreas({ split }).seam / H } : e.captions };
+  });
   const set = <K extends keyof Edit>(key: K, value: Partial<Edit[K]>) => change(String(key) + Object.keys(value).join(), e => ({ ...e, [key]: { ...(e[key] as object), ...value } }));
   const setCaption = (value: Partial<Captions>) => change("captions" + Object.keys(value).join(), e => ({ ...e, captions: { ...e.captions, ...value, preset: "preset" in value ? value.preset! : "custom" } }));
   const maxChat = Math.max(1, ...(bundle.signals?.chat ?? [0]));
@@ -351,6 +362,14 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
               <small>{chosenTooShort ? "The chosen video is shorter than this clip now; pick another, or the render uses one from your library."
                 : fitLibrary.length + fitClips.length ? "Only videos at least as long as this clip (" + secs(len) + ") are listed; longer ones are cut to fit, from a different point in each clip." + (hiddenShort ? " " + hiddenShort + " shorter " + (hiddenShort === 1 ? "one is" : "ones are") + " hidden." : "")
                 : "Nothing is long enough yet: upload longer loops in Settings → Split-screen backgrounds. Until then the clip renders with the blurred fill."}</small></label>}
+            {edit.frame.mode === "split" && (() => { const sp = { ...DEFAULT_SPLIT, ...edit.frame.split } as Split; return <div className="control-grid">
+              <label>Stream size<select value={sp.share} onChange={e => setSplit({ share: Number(e.target.value) })}>
+                {[[0.5, "Half and half"], [0.6, "Stream 60%"], [0.7, "Stream 70%"], [0.8, "Stream 80%"]].map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                {![0.5, 0.6, 0.7, 0.8].includes(sp.share) && <option value={sp.share}>Stream {Math.round(sp.share * 100)}%</option>}</select></label>
+              <label>Stream position<select value={sp.top} onChange={e => setSplit({ top: e.target.value as Split["top"] })}><option value="stream">On top</option><option value="background">At the bottom</option></select></label>
+              <label>Divider line<div className="color-pair"><input type="checkbox" checked={!!sp.divider} onChange={e => setSplit({ divider: e.target.checked ? "#ffffff" : null })} />{sp.divider && <input type="color" value={sp.divider} onChange={e => setSplit({ divider: e.target.value })} />}</div></label>
+              <label>Background sound <span>{bgIsImage ? "image" : Math.round(sp.volume * 100) + "%"}</span><input type="range" min={0} max={1} step={0.05} value={sp.volume} disabled={bgIsImage} onChange={e => setSplit({ volume: Number(e.target.value) })} /></label>
+            </div>; })()}
             <div className="control-grid">
               <label>Zoom <span>{edit.frame.zoom.toFixed(2)}×</span><input type="range" min={1} max={3} step={0.01} value={edit.frame.zoom} onChange={e => set("frame", { zoom: Number(e.target.value) })} /></label>
               <label>Left / right <span>{Math.round(edit.frame.x * 100)}</span><input type="range" min={-1} max={1} step={0.01} value={edit.frame.x} onChange={e => set("frame", { x: Number(e.target.value) })} /></label>

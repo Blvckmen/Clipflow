@@ -39,8 +39,8 @@ test("normalizeStyle fills parts an older saved style lacks", () => {
 });
 
 test("layout fits, covers, zooms and pans on the 720x1280 frame", () => {
-  assert.deepEqual(layout({ mode: "fit", zoom: 1, x: 0, y: 0 }, 1920, 1080), { w: 720, h: 406, x: 0, y: 437, area: { w: 720, h: 1280 } });
-  assert.deepEqual(layout({ mode: "crop", zoom: 1, x: 0, y: 0 }, 1920, 1080), { w: 2276, h: 1280, x: -778, y: 0, area: { w: 720, h: 1280 } });
+  assert.deepEqual(layout({ mode: "fit", zoom: 1, x: 0, y: 0 }, 1920, 1080), { w: 720, h: 406, x: 0, y: 437, area: { w: 720, h: 1280, y: 0 } });
+  assert.deepEqual(layout({ mode: "crop", zoom: 1, x: 0, y: 0 }, 1920, 1080), { w: 2276, h: 1280, x: -778, y: 0, area: { w: 720, h: 1280, y: 0 } });
   assert.equal(layout({ mode: "crop", zoom: 1, x: 1, y: 0 }, 1920, 1080).x, 0, "sliding the picture fully right shows its left edge");
   assert.equal(layout({ mode: "crop", zoom: 1, x: -1, y: 0 }, 1920, 1080).x, 720 - 2276, "fully left shows its right edge");
   const zoomed = layout({ mode: "blur", zoom: 2, x: 0, y: 0 }, 1920, 1080);
@@ -107,17 +107,37 @@ test("filterGraph frames, adjusts colour, burns subtitles and draws the progress
 test("split screen: the stream covers the top half and a background video the bottom half", async () => {
   const { filterGraph, SPLIT_H, normalizeStyle, defaultStyle } = await import("../edit.mjs");
   const top = layout({ mode: "split", zoom: 1, x: 0, y: 0 }, 1920, 1080);
-  assert.deepEqual(top, { w: 1138, h: 640, x: -209, y: 0, area: { w: 720, h: SPLIT_H } }, "16:9 covers 720x640, centred");
+  assert.deepEqual(top, { w: 1138, h: 640, x: -209, y: 0, area: { w: 720, h: SPLIT_H, y: 0 } }, "16:9 covers 720x640, centred");
   const edit = { ...defaultStyle({ framing: "split" }), trim: { start: 0, end: 10 }, hook: { text: "", seconds: 3, color: "#111111", bg: "#ffffff" } };
   assert.equal(edit.captions.y, 0.5, "captions sit on the seam");
   const graph = filterGraph(edit, { width: 1920, height: 1080 }, null, { background: true });
-  assert.match(graph, /\[0:v\]scale=1138:640,crop=720:640:209:0,setsar=1\[top\]/);
-  assert.match(graph, /\[1:v\]scale=720:640:force_original_aspect_ratio=increase,crop=720:640,fps=30,setsar=1\[bot\]/);
-  assert.match(graph, /\[top\]\[bot\]vstack=inputs=2:shortest=1\[v0\]/);
+  assert.match(graph, /\[0:v\]scale=1138:640,crop=720:640:209:0,setsar=1\[st\]/);
+  assert.match(graph, /\[1:v\]scale=720:640:force_original_aspect_ratio=increase,crop=720:640,fps=30,setsar=1\[bk\]/);
+  assert.match(graph, /\[st\]\[bk\]vstack=inputs=2:shortest=1\[v0\]/);
+  assert.doesNotMatch(graph, /drawbox|\[aout\]/, "no divider, no background sound by default");
   assert.match(filterGraph(edit, { width: 1920, height: 1080 }, null), /boxblur/, "no background video: blurred fill instead");
   assert.equal(normalizeStyle({ frame: { mode: "split", background: "0b5A6acf-19ee-570a-9e28-aaf4c6c5765c" } }).frame.background, "0b5a6acf-19ee-570a-9e28-aaf4c6c5765c");
   assert.throws(() => normalizeStyle({ frame: { mode: "split", background: "../etc/passwd" } }), /Background video/);
   assert.equal(normalizeStyle({ frame: { mode: "split", background: "clip:0b5a6acf-19ee-570a-9e28-aaf4c6c5765c" } }).frame.background, "clip:0b5a6acf-19ee-570a-9e28-aaf4c6c5765c", "a gallery clip");
   assert.throws(() => normalizeStyle({ frame: { mode: "split", background: "clip:../x" } }));
   assert.equal(normalizeStyle({ frame: { mode: "fit" } }).frame.background, null, "older styles get no background");
+});
+
+test("split screen: proportions, order, a divider and the background's sound", async () => {
+  const { filterGraph, normalizeStyle, defaultStyle, splitAreas } = await import("../edit.mjs");
+  assert.deepEqual(normalizeStyle({ frame: { mode: "split" } }).frame.split, { share: 0.5, top: "stream", divider: null, volume: 0 }, "older styles get the 50/50 split");
+  assert.deepEqual(splitAreas({ split: { share: 0.7, top: "stream" } }), { stream: { y: 0, h: 896 }, background: { y: 896, h: 384 }, seam: 896 });
+  assert.deepEqual(splitAreas({ split: { share: 0.6, top: "background" } }), { stream: { y: 512, h: 768 }, background: { y: 0, h: 512 }, seam: 512 });
+  assert.equal(layout({ mode: "split", zoom: 1, x: 0, y: 0, split: { share: 0.6, top: "background" } }, 1920, 1080).area.y, 512);
+  assert.throws(() => normalizeStyle({ frame: { mode: "split", split: { top: "middle" } } }), /Split order/);
+  assert.equal(normalizeStyle({ frame: { mode: "split", split: { share: 0.95 } } }).frame.split.share, 0.8, "share kept to 30-80%");
+  const style = defaultStyle({ framing: "split" });
+  const edit = { ...style, frame: { ...style.frame, split: { share: 0.6, top: "background", divider: "#ffffff", volume: 0.3 } }, trim: { start: 0, end: 10 }, hook: { text: "", seconds: 3, color: "#111111", bg: "#ffffff" } };
+  const graph = filterGraph(edit, { width: 1920, height: 1080 }, null, { background: true, audio: { source: true, background: true } });
+  assert.match(graph, /crop=720:768:.*\[st\]/);
+  assert.match(graph, /crop=720:512,fps=30,setsar=1\[bk\]/);
+  assert.match(graph, /\[bk\]\[st\]vstack=inputs=2:shortest=1,drawbox=x=0:y=509:w=720:h=6:color=0xffffff:t=fill\[v0\]/, "background on top, divider on the seam");
+  assert.match(graph, /\[1:a\]volume=0\.3,aresample=48000\[ba\];\[sa\]\[ba\]amix=inputs=2:duration=first/);
+  assert.match(filterGraph(edit, { width: 1920, height: 1080 }, null, { background: true, audio: { source: false, background: true } }), /\[1:a\]volume=0\.3,aresample=48000,atrim=duration=10/, "background sound alone, cut to the clip");
+  assert.doesNotMatch(filterGraph(edit, { width: 1920, height: 1080 }, null, { background: true, audio: { source: true, background: false } }), /\[aout\]/, "a silent background adds nothing");
 });

@@ -343,3 +343,5 @@ th.num{text-align:right}
 .held-bar strong{display:block;font-size:14px;color:#ecd6a3}.held-bar small{display:block;margin-top:3px;max-width:640px;line-height:1.5}
 .held-actions{display:flex;gap:8px;flex-wrap:wrap}
 @media (max-width:640px){.held-bar{padding:14px 16px}.held-actions{width:100%}.held-actions>*{flex:1}}
+/* Split screen: the divider line's on/off and colour side by side. */
+.color-pair{display:flex;align-items:center;gap:10px;margin-top:8px}.color-pair input[type=color]{width:44px;height:30px;padding:2px}

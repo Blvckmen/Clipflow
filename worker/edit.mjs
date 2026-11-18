@@ -12,8 +12,9 @@
 
 export const W = 720, H = 1280;
 export const FONTS = ["Arial", "Impact", "Verdana", "Trebuchet MS", "Georgia", "Comic Sans MS", "DejaVu Sans"];
-// "split": the stream fills the top half and a looping background video (from the workspace's library) the bottom
-// half. frame.background is a library video's id, "clip:<id>" for another gallery clip, or null to let the worker
+// "split": the stream fills part of the frame and a background (a looping video or a still image from the workspace's
+// library) the rest. frame.split: share (the stream's part of the height, 0.3-0.8), top ("stream" or "background":
+// which is on top), divider (a #rrggbb line on the seam, or null) and volume (the background video's sound, 0-1). frame.background is a library video's id, "clip:<id>" for another gallery clip, or null to let the worker
 // pick a library video for the clip (the same one each time it renders that clip). Only videos at least as long as
 // the clip are used; longer ones are cut to its length.
 export const FRAMINGS = ["blur", "crop", "fit", "split"];
@@ -21,6 +22,8 @@ export const ANIMATIONS = ["none", "pop", "karaoke", "word"];
 export const MIN_CLIP = 5, MAX_CLIP = 90;
 // How long a hook title stays up unless the look says otherwise; up to the whole clip.
 export const DEFAULT_HOOK_SECONDS = 5;
+export const DEFAULT_SPLIT = { share: 0.5, top: "stream", divider: null, volume: 0 };
+export const SPLIT_TOPS = ["stream", "background"];
 
 // Caption looks. Picking a preset copies its values; every value can then be changed on its own.
 export const PRESETS = {
@@ -36,7 +39,7 @@ export function defaultStyle({ framing = "blur", captions = true } = {}) {
   const preset = { ...PRESETS.bold };
   delete preset.label;
   return {
-    frame: { mode: FRAMINGS.includes(framing) ? framing : "blur", zoom: 1, x: 0, y: 0, background: null },
+    frame: { mode: FRAMINGS.includes(framing) ? framing : "blur", zoom: 1, x: 0, y: 0, background: null, split: { ...DEFAULT_SPLIT } },
     look: { brightness: 1, contrast: 1, saturation: 1 },
     // Split screen puts captions on the seam between the two videos.
     captions: { on: !!captions, preset: "bold", ...preset, y: framing === "split" ? 0.5 : 0.72, mask: false },
@@ -60,10 +63,11 @@ const ref = (v, name) => { if (v === null || v === undefined) return null; if (t
 // Validates a style from an untrusted client (or an older saved one), filling any missing part from the defaults.
 export function normalizeStyle(input, base = defaultStyle()) {
   const s = obj(input, "Style");
-  const f = { ...base.frame, ...(s.frame ?? {}) }, l = { ...base.look, ...(s.look ?? {}) }, c = { ...base.captions, ...(s.captions ?? {}) };
+  const f = { ...base.frame, ...(s.frame ?? {}) }, sp = { ...DEFAULT_SPLIT, ...(base.frame.split ?? {}), ...(s.frame?.split ?? {}) }, l = { ...base.look, ...(s.look ?? {}) }, c = { ...base.captions, ...(s.captions ?? {}) };
   const h = { ...base.hook, ...(s.hook ?? {}) }, p = { ...base.progress, ...(s.progress ?? {}) };
   return {
-    frame: { mode: pick(f.mode, FRAMINGS, "Framing"), zoom: num(f.zoom, 1, 3, "Zoom"), x: num(f.x, -1, 1, "Horizontal position"), y: num(f.y, -1, 1, "Vertical position"), background: ref(f.background, "Background video") },
+    frame: { mode: pick(f.mode, FRAMINGS, "Framing"), zoom: num(f.zoom, 1, 3, "Zoom"), x: num(f.x, -1, 1, "Horizontal position"), y: num(f.y, -1, 1, "Vertical position"), background: ref(f.background, "Background video"),
+      split: { share: num(sp.share, 0.3, 0.8, "Stream share"), top: pick(sp.top, SPLIT_TOPS, "Split order"), divider: sp.divider === null ? null : color(sp.divider, "Divider colour"), volume: num(sp.volume, 0, 1, "Background volume") } },
     look: { brightness: num(l.brightness, 0.5, 1.5, "Brightness"), contrast: num(l.contrast, 0.5, 1.5, "Contrast"), saturation: num(l.saturation, 0, 2, "Saturation") },
     captions: {
       on: bool(c.on, "Captions"), preset: typeof c.preset === "string" && PRESETS[c.preset] ? c.preset : "custom",
@@ -118,12 +122,19 @@ const even = n => Math.max(2, 2 * Math.round(n / 2));
 // and x/y (-1..1) slide the picture across whatever room the zoom leaves. Split screen covers the top half (the
 // picture is cut off at the seam: `area` is the region it is clipped to).
 export const SPLIT_H = H / 2;
+// Split screen's two parts: where the stream and the background sit (y and height, whole even pixels), and the seam.
+export function splitAreas(frame) {
+  const sp = { ...DEFAULT_SPLIT, ...(frame?.split ?? {}) };
+  const streamH = even(H * Math.min(0.8, Math.max(0.3, sp.share))), bgH = H - streamH, streamTop = sp.top !== "background";
+  return { stream: { y: streamTop ? 0 : bgH, h: streamH }, background: { y: streamTop ? streamH : 0, h: bgH }, seam: streamTop ? streamH : bgH };
+}
 export function layout(frame, width, height) {
   const sw = width > 0 ? width : 1280, sh = height > 0 ? height : 720;
-  const AW = W, AH = frame.mode === "split" ? SPLIT_H : H;
+  const areas = frame.mode === "split" ? splitAreas(frame) : null;
+  const AW = W, AH = areas ? areas.stream.h : H;
   const base = frame.mode === "crop" || frame.mode === "split" ? Math.max(AW / sw, AH / sh) : Math.min(AW / sw, AH / sh);
   const w = even(sw * base * frame.zoom), h = even(sh * base * frame.zoom);
-  return { w, h, x: Math.round((AW - w) / 2 + frame.x * Math.abs(AW - w) / 2), y: Math.round((AH - h) / 2 + frame.y * Math.abs(AH - h) / 2), area: { w: AW, h: AH } };
+  return { w, h, x: Math.round((AW - w) / 2 + frame.x * Math.abs(AW - w) / 2), y: Math.round((AH - h) / 2 + frame.y * Math.abs(AH - h) / 2), area: { w: AW, h: AH, y: areas ? areas.stream.y : 0 } };
 }
 
 const SWEAR = /^(fuck|shit|bitch|cunt|dick|puss|asshole|bastard|cock|slut|whore|fag|nigg|motherf)/i;
@@ -218,7 +229,9 @@ const fmt = n => String(Math.round(n * 1000) / 1000);
 // The ffmpeg -filter_complex graph for an edit. `subtitles` is the ASS file name relative to ffmpeg's working
 // directory (absolute Windows paths break filter syntax), or null when there is nothing to draw. `background` says
 // whether input 1 is a split-screen background video; split screen without one falls back to the blurred fill.
-export function filterGraph(edit, { width, height }, subtitles, { background = false } = {}) {
+// `audio`: { source, background } (which inputs have sound); the background video's sound is mixed in at
+// frame.split.volume when it has some and the volume is above 0, ending with the clip.
+export function filterGraph(edit, { width, height }, subtitles, { background = false, audio = null } = {}) {
   const split = edit.frame.mode === "split" && background;
   const frame = edit.frame.mode === "split" && !background ? { ...edit.frame, mode: "blur" } : edit.frame;
   const { w, h, x, y } = layout(frame, width, height), l = edit.look;
@@ -228,10 +241,12 @@ export function filterGraph(edit, { width, height }, subtitles, { background = f
   const src = "[0:v]" + (look ? look + "," : "");
   const parts = [];
   if (split) {
-    // Top: the stream scaled to cover the top half and cut to it. Bottom: the background, covering the bottom half.
-    parts.push(src + `scale=${w}:${h},crop=${W}:${SPLIT_H}:${-x}:${-y},setsar=1[top]`,
-      `[1:v]scale=${W}:${SPLIT_H}:force_original_aspect_ratio=increase,crop=${W}:${SPLIT_H},fps=30,setsar=1[bot]`,
-      `[top][bot]vstack=inputs=2:shortest=1[v0]`);
+    // The stream scaled to cover its part and cut to it; the background covering the rest; stacked in the chosen
+    // order, with a divider line on the seam if there is one.
+    const a = splitAreas(edit.frame), divider = edit.frame.split?.divider;
+    parts.push(src + `scale=${w}:${h},crop=${W}:${a.stream.h}:${-x}:${-y},setsar=1[st]`,
+      `[1:v]scale=${W}:${a.background.h}:force_original_aspect_ratio=increase,crop=${W}:${a.background.h},fps=30,setsar=1[bk]`,
+      (a.stream.y === 0 ? "[st][bk]" : "[bk][st]") + `vstack=inputs=2:shortest=1` + (divider ? `,drawbox=x=0:y=${a.seam - 3}:w=${W}:h=6:color=${hex6(divider)}:t=fill` : "") + `[v0]`);
   } else if (frame.mode === "blur") {
     parts.push(src + "split[a][b]", `[a]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},scale=180:320,boxblur=8:2,eq=brightness=-0.12,scale=${W}:${H}[bg]`, `[b]scale=${w}:${h}[fg]`, `[bg][fg]overlay=${x}:${y}[v0]`);
   } else {
@@ -245,6 +260,12 @@ export function filterGraph(edit, { width, height }, subtitles, { background = f
     last = "v2";
   }
   parts.push(`[${last}]format=yuv420p,setsar=1[vout]`);
+  const volume = edit.frame.split?.volume ?? 0, len = fmt(edit.trim.end - edit.trim.start);
+  if (split && audio?.background && volume > 0) {
+    const bg = `[1:a]volume=${fmt(volume)},aresample=48000`;
+    parts.push(audio.source ? `[0:a]aresample=48000[sa];${bg}[ba];[sa][ba]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]`
+      : `${bg},atrim=duration=${len},asetpts=PTS-STARTPTS[aout]`);
+  }
   return parts.join(";");
 }
 

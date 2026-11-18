@@ -22,6 +22,14 @@ export async function videoInfo(file, signal) {
   } catch { return { width: 0, height: 0, duration: 0 }; }
 }
 
+// Whether a media file has a sound track.
+export async function hasAudio(file, signal) {
+  try {
+    const { stdout } = await run("ffprobe", ["-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", file], { signal, timeout: 30_000, windowsHide: true });
+    return stdout.trim().length > 0;
+  } catch { return false; }
+}
+
 // Writes the rendered clip to `out`. Returns { sha, size, duration }. `background` ({ path, start }) is the
 // split-screen video, looped from `start` seconds; without it split screen renders as the blurred fill.
 export async function renderClip(source, { edit, words, width, height, background = null }, out, signal) {
@@ -29,11 +37,15 @@ export async function renderClip(source, { edit, words, width, height, backgroun
   const subtitles = needsSubtitles(edit, words) ? ass : null;
   if (subtitles) await writeFile(join(dir, ass), buildAss(edit, words), "utf8");
   const length = edit.trim.end - edit.trim.start, split = edit.frame.mode === "split" && !!background;
+  // The background video's sound, when it is turned up and the video has some.
+  const mixing = split && !background.image && (edit.frame.split?.volume ?? 0) > 0;
+  const audio = mixing ? { source: await hasAudio(source, signal), background: await hasAudio(background.path, signal) } : null;
+  const graph = filterGraph(edit, { width, height }, subtitles, { background: split, audio });
   try {
     await command("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-ss", String(edit.trim.start), "-t", String(length), "-i", source,
       // A video background loops from its start point; an image is repeated as a 30 fps stream.
       ...(split ? (background.image ? ["-loop", "1", "-framerate", "30", "-i", background.path] : ["-stream_loop", "-1", "-ss", String(background.start ?? 0), "-i", background.path]) : []),
-      "-filter_complex", filterGraph(edit, { width, height }, subtitles, { background: split }), "-map", "[vout]", "-map", "0:a?",
+      "-filter_complex", graph, "-map", "[vout]", ...(graph.includes("[aout]") ? ["-map", "[aout]"] : ["-map", "0:a?"]),
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-maxrate", "2500k", "-bufsize", "5000k", "-r", "30",
       "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", basename(out)], { signal, cwd: dir, timeout: encodeTimeout(length) }).done;
   } finally { if (subtitles) await rm(join(dir, ass), { force: true }); }
