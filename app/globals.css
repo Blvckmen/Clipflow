@@ -398,3 +398,8 @@ kbd{display:inline-block;min-width:22px;padding:2px 6px;border:1px solid #3a4654
 .meter span{display:block;height:100%;border-radius:3px;background:var(--lime);transition:width .3s}
 .posting-row small{font-size:12px}
 @media (max-width:640px){.attention{flex-wrap:wrap}.attention button{width:100%}.attention-list,.live-list,.posting-list{padding:2px 16px 6px}}
+/* Connections: an account's streamers, editable from the account row. */
+button.account-streamers{max-width:none;justify-self:start}
+.account-picker .pick-all{border-style:dashed;color:var(--muted)}
+.account-picker label small{color:var(--muted)}
+.connection-actions{flex-wrap:wrap}

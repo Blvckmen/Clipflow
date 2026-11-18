@@ -59,6 +59,7 @@ const actionSchema=z.discriminatedUnion("action",[
  // Posting options for one account (TikTok mode and privacy, YouTube visibility).
  z.object({action:z.literal("accountOptions"),id:z.string().uuid(),options:optionsSchema}),
  z.object({action:z.literal("assign"),streamerId:z.string().uuid(),accounts:accountIds}),
+ z.object({action:z.literal("assignAccount"),accountId:z.string().uuid(),streamers:z.array(z.string().uuid()).max(500).transform(x=>[...new Set(x)])}),
  // Edits a streamer: display name, channel URL, whether it is clipped, and (optionally) which accounts post its clips.
  z.object({action:z.literal("editStreamer"),id:z.string().uuid(),name:z.string().trim().min(1).max(80),url:z.string().max(500),status:z.enum(["armed","paused","stopped"]).optional(),accounts:accountIds.optional(),captureMode:captureMode.optional(),publishMode:publishMode.optional()}),
  // Clips from a whole-stream recording: one moment picked in the player (seconds into it), or the best few.
@@ -137,6 +138,18 @@ export async function POST(request:Request){
    statements.push(keep.length?db.prepare("DELETE FROM streamer_accounts WHERE streamer_id=? AND owner=? AND account_id NOT IN ("+keep.map(()=>"?").join(",")+")").bind(payload.streamerId,owner,...keep):db.prepare("DELETE FROM streamer_accounts WHERE streamer_id=? AND owner=?").bind(payload.streamerId,owner));
    for(const a of linked)statements.push(db.prepare("INSERT OR IGNORE INTO streamer_accounts (streamer_id,account_id,owner,created_at) VALUES (?,?,?,?)").bind(payload.streamerId,a.id,owner,iso));
    message=streamer.name+(linked.length?"'s clips now post to "+linked.map(a=>"@"+a.username).join(", ")+".":"'s clips are kept in the library and not posted.");
+  }
+  // The same links seen from the account: which streamers' clips post to this one account.
+  if(payload.action==="assignAccount"){
+   const account=(await ownAccounts([payload.accountId]))?.[0];
+   if(!account)return Response.json({error:"That publishing account is no longer connected."},{status:404});
+   const keep=payload.streamers;
+   const {results:found}=keep.length?await db.prepare("SELECT id,name FROM streamers WHERE owner=? AND id IN ("+keep.map(()=>"?").join(",")+")").bind(owner,...keep).all<{id:string;name:string}>():{results:[] as {id:string;name:string}[]};
+   if(found.length!==keep.length)return Response.json({error:"One of those streamers was removed. Refresh and try again."},{status:404});
+   // Existing links keep their creation time, so already-eligible clips stay eligible.
+   statements.push(keep.length?db.prepare("DELETE FROM streamer_accounts WHERE account_id=? AND owner=? AND streamer_id NOT IN ("+keep.map(()=>"?").join(",")+")").bind(account.id,owner,...keep):db.prepare("DELETE FROM streamer_accounts WHERE account_id=? AND owner=?").bind(account.id,owner));
+   for(const s of found)statements.push(db.prepare("INSERT OR IGNORE INTO streamer_accounts (streamer_id,account_id,owner,created_at) VALUES (?,?,?,?)").bind(s.id,account.id,owner,iso));
+   message="@"+account.username+(found.length?" now posts clips from "+found.map(s=>s.name).join(", ")+".":" no longer posts any streamer's clips.");
   }
   if(payload.action==="editStreamer"){
    const current=await db.prepare("SELECT name,url,status,capture_mode,publish_mode FROM streamers WHERE id=? AND owner=?").bind(payload.id,owner).first<{name:string;url:string;status:string;capture_mode:string;publish_mode:string|null}>();

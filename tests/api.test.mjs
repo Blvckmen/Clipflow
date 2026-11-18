@@ -221,6 +221,7 @@ describe("streamers start clipping and route to accounts", () => {
     assert.equal((await dash({ action: "add", url: "https://kick.com/apibad" + Date.now().toString(36), accounts: [randomUUID()] })).status, 404);
     assert.equal((await dash({ action: "assign", streamerId: streamer.id, accounts: [randomUUID()] })).status, 404);
     assert.equal((await dash({ action: "assign", streamerId: randomUUID(), accounts: [] })).status, 404);
+    assert.equal((await dash({ action: "assignAccount", accountId: randomUUID(), streamers: [streamer.id] })).status, 404, "not your account");
     const cleared = await dash({ action: "assign", streamerId: streamer.id, accounts: [] });
     assert.equal(cleared.status, 200);
     assert.match(cleared.body.message, /kept in the library and not posted/);

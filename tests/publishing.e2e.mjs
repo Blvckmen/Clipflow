@@ -166,6 +166,15 @@ test("several accounts: each streamer posts only to the accounts linked to it", 
   assert.deepEqual((await posts()).filter(p => p.clip_id === both.clip.id).map(p => p.account).sort(), ["clipflow_test", "second_test"]);
   ({ body } = await dash());
   assert.deepEqual(body.streamers.find(s => s.id === streamer.id).accounts.sort(), [first.id, other.id].sort());
+  // The same links set from the account's side (Connections): only that account's streamers change.
+  assert.equal((await dash({ action: "assignAccount", accountId: other.id, streamers: [randomUUID()] })).status, 404, "only your own streamers");
+  let r = await dash({ action: "assignAccount", accountId: other.id, streamers: [] });
+  assert.equal(r.status, 200);
+  assert.match(r.body.message, /no longer posts any streamer's clips/);
+  assert.deepEqual((await dash()).body.streamers.find(s => s.id === streamer.id).accounts, [first.id], "the streamer's other account stays");
+  r = await dash({ action: "assignAccount", accountId: other.id, streamers: [streamer.id] });
+  assert.match(r.body.message, /now posts clips from/);
+  assert.deepEqual((await dash()).body.streamers.find(s => s.id === streamer.id).accounts.sort(), [first.id, other.id].sort());
 });
 
 test("Local code writes post captions from the transcript ahead of posting; the owner's own text wins", async () => {
