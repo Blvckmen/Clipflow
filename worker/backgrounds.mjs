@@ -8,17 +8,26 @@ import { join } from "node:path";
 // A number from 0 to 1 that is always the same for this text.
 const unit = text => createHash("sha256").update(text).digest().readUInt32BE(0) / 2 ** 32;
 
-// Which background a clip uses: another gallery clip or a library video chosen in the editor, otherwise one picked
-// from the library by the clip's id, so re-rendering the clip never swaps it. Only videos at least as long as the
-// clip are picked (a library video of unknown length still counts); longer ones are cut to the clip's length.
-export function chooseBackground(edit, clipId, library, clipSeconds = 0) {
+// Which background a clip uses: another gallery clip or a library background chosen in the editor (or pinned at the
+// first render), otherwise one picked from the library. Only videos at least as long as the clip are picked (images,
+// and videos of unknown length, always fit); longer ones are cut to the clip's length.
+// With `lastUsed` (background id -> when it was last used, ms) the pick rotates: backgrounds whose name shares a word
+// with the stream `title` come first (name a loop "Fortnite gameplay" for Fortnite streams), then the one that has
+// gone longest without being used. Without it, the clip's id picks one, the same each time.
+export function chooseBackground(edit, clipId, library, clipSeconds = 0, { lastUsed = null, title = "" } = {}) {
   if (edit?.frame?.mode !== "split") return null;
   const ref = edit.frame.background;
   if (typeof ref === "string" && ref.startsWith("clip:")) return { id: ref, kind: "clip", clip: ref.slice(5), size: null };
   const fits = (library ?? []).filter(b => !(b.duration > 0) || b.duration + 0.05 >= clipSeconds);
   if (!fits.length) return null;
   const chosen = ref && fits.find(b => b.id === ref);
-  return chosen ?? fits[Math.floor(unit(clipId) * fits.length) % fits.length];
+  if (chosen) return chosen;
+  if (!lastUsed) return fits[Math.floor(unit(clipId) * fits.length) % fits.length];
+  const words = new Set(String(title).toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) ?? []);
+  const matches = b => (String(b.name ?? "").toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) ?? []).some(w => words.has(w));
+  const pool = words.size && fits.some(matches) ? fits.filter(matches) : fits;
+  const used = b => (lastUsed instanceof Map ? lastUsed.get(b.id) : lastUsed[b.id]) ?? 0;
+  return [...pool].sort((a, b) => used(a) - used(b) || unit(clipId + a.id) - unit(clipId + b.id))[0];
 }
 
 // Where in the background to start: a spot of its own for each clip, leaving room for the clip to play through.

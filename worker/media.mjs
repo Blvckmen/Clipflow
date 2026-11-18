@@ -105,8 +105,11 @@ export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infi
       const seconds=Math.min(initialEdit.trim.end-initialEdit.trim.start,Math.max(initialEdit.hook?.seconds??5,Math.ceil(text.split(/s+/).length/3)));
       withAi={...initialEdit,hook:{...initialEdit.hook,text,seconds}};
     }
-    const edit=applyAutomaticHook(withAi,words,{enabled:hooks});
-    const rendered=await renderClip(source,{edit,words,width:info.width,height:info.height,background:background?await background(edit):null},join(dir,"clip.mp4"),signal);
+    let edit=applyAutomaticHook(withAi,words,{enabled:hooks});
+    // The background picked for this clip is kept in its edit, so re-renders and the editor use the same one.
+    const bg=background?await background(edit):null;
+    if(bg?.ref&&!edit.frame.background)edit={...edit,frame:{...edit.frame,background:bg.ref}};
+    const rendered=await renderClip(source,{edit,words,width:info.width,height:info.height,background:bg},join(dir,"clip.mp4"),signal);
     const sourceBytes=await readFile(source);
     const meta={edit,words,...(ai?.caption&&{postCaption:ai.caption}),signals:sourceSignals(energy,chat,from,to),source:{width:info.width,height:info.height,duration:Math.round((info.duration||to-from)*100)/100},sourceSha:clipHash(sourceBytes),sourceSize:sourceBytes.length};
     await writeFile(join(dir,"meta.json"),JSON.stringify(meta));

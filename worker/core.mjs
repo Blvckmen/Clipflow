@@ -109,6 +109,9 @@ export class Store {
   recordings() { return this.db.prepare("SELECT * FROM recordings ORDER BY started_at").all(); }
   setRecording(id,fields) { const keys=Object.keys(fields); this.db.prepare("UPDATE recordings SET "+keys.map(k=>k+"=?").join(",")+" WHERE id=?").run(...keys.map(k=>fields[k]),id); }
   removeRecording(id) { this.db.prepare("DELETE FROM recordings WHERE id=?").run(id); }
+  // When each split-screen background was last used, so new clips rotate through the library.
+  backgroundUse() { this.db.exec("CREATE TABLE IF NOT EXISTS background_use (id TEXT PRIMARY KEY, used_at INTEGER NOT NULL)"); return new Map(this.db.prepare("SELECT id,used_at FROM background_use").all().map(r => [r.id, r.used_at])); }
+  usedBackground(id, at = Date.now()) { this.db.exec("CREATE TABLE IF NOT EXISTS background_use (id TEXT PRIMARY KEY, used_at INTEGER NOT NULL)"); this.db.prepare("INSERT INTO background_use (id,used_at) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET used_at=excluded.used_at").run(id, at); }
   add(id,streamer,path,duration,captions,reason=null) { this.db.prepare("INSERT INTO clips(id,streamer,path,state,created_at,duration,captions,reason) VALUES (?,?,?,'capturing',?,?,?,?)").run(id,streamer,path,new Date().toISOString(),duration,Number(captions),reason); }
   // Sentence snapping makes the final length differ slightly from the configured one.
   ready(id,sha,duration) {this.db.prepare("UPDATE clips SET state='ready',sha=?,duration=coalesce(?,duration) WHERE id=?").run(sha,duration??null,id);}

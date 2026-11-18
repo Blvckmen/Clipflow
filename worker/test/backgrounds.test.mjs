@@ -28,6 +28,27 @@ test("only backgrounds at least as long as the clip are picked; gallery clips ca
   assert.deepEqual(fromGallery, { id: "clip:" + lib[1].id, kind: "clip", clip: lib[1].id, size: null });
 });
 
+test("with usage history, new clips rotate through the library and prefer backgrounds named after the stream", () => {
+  const named = [{ ...lib[0], name: "Subway run" }, { ...lib[1], name: "Fortnite gameplay" }, { ...lib[2], name: "Satisfying sand" }];
+  const used = new Map();
+  const picks = [];
+  for (let i = 0; i < 6; i++) { const b = chooseBackground(split(null), "clip-" + i, named, 30, { lastUsed: used }); picks.push(b.id); used.set(b.id, i + 1); }
+  assert.deepEqual(new Set(picks.slice(0, 3)).size, 3, "each one before any repeats");
+  assert.deepEqual(picks.slice(3), picks.slice(0, 3), "then round again, oldest first");
+  assert.equal(chooseBackground(split(null), "c", named, 30, { lastUsed: new Map([[lib[1].id, 99]]), title: "FORTNITE ranked w/ chat" }).id, lib[1].id, "a name matching the title wins, even if recently used");
+  assert.notEqual(chooseBackground(split(null), "c", named, 30, { lastUsed: new Map([[lib[0].id, 5]]), title: "just chatting" }).id, lib[0].id, "no match: the least recently used");
+  assert.equal(chooseBackground(split(lib[0].id), "c", named, 30, { lastUsed: new Map([[lib[0].id, 99]]) }).id, lib[0].id, "a pinned choice is kept");
+});
+
+test("the worker's store remembers when each background was last used", async () => {
+  const { Store } = await import("../core.mjs");
+  const dir = await mkdtemp(join(tmpdir(), "bguse-")), store = new Store(dir);
+  assert.equal(store.backgroundUse().size, 0);
+  store.usedBackground("a", 10); store.usedBackground("b", 20); store.usedBackground("a", 30);
+  assert.deepEqual([...store.backgroundUse()].sort(), [["a", 30], ["b", 20]]);
+  store.close();
+});
+
 test("the start point leaves room for the whole clip", () => {
   for (let i = 0; i < 50; i++) { const s = backgroundStart("c" + i, 60, 45); assert.ok(s >= 0 && s <= 15, String(s)); }
   assert.equal(backgroundStart("c", 20, 45), 0, "shorter than the clip: start at the beginning and loop");

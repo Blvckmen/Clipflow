@@ -230,7 +230,7 @@ async function processJobs() {
       const writer = ({ transcript, from, to }) => writeClipText({ transcript, streamer: who.name, platform: who.platform, title,
         chat: job.chatLines?.length ? chatSample(job.chatLines, job.rawStartMs + from * 1000, job.rawStartMs + to * 1000 + 10_000) : [] }, { signal: controller.signal });
       const result = await processWindow(job.raw, { settings: job.settings, style: job.style, focusFrom: job.focusFrom, focusTo: job.focusTo, chat: job.chat, exact: !!job.exact,
-        hint: [who.name, title].filter(Boolean).join(". "), writer: writerEnabled() ? writer : null, background: edit => backgroundFor(edit, job.id) }, job.dir, controller.signal);
+        hint: [who.name, title].filter(Boolean).join(". "), writer: writerEnabled() ? writer : null, background: edit => backgroundFor(edit, job.id, title ?? "") }, job.dir, controller.signal);
       store.ready(job.id, result.sha, Math.min(90, Math.max(15, Math.round(result.end - result.start))));
       made = true;
       console.log("Clip ready", job.id, "from", job.streamer.url, "(" + reasonLabel[job.reason] + ", " + Math.round(result.end - result.start) + "s)");
@@ -491,8 +491,11 @@ async function pruneRecordings() {
 // The split-screen background for a clip ({ path, start }), downloaded the first time it is needed. Null when the
 // clip isn't split screen or the library is empty; a background that can't be fetched falls back to the blurred
 // fill rather than failing the clip.
-async function backgroundFor(edit, clipId) {
-  const entry = chooseBackground(edit, clipId, config?.backgrounds, edit.trim.end - edit.trim.start);
+// `title`: the stream title, for backgrounds named after what's being streamed. A library background picked here is
+// returned as `ref` so the clip keeps it (it's pinned into the clip's edit).
+async function backgroundFor(edit, clipId, title = "") {
+  const pinned = !!edit.frame.background;
+  const entry = chooseBackground(edit, clipId, config?.backgrounds, edit.trim.end - edit.trim.start, { lastUsed: store.backgroundUse(), title });
   if (!entry) return null;
   try {
     const path = await localBackground(dataDir, entry, async e => {
@@ -505,10 +508,12 @@ async function backgroundFor(edit, clipId) {
       if (!response.ok) throw new Error("HTTP " + response.status);
       return Buffer.from(await response.arrayBuffer());
     });
+    if (entry.kind !== "clip" && !pinned) store.usedBackground(entry.id);
+    const ref = entry.kind === "clip" ? undefined : entry.id;
     // A still image is shown for the whole clip; a video starts at a spot of its own for each clip.
-    if (entry.kind === "image") return { path, start: 0, image: true };
+    if (entry.kind === "image") return { path, start: 0, image: true, ref };
     const info = await videoInfo(path);
-    return { path, start: backgroundStart(clipId, info.duration, edit.trim.end - edit.trim.start) };
+    return { path, start: backgroundStart(clipId, info.duration, edit.trim.end - edit.trim.start), ref };
   } catch (error) {
     problem("Split-screen background unavailable for clip " + clipId + "; used the blurred fill instead: " + error.message);
     return null;
