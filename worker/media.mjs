@@ -6,7 +6,7 @@ import { command } from "./process.mjs";
 import { fileURLToPath } from "node:url";
 import { channelUrl, clipHash, probeResult } from "./core.mjs";
 import { pickWindow, snapToSentences } from "./highlights.mjs";
-import { defaultEdit, defaultStyle, normalizeStyle } from "./edit.mjs";
+import { defaultEdit, defaultStyle, maskWord, normalizeStyle } from "./edit.mjs";
 import { encodeTimeout, renderClip, videoInfo } from "./render.mjs";
 import { applyAutomaticHook } from "./hooks.mjs";
 const run=promisify(execFile);
@@ -54,8 +54,9 @@ export function sourceSignals(energy,chat,from,to) {
 // and renders the vertical clip from it with `edit` (see edit.mjs), the same way the dashboard editor re-renders.
 // Writes clip.mp4, source.mp4 and meta.json into `dir` and removes `raw` and intermediates.
 // With `exact` (a moment picked by hand in a recording) the clip is exactly [focusFrom, focusTo]: no window search
-// and no sentence snapping.
-export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false},dir,signal) {
+// and no sentence snapping. `hint` (streamer name, stream title) helps Whisper spell them; `writer` (see writer.mjs)
+// may write the hook and post caption from the clip's transcript, else the transcript-based ones are used.
+export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false,hint="",writer=null},dir,signal) {
   const source=join(dir,"source.mp4"), energyFile=join(dir,"energy.json"), wordsFile=join(dir,"words.json");
   await mkdir(dir,{recursive:true});
   try {
@@ -66,7 +67,7 @@ export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infi
     // Transcription off (a workspace setting): no Whisper, so no subtitles and no sentence-aligned cuts.
     const transcribe=settings.transcribe!==false, captions=transcribe&&!!settings.captions;
     if(transcribe)try {
-      await command(python,[script("captions.py"),"words",raw,wordsFile],{signal,timeout:600_000}).done;
+      await command(python,[script("captions.py"),"words",raw,wordsFile,String(hint).slice(0,200)],{signal,timeout:600_000}).done;
       segments=JSON.parse(await readFile(wordsFile,"utf8")).segments;
     } catch(error) {
       // Sentence snapping is a refinement; only captions make the transcript mandatory.
@@ -90,11 +91,24 @@ export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infi
     // The workspace's on/off switch for captions always wins over a saved style.
     base.captions.on=captions;
     const initialEdit=defaultEdit(base,{trimStart:start-from,trimEnd:end-from});
-    // Build the title before the first render; the saved edit and dashboard preview share it.
-    const edit=applyAutomaticHook(initialEdit,words,{enabled:transcribe && process.env.AUTO_HOOKS!=="false"});
+    // Build the title before the first render; the saved edit and dashboard preview share it. The AI writer's hook
+    // comes first when it has one; otherwise (or with AUTO_HOOKS=false off) the transcript-based one.
+    const hooks=transcribe && process.env.AUTO_HOOKS!=="false";
+    let ai=null;
+    if(writer&&!signal.aborted){
+      const said=words.filter(w=>w[0]>=initialEdit.trim.start-.05&&w[1]<=initialEdit.trim.end+.05).map(w=>w[2]).join(" ");
+      ai=await writer({transcript:said,from,to:to}).catch(()=>null);
+    }
+    let withAi=initialEdit;
+    if(hooks&&ai?.hook&&!initialEdit.hook.text?.trim()){
+      const text=initialEdit.captions.mask?ai.hook.split(" ").map(maskWord).join(" "):ai.hook;
+      const seconds=Math.min(initialEdit.trim.end-initialEdit.trim.start,Math.max(initialEdit.hook?.seconds??5,Math.ceil(text.split(/s+/).length/3)));
+      withAi={...initialEdit,hook:{...initialEdit.hook,text,seconds}};
+    }
+    const edit=applyAutomaticHook(withAi,words,{enabled:hooks});
     const rendered=await renderClip(source,{edit,words,width:info.width,height:info.height,background:background?await background(edit):null},join(dir,"clip.mp4"),signal);
     const sourceBytes=await readFile(source);
-    const meta={edit,words,signals:sourceSignals(energy,chat,from,to),source:{width:info.width,height:info.height,duration:Math.round((info.duration||to-from)*100)/100},sourceSha:clipHash(sourceBytes),sourceSize:sourceBytes.length};
+    const meta={edit,words,...(ai?.caption&&{postCaption:ai.caption}),signals:sourceSignals(energy,chat,from,to),source:{width:info.width,height:info.height,duration:Math.round((info.duration||to-from)*100)/100},sourceSha:clipHash(sourceBytes),sourceSize:sourceBytes.length};
     await writeFile(join(dir,"meta.json"),JSON.stringify(meta));
     return {...rendered,start,end};
   } finally {

@@ -105,10 +105,24 @@ logs to `worker\data\worker.log`.
 | `MAX_CAPTURES` | `1` | Streamers recorded at the same time |
 | `LIVE_CHECK_SECONDS` | `120` | How often each streamer is checked for a live stream |
 | `STREAMLINK` | `streamlink` | streamlink executable |
-| `WHISPER_MODEL` | `tiny` | faster-whisper model for captions |
+| `WHISPER_MODEL` | `small` | faster-whisper model for transcripts (`tiny` is faster but much rougher on stream audio) |
+| `WHISPER_THREADS` | `4` | CPU cores Whisper uses |
+| `WHISPER_BEAM` | `1` | Whisper beam size (higher is slightly more accurate and much slower) |
+| `WHISPER_CONTEXT` | `on` | `off` stops Whisper using earlier sentences as context: fewer repeats in very noisy audio, less punctuation |
+| `AI_WRITER` | `on` | `off` stops the local AI writer; hooks and captions then come from the transcript alone |
+| `OLLAMA_URL` | `http://127.0.0.1:11434` | Where Ollama runs |
+| `OLLAMA_MODEL` | `qwen2.5:7b` | Model the AI writer uses (`ollama pull` it first); `qwen2.5:3b` is twice as fast with weaker hooks |
 | `PYTHON` | `python` | Python executable |
 
 Only capture channels you have permission to record and repost.
+
+## AI writer (optional)
+
+With [Ollama](https://ollama.com) installed and a model pulled (`ollama pull qwen2.5:7b`), the worker asks it to write
+each new clip's on-screen hook and post caption from the transcript, the stream title and (on Twitch) what chat said
+at that moment. It runs on this machine: free and private, about 25 seconds per clip on a 4-core laptop CPU, plus about a minute the first time the model loads. If
+Ollama isn't running, is slow or answers oddly, the clip keeps the transcript-based hook and caption, so nothing
+waits on it.
 
 ## Test
 

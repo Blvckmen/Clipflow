@@ -11,6 +11,7 @@ import { normalizeEdit } from "./edit.mjs";
 import { renderClip, videoInfo } from "./render.mjs";
 import { backgroundStart, chooseBackground, localBackground } from "./backgrounds.mjs";
 import { Recorder } from "./recorder.mjs";
+import { chatSample, writeClipText, writerEnabled } from "./writer.mjs";
 import { command } from "./process.mjs";
 import { bucketSignals, encodePreview, extractRange, joinSegments, parts, pickMoments } from "./recordings.mjs";
 const run = promisify(execFile);
@@ -72,6 +73,14 @@ function setLive(id, status, title = null) {
   unreported.add(id);
 }
 const isLive = id => { const s = live.get(id); return s?.status === "live" && Date.now() - s.checkedAt <= liveCheckMs * 2; };
+// "https://www.twitch.tv/name" -> { name: "name", platform: "Twitch" }.
+function streamerInfo(url) {
+  try {
+    const u = new URL(url), host = u.hostname.replace(/^www./, ""), parts = u.pathname.split("/").filter(Boolean).filter(p => p !== "live");
+    const platform = { "twitch.tv": "Twitch", "kick.com": "Kick", "youtube.com": "YouTube", "tiktok.com": "TikTok" }[host] ?? host;
+    return { name: decodeURIComponent(parts.at(-1) ?? "").replace(/^@/, ""), platform };
+  } catch { return { name: "", platform: "" }; }
+}
 const nextUtcMidnight = () => { const d = new Date(); d.setUTCHours(24, 0, 0, 0); return d.getTime(); };
 
 async function probe(streamers) {
@@ -194,7 +203,9 @@ async function clipWindow(session, fromMs, toMs, reason) {
     const length = (toMs - rawStartMs) / 1000 + 10;
     // The streamer's own look if one is saved, else the workspace's.
     const style = settings.streamers.find(s => s.id === streamer.id)?.style ?? settings.style ?? null;
-    jobs.push({ id, dir, raw, streamer, settings, style, reason, chat: session.chat ? perSecond(session.chat.times, rawStartMs, length) : [], focusFrom: (fromMs - rawStartMs) / 1000, focusTo: (toMs - rawStartMs) / 1000 });
+    // What chat said during the window (Twitch), for the AI writer.
+    const chatLines = session.chat?.lines.filter(l => l.t >= rawStartMs && l.t <= toMs + 15_000) ?? [];
+    jobs.push({ id, dir, raw, streamer, settings, style, reason, rawStartMs, chatLines, chat: session.chat ? perSecond(session.chat.times, rawStartMs, length) : [], focusFrom: (fromMs - rawStartMs) / 1000, focusTo: (toMs - rawStartMs) / 1000 });
     void processJobs();
   } catch (error) {
     store.fail(id);
@@ -214,7 +225,12 @@ async function processJobs() {
     processing = { job, controller };
     let made = false, why = null;
     try {
-      const result = await processWindow(job.raw, { settings: job.settings, style: job.style, focusFrom: job.focusFrom, focusTo: job.focusTo, chat: job.chat, exact: !!job.exact, background: edit => backgroundFor(edit, job.id) }, job.dir, controller.signal);
+      // The streamer's name and stream title help Whisper spell them and give the AI writer context.
+      const who = streamerInfo(job.streamer.url), title = live.get(job.streamer.id)?.title ?? null;
+      const writer = ({ transcript, from, to }) => writeClipText({ transcript, streamer: who.name, platform: who.platform, title,
+        chat: job.chatLines?.length ? chatSample(job.chatLines, job.rawStartMs + from * 1000, job.rawStartMs + to * 1000 + 10_000) : [] }, { signal: controller.signal });
+      const result = await processWindow(job.raw, { settings: job.settings, style: job.style, focusFrom: job.focusFrom, focusTo: job.focusTo, chat: job.chat, exact: !!job.exact,
+        hint: [who.name, title].filter(Boolean).join(". "), writer: writerEnabled() ? writer : null, background: edit => backgroundFor(edit, job.id) }, job.dir, controller.signal);
       store.ready(job.id, result.sha, Math.min(90, Math.max(15, Math.round(result.end - result.start))));
       made = true;
       console.log("Clip ready", job.id, "from", job.streamer.url, "(" + reasonLabel[job.reason] + ", " + Math.round(result.end - result.start) + "s)");
@@ -557,7 +573,7 @@ async function report() {
       const permanent = status => status >= 400 && status < 500 && status !== 401 && status !== 429;
       // The editor's material: the first edit, transcript, heat strip and the source's size and hash.
       const meta = await readMeta(row.path);
-      const extra = meta ? { edit: meta.edit, transcript: meta.words, signals: meta.signals, source: { ...meta.source, sha: meta.sourceSha, size: meta.sourceSize } } : {};
+      const extra = meta ? { edit: meta.edit, transcript: meta.words, signals: meta.signals, source: { ...meta.source, sha: meta.sourceSha, size: meta.sourceSize }, ...(meta.postCaption && { postCaption: meta.postCaption }) } : {};
       const response = await api("/api/worker/clips", { method: "POST", body: JSON.stringify({ id: row.id, streamerId: row.streamer, createdAt: row.created_at, duration: row.duration, captions: !!row.captions, sha: row.sha, size, ...(row.reason && { reason: row.reason }), ...extra }) });
       // 4xx other than auth and rate limiting will not succeed on retry (for example a removed streamer).
       if (permanent(response.status)) { store.rejected(row.id); problem("Dashboard refused clip " + row.id + " (HTTP " + response.status + ")"); continue; }

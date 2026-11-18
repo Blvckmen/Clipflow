@@ -16,6 +16,7 @@ export class TwitchChat {
   constructor(login) {
     this.login = login;
     this.times = [];        // epoch ms of each chat message
+    this.lines = [];        // { t, text } of recent messages, for the AI writer (what chat said about a moment)
     this.since = Date.now(); // start of continuous observation, reset after a reconnect gap
     this.closed = false;
     this.attempt = 0;
@@ -34,9 +35,14 @@ export class TwitchChat {
       const now = Date.now();
       for (const line of String(event.data).split("\r\n")) {
         if (line.startsWith("PING")) ws.send("PONG" + line.slice(4));
-        else if (line.includes(" PRIVMSG #")) this.times.push(now);
+        else if (line.includes(" PRIVMSG #")) {
+          this.times.push(now);
+          const text = line.slice(line.indexOf(" :", line.indexOf(" PRIVMSG #")) + 2).trim().slice(0, 200);
+          if (text) this.lines.push({ t: now, text });
+        }
       }
       if (this.times.length && this.times[0] < now - KEEP_MS) this.times = this.times.filter(t => t >= now - KEEP_MS);
+      if (this.lines.length > 3000 || (this.lines.length && this.lines[0].t < now - KEEP_MS)) this.lines = this.lines.filter(l => l.t >= now - KEEP_MS).slice(-3000);
     });
     ws.addEventListener("close", () => {
       if (this.closed) return;

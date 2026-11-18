@@ -517,6 +517,17 @@ describe("split-screen backgrounds", () => {
   });
 });
 
+describe("AI writer captions", () => {
+  test("a clip reported with a caption from the worker's AI writer keeps it, marked as AI-written", async () => {
+    const bytes = Buffer.alloc(4096, 9), postCaption = "Chat was not ready for this one.\n\n#clips";
+    const { clip, response } = await reportClip(bytes, { postCaption });
+    assert.equal(response.status, 200);
+    const row = (await dash()).body.clips.find(c => c.id === clip.id);
+    assert.deepEqual([row.post_caption, row.caption_source], [postCaption, "ai"]);
+    assert.equal((await reportClip(bytes, { postCaption: "x".repeat(2201) })).response.status, 400, "too long");
+  });
+});
+
 describe("recordings", () => {
   const rec = () => ({ op: "recording", id: randomUUID(), streamerId: streamer.id, startedAt: new Date().toISOString(), state: "recording", title: "Finals" });
   const post = body => worker("/api/worker/recordings", { method: "POST", body: JSON.stringify(body) });
