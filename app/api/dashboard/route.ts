@@ -11,6 +11,7 @@ import { normalizeStyle } from "../../../worker/edit.mjs";
 import { socialCaptionsAvailable } from "../../../lib/social-caption";
 import { aiCaptionsAvailable } from "../../../lib/post-caption";
 import { removeRecordingFiles } from "../../../lib/recordings";
+import { thumbOf } from "../../../lib/thumbs";
 import { env } from "cloudflare:workers";
 import { hashToken, newToken } from "../../../lib/worker-auth";
 import { z } from "zod";
@@ -79,7 +80,7 @@ export async function GET(){
    db.prepare("SELECT p.id,p.clip_id,p.platform,p.account_id,p.state,p.permalink,p.error,p.attempts,p.created_at,p.published_at,p.round,p.views,p.likes,p.draft,s.name AS streamer,a.username AS account FROM posts p LEFT JOIN clips c ON c.id=p.clip_id LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner LEFT JOIN accounts a ON a.id=p.account_id WHERE p.owner=? ORDER BY p.created_at DESC LIMIT 100").bind(owner).all(),
    db.prepare("SELECT streamer_id,account_id FROM streamer_accounts WHERE owner=?").bind(owner).all<{streamer_id:string;account_id:string}>(),
   ]);
-  const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(owner).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(owner).all(),db.prepare("SELECT c.id,c.streamer_id,c.created_at,c.duration,c.captions,c.size,c.file_key IS NOT NULL AS stored,c.review,c.reason,(c.edit IS NOT NULL OR c.file_key IS NOT NULL) AS editable,c.edit IS NULL AS legacy,c.post_caption,c.caption_source,c.source_key IS NOT NULL AS source_stored,c.render_state,c.render_error,c.rendered_at,c.edit_rev,s.name AS streamer FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.owner=? ORDER BY c.created_at DESC LIMIT 200").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at FROM worker_tokens WHERE owner=?").bind(owner).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null}>()]);
+  const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(owner).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(owner).all(),db.prepare("SELECT c.id,c.streamer_id,c.created_at,c.duration,c.captions,c.size,c.file_key IS NOT NULL AS stored,c.review,c.reason,(c.edit IS NOT NULL OR c.file_key IS NOT NULL) AS editable,c.edit IS NULL AS legacy,c.post_caption,c.caption_source,c.source_key IS NOT NULL AS source_stored,c.render_state,c.render_error,c.rendered_at,c.edit_rev,c.thumb_rev,s.name AS streamer FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.owner=? ORDER BY c.created_at DESC LIMIT 200").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at FROM worker_tokens WHERE owner=?").bind(owner).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null}>()]);
   const lastSeen=w?.last_seen??null,connected=!!lastSeen&&Date.now()-Date.parse(lastSeen)<ENGINE_FRESH_MS;
   const engine={connected,lastSeen,tokenCreated:w?.created_at??null,lastError:w?.last_error??null,lastErrorAt:w?.last_error_at??null,status:connected?"Worker connected":w?(lastSeen?"Worker offline":"Waiting for worker"):"Setup required"};
   const streamers=s.results.map(x=>({...x,style:parse(x.style),accounts:l.results.filter(k=>k.streamer_id===x.id).map(k=>k.account_id)}));
@@ -195,10 +196,10 @@ export async function POST(request:Request){
    statements.push(db.prepare("DELETE FROM posts WHERE owner=? AND state!='published' AND clip_id IN (SELECT value FROM json_each(?))").bind(owner,JSON.stringify(ids)));
   };
   if(payload.action==="deleteClip"){
-   const clip=await db.prepare("SELECT c.file_key,c.source_key,s.name FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(payload.id,owner).first<{file_key:string|null;source_key:string|null;name:string|null}>();
+   const clip=await db.prepare("SELECT c.id,c.file_key,c.source_key,c.thumb_rev,s.name FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(payload.id,owner).first<{id:string;file_key:string|null;source_key:string|null;thumb_rev:number|null;name:string|null}>();
    if(!clip)return Response.json({error:"Clip not found."},{status:404});
    // Remove the stored files first: a leftover row is visible and retryable, an orphaned object is not.
-   const keys=[clip.file_key,clip.source_key].filter((k):k is string=>!!k);
+   const keys=[clip.file_key,clip.source_key,thumbOf(owner,clip)].filter((k):k is string=>!!k);
    if(keys.length)await bucket()?.delete(keys);
    await dropUnsent([payload.id]);
    statements.push(db.prepare("DELETE FROM clips WHERE id=? AND owner=?").bind(payload.id,owner));
@@ -296,9 +297,9 @@ export async function POST(request:Request){
     return Response.json({ok:true,message:{approved:"Approved ",rejected:"Rejected ",pending:"Moved back to review: "}[review]+clips(n(r))+"."});
    }
    if(payload.op==="delete"){
-    const {results:rows}=await db.prepare("SELECT id,file_key,source_key FROM clips WHERE owner=? AND id IN ("+marks+")").bind(owner,idList).all<{id:string;file_key:string|null;source_key:string|null}>();
+    const {results:rows}=await db.prepare("SELECT id,file_key,source_key,thumb_rev FROM clips WHERE owner=? AND id IN ("+marks+")").bind(owner,idList).all<{id:string;file_key:string|null;source_key:string|null;thumb_rev:number|null}>();
     // Stored files first: a leftover row is visible and retryable, an orphaned object is not.
-    const keys=rows.flatMap(r=>[r.file_key,r.source_key]).filter((k):k is string=>!!k);
+    const keys=rows.flatMap(r=>[r.file_key,r.source_key,thumbOf(owner,r)]).filter((k):k is string=>!!k);
     for(let i=0;i<keys.length;i+=500)await bucket()?.delete(keys.slice(i,i+500));
     await dropUnsent(rows.map(r=>r.id));
     statements.push(db.prepare("DELETE FROM clips WHERE owner=? AND id IN ("+marks+")").bind(owner,idList));

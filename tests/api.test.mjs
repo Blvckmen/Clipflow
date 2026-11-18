@@ -263,6 +263,26 @@ describe("clip editor", () => {
     await dash({ action: "deleteClip", id: c.id });
   });
 
+  test("the library thumbnail the browser takes is kept for the clip's current version and goes with the clip", async () => {
+    const bytes = Buffer.alloc(6000, 7), { clip: c } = await reportClip(bytes);
+    assert.equal((await upload(c.id, bytes)).status, 200);
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(400, 1)]);
+    const thumb = (rev, body = jpeg, type = "image/jpeg", who = cookie) => fetch(base + "/api/clips/" + c.id + "/thumb?rev=" + rev, { method: "POST", headers: { cookie: who, "content-type": type }, body });
+    assert.equal((await fetch(base + "/api/clips/" + c.id + "/thumb")).status, 401, "owner only");
+    assert.equal((await fetch(base + "/api/clips/" + c.id + "/thumb", { headers: { cookie } })).status, 404, "none yet");
+    assert.equal((await thumb(0, Buffer.alloc(400, 1))).status, 400, "not a JPEG");
+    assert.equal((await thumb(0, jpeg, "image/png")).status, 415);
+    assert.equal((await thumb(3)).status, 409, "a still of another version");
+    assert.equal((await thumb(0, jpeg, "image/jpeg", "")).status, 401);
+    assert.equal((await thumb(0)).status, 200);
+    assert.equal((await dash()).body.clips.find(x => x.id === c.id).thumb_rev, 0);
+    const got = await fetch(base + "/api/clips/" + c.id + "/thumb?v=0", { headers: { cookie } });
+    assert.equal(got.headers.get("content-type"), "image/jpeg");
+    assert.deepEqual(Buffer.from(await got.arrayBuffer()), jpeg);
+    assert.equal((await dash({ action: "deleteClip", id: c.id })).status, 200);
+    assert.equal((await fetch(base + "/api/clips/" + c.id + "/thumb", { headers: { cookie } })).status, 404, "deleted with the clip");
+  });
+
   test("a clip reported with its source and transcript can be opened in the editor", async () => {
     const reported = await reportClip(file, { edit: firstEdit, transcript: words, signals: { energy: [0.1, 1], chat: [0, 4] }, source: { width: 1920, height: 1080, duration: 42, sha: sha256(source), size: source.length } });
     clip = reported.clip;

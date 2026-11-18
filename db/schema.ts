@@ -54,6 +54,9 @@ export const clips=sqliteTable("clips",{
  // finished), set by database triggers (migration 0021); null once the publisher has looked at it. The publisher only
  // reads flagged clips, so its once-a-minute run doesn't read the whole clip history.
  queueCheck:text("queue_check"),
+ // The edit_rev of the library thumbnail (a JPEG still in R2 at thumbs/<owner>/<id>-<rev>.jpg), taken by the browser
+ // the first time the clip is shown; a thumbnail of an older revision is replaced the next time the clip is shown.
+ thumbRev:integer("thumb_rev"),
  postCaption:text("post_caption"),captionSource:text("caption_source"),captionTries:integer("caption_tries").notNull().default(0),captionError:text("caption_error"),
 },t=>[index("clips_owner_created").on(t.owner,t.createdAt),
  // Indexes for the frequent reads (the once-a-minute publisher, the worker's config poll, the dashboard's analytics):

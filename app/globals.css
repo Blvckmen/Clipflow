@@ -347,3 +347,54 @@ th.num{text-align:right}
 .color-pair{display:flex;align-items:center;gap:10px;margin-top:8px}.color-pair input[type=color]{width:44px;height:30px;padding:2px}
 /* Facecam layouts: the webcam box controls. */
 .facecam-controls{display:flex;flex-direction:column;gap:10px;margin:4px 0 8px}.facecam-controls>small{font-size:12px;color:var(--muted);line-height:1.5}
+
+/* Library thumbnails: an image (hover plays the video over it), or the video itself until the thumbnail is saved. */
+.thumb-media{position:absolute;inset:0;display:block}
+.clip-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.clip-thumb .thumb-hover{position:absolute;inset:0}
+.show-more{display:flex;justify-content:center;padding:2px 0 24px}
+.review-start{white-space:nowrap}
+/* Review mode: the clip player with keyboard shortcuts. */
+dialog:focus{outline:none}
+dialog.review-dialog{width:min(760px,calc(100vw - 32px))}
+.review-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.review-pos{color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
+.review-stage{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:12px}
+.review-stage .clip-player{margin:0;max-height:66vh;min-width:0}
+.review-nav{flex:none}
+.review-actions{align-items:center}
+.review-actions .spacer{flex:1}
+.key-hints{display:flex;flex-wrap:wrap;justify-content:center;gap:6px 16px;margin-top:16px;font-size:12px;color:var(--muted)}
+.key-hints span{display:inline-flex;align-items:center;gap:5px}
+kbd{display:inline-block;min-width:22px;padding:2px 6px;border:1px solid #3a4654;border-bottom-width:2px;border-radius:5px;background:#10151b;color:#d6dde6;font:600 11px/1.4 var(--sans);text-align:center}
+@media (hover:none){.key-hints,.toast-key{display:none}}
+@media (max-width:640px){.review-nav{display:none}.review-stage .clip-player{max-height:58vh}}
+.toast-action{background:none;border:0;padding:0 0 0 6px;color:var(--lime);font-weight:600;font-size:14px;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+.toast-key{margin-left:2px;opacity:.75}
+/* Overview: what needs you, who is live, and today's posting. */
+.now-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:18px;margin-bottom:24px}
+@media (max-width:900px){.now-grid{grid-template-columns:1fr}}
+.attention-list,.live-list,.posting-list{padding:4px 23px 8px}
+.attention,.live-row,.posting-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #222a33}
+.attention:last-child,.live-row:last-child,.posting-row:last-child{border-bottom:0}
+.attention>div,.live-row>div,.posting-main{flex:1;min-width:0}
+.attention strong,.live-row strong{display:block;font-size:14px;font-weight:600}
+.attention small,.live-row small{display:block;margin-top:2px;color:var(--muted);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attention button{flex:none}
+.attention-icon{flex:none;display:grid;place-items:center;width:34px;height:34px;border-radius:8px;background:#222a33;color:#c8d0da}
+.attention.amber .attention-icon{background:#4a3a1d;color:#ecd6a3}
+.attention.bad .attention-icon{background:#4a2224;color:#ffaaa8}
+.all-clear{display:flex;align-items:center;gap:12px;padding:22px 23px;color:var(--lime)}
+.all-clear strong{display:block;font-size:14px;color:var(--text)}
+.all-clear small{display:block;color:var(--muted);font-size:12.5px}
+.all-clear.quiet{color:var(--muted)}
+.live-dot{width:9px;height:9px;border-radius:50%;background:#ff5a5f;animation:live-pulse 1.8s ease-out infinite}
+@keyframes live-pulse{0%{box-shadow:0 0 0 0 #ff5a5f99}70%{box-shadow:0 0 0 8px #ff5a5f00}100%{box-shadow:0 0 0 0 #ff5a5f00}}
+.posting-line{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.posting-line strong{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.posting-count{flex:none;font-size:13px;color:#c8d0da;font-variant-numeric:tabular-nums}
+.posting-count.full{color:#d9bd80}
+.meter{height:6px;margin:7px 0 5px;border-radius:3px;background:#222a33;overflow:hidden}
+.meter span{display:block;height:100%;border-radius:3px;background:var(--lime);transition:width .3s}
+.posting-row small{font-size:12px}
+@media (max-width:640px){.attention{flex-wrap:wrap}.attention button{width:100%}.attention-list,.live-list,.posting-list{padding:2px 16px 6px}}
