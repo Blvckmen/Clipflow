@@ -7,6 +7,22 @@ export type Background = { id: string; name: string; size: number; duration?: nu
 const IMAGE_TYPES: Record<string, string> = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp" };
 const isImage = (b: Background) => !!b.content_type?.startsWith("image/");
 
+// AVIF images are converted in the browser (which decodes AVIF natively) to a high-quality WebP before upload, so
+// the worker renders them like any other image, whatever its ffmpeg version supports.
+const isAvif = (file: File) => file.type === "image/avif" || file.name.toLowerCase().endsWith(".avif");
+async function avifToWebp(file: File): Promise<File> {
+  let bitmap: ImageBitmap;
+  try { bitmap = await createImageBitmap(file); }
+  catch { throw new Error("This browser can't read AVIF images. Update it, or convert the image to JPG or PNG first."); }
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width; canvas.height = bitmap.height;
+  canvas.getContext("2d")!.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/webp", 0.92));
+  if (!blob || blob.type !== "image/webp") throw new Error("Couldn't convert the AVIF image. Convert it to JPG or PNG first.");
+  return new File([blob], file.name.replace(/\.avif$/i, "") + ".webp", { type: "image/webp" });
+}
+
 // A video file's length in seconds, read by the browser (null if it can't be read).
 export function videoLength(src: string): Promise<number | null> {
   return new Promise(resolve => {
@@ -32,10 +48,16 @@ export function BackgroundLibrary({ backgrounds, storage, busy, onUploaded, onDe
       if (d) void fetch("/api/dashboard", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "backgroundLength", id: b.id, duration: d }) });
     });
   }, [backgrounds]);
-  const upload = async (file: File) => {
+  const upload = async (picked: File) => {
     setError("");
+    let file = picked;
+    if (isAvif(picked)) {
+      if (picked.size > 15 * 1024 * 1024) return setError("Background images can be up to 15 MB.");
+      try { setUploading(picked.name); file = await avifToWebp(picked); }
+      catch (e) { setUploading(""); if (input.current) input.current.value = ""; return setError(e instanceof Error ? e.message : "Couldn't read that AVIF image."); }
+    }
     const ext = file.name.toLowerCase().split(".").pop() ?? "", type = IMAGE_TYPES[ext] ?? (file.type === "video/mp4" || ext === "mp4" ? "video/mp4" : "");
-    if (!type) return setError("Upload an MP4 video or a JPEG, PNG or WebP image.");
+    if (!type) return setError("Upload an MP4 video or a JPEG, PNG, WebP or AVIF image.");
     const image = type.startsWith("image/");
     if (image && file.size > 15 * 1024 * 1024) return setError("Background images can be up to 15 MB.");
     if (file.size > 95 * 1024 * 1024) return setError("Background videos can be up to 95 MB. A 30–60 second loop at 720p is plenty.");
@@ -53,7 +75,7 @@ export function BackgroundLibrary({ backgrounds, storage, busy, onUploaded, onDe
   return <section className="panel settings-panel background-library">
     <div className="panel-heading"><div><h2>Split-screen backgrounds <span className="count">{backgrounds.length}</span></h2><p>Videos or images shown under the stream when a clip uses split screen. Each clip gets one that fits (a video at least as long as the clip, or any image), or the one you pick in the editor, where your other clips can be picked too. New clips rotate through the library, and a background named after a game or topic (e.g. &quot;Fortnite gameplay&quot;) is used first for streams with that word in their title.</p></div>
       <button className="primary" type="button" disabled={!storage || busy || !!uploading} onClick={() => input.current?.click()}>{uploading ? <Loader2 size={15} className="spin" /> : <Upload size={15} />}{uploading ? "Uploading…" : "Upload video or image"}</button>
-      <input ref={input} type="file" accept="video/mp4,.mp4,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void upload(f); }} /></div>
+      <input ref={input} type="file" accept="video/mp4,.mp4,image/jpeg,image/png,image/webp,image/avif,.jpg,.jpeg,.png,.webp,.avif" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void upload(f); }} /></div>
     {error && <div className="error" role="alert">{error}</div>}
     {uploading && <div className="subtle-note">Uploading {uploading}. Keep this tab open until it finishes.</div>}
     {!storage ? <div className="empty"><p>Clip storage (R2) is off on this site, so backgrounds can&apos;t be stored.</p></div>
