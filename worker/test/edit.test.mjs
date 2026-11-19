@@ -120,6 +120,11 @@ test("split screen: the stream covers the top half and a background video the bo
   assert.throws(() => normalizeStyle({ frame: { mode: "split", background: "../etc/passwd" } }), /Background video/);
   assert.equal(normalizeStyle({ frame: { mode: "split", background: "clip:0b5a6acf-19ee-570a-9e28-aaf4c6c5765c" } }).frame.background, "clip:0b5a6acf-19ee-570a-9e28-aaf4c6c5765c", "a gallery clip");
   assert.throws(() => normalizeStyle({ frame: { mode: "split", background: "clip:../x" } }));
+  const id = "0b5a6acf-19ee-570a-9e28-aaf4c6c5765c";
+  assert.deepEqual(normalizeStyle({ frame: { mode: "split", pool: [id, id.toUpperCase()] } }).frame.pool, [id], "a streamer's background set, without repeats");
+  assert.deepEqual(normalizeStyle({ frame: { mode: "fit" } }).frame.pool, [], "older styles: the whole library");
+  assert.throws(() => normalizeStyle({ frame: { mode: "split", pool: ["clip:" + id] } }), /Background set/);
+  assert.throws(() => normalizeStyle({ frame: { mode: "split", pool: "all" } }), /Background set/);
   assert.equal(normalizeStyle({ frame: { mode: "fit" } }).frame.background, null, "older styles get no background");
 });
 

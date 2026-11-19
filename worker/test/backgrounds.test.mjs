@@ -49,6 +49,14 @@ test("the worker's store remembers when each background was last used", async ()
   store.close();
 });
 
+test("a streamer's own background set narrows the pick, falling back to the library when none fits", () => {
+  const timed = [{ ...lib[0], duration: 60 }, { ...lib[1], duration: 60 }, { ...lib[2], duration: 10 }];
+  const withPool = p => ({ frame: { mode: "split", background: null, pool: p } });
+  for (let i = 0; i < 20; i++) assert.equal(chooseBackground(withPool([lib[1].id]), "c" + i, timed, 30).id, lib[1].id, "only the set");
+  for (let i = 0; i < 20; i++) assert.notEqual(chooseBackground(withPool([lib[2].id]), "c" + i, timed, 30)?.id, lib[2].id, "the set's only video is too short: the rest of the library");
+  assert.ok([lib[0].id, lib[1].id].includes(chooseBackground(withPool([]), "c", timed, 30).id), "empty set: whole library");
+});
+
 test("the start point leaves room for the whole clip", () => {
   for (let i = 0; i < 50; i++) { const s = backgroundStart("c" + i, 60, 45); assert.ok(s >= 0 && s <= 15, String(s)); }
   assert.equal(backgroundStart("c", 20, 45), 0, "shorter than the clip: start at the beginning and loop");

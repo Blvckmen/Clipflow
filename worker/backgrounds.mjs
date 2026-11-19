@@ -18,7 +18,10 @@ export function chooseBackground(edit, clipId, library, clipSeconds = 0, { lastU
   if (edit?.frame?.mode !== "split") return null;
   const ref = edit.frame.background;
   if (typeof ref === "string" && ref.startsWith("clip:")) return { id: ref, kind: "clip", clip: ref.slice(5), size: null };
-  const fits = (library ?? []).filter(b => !(b.duration > 0) || b.duration + 0.05 >= clipSeconds);
+  const long = (library ?? []).filter(b => !(b.duration > 0) || b.duration + 0.05 >= clipSeconds);
+  // A streamer's own set (frame.pool) narrows the pick, unless none of the set fits this clip.
+  const set = Array.isArray(edit.frame.pool) && edit.frame.pool.length ? long.filter(b => edit.frame.pool.includes(b.id)) : [];
+  const fits = set.length ? set : long;
   if (!fits.length) return null;
   const chosen = ref && fits.find(b => b.id === ref);
   if (chosen) return chosen;

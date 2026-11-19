@@ -669,3 +669,19 @@ describe("a streamer's own publishing mode", () => {
     await dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, framing, destinations } });
   });
 });
+
+describe("split screen per streamer", () => {
+  test("a streamer's split screen, background set and layout are saved and sent to the worker", async () => {
+    const name = "split" + Date.now().toString(36);
+    const added = await dash({ action: "add", url: "https://twitch.tv/" + name });
+    const id = added.body.streamerId, bgId = randomUUID();
+    const style = defaultStyle({ framing: "split" });
+    style.frame.pool = [bgId];
+    style.frame.split = { ...style.frame.split, top: "background", share: 0.6, volume: 0.3 };
+    assert.equal((await dash({ action: "style", streamerId: id, style })).status, 200);
+    const s = (await (await worker("/api/worker/config")).json()).streamers.find(x => x.id === id);
+    assert.deepEqual([s.style.frame.mode, s.style.frame.pool, s.style.frame.split.top, s.style.frame.split.share, s.style.frame.split.volume, s.style.captions.y], ["split", [bgId], "background", 0.6, 0.3, 0.5]);
+    assert.equal((await dash({ action: "style", streamerId: id, style: { ...style, frame: { ...style.frame, pool: ["clip:" + bgId] } } })).status, 400, "a gallery clip can't be in a set");
+    await dash({ action: "remove", id });
+  });
+});

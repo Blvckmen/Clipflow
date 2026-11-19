@@ -16,7 +16,8 @@ export const FONTS = ["Arial", "Impact", "Verdana", "Trebuchet MS", "Georgia", "
 // library) the rest. frame.split: share (the stream's part of the height, 0.3-0.8), top ("stream" or "background":
 // which is on top), divider (a #rrggbb line on the seam, or null) and volume (the background video's sound, 0-1). frame.background is a library video's id, "clip:<id>" for another gallery clip, or null to let the worker
 // pick a library video for the clip (the same one each time it renders that clip). Only videos at least as long as
-// the clip are used; longer ones are cut to its length.
+// the clip are used; longer ones are cut to its length. frame.pool narrows that pick to some library backgrounds (a
+// streamer's own set, chosen in Settings); empty means the whole library.
 // "cam": the streamer's webcam (frame.facecam.box, a rectangle of the stream as fractions) across the top
 // (facecam.share of the height) and the stream cut to fill the rest. "pip": the stream fills the frame and the webcam
 // sits in a bordered box in a corner (facecam.corner, facecam.size of the width). Without a box both render as "blur".
@@ -44,7 +45,7 @@ export function defaultStyle({ framing = "blur", captions = true } = {}) {
   const preset = { ...PRESETS.bold };
   delete preset.label;
   return {
-    frame: { mode: FRAMINGS.includes(framing) ? framing : "blur", zoom: 1, x: 0, y: 0, background: null, split: { ...DEFAULT_SPLIT }, facecam: { ...DEFAULT_FACECAM } },
+    frame: { mode: FRAMINGS.includes(framing) ? framing : "blur", zoom: 1, x: 0, y: 0, background: null, pool: [], split: { ...DEFAULT_SPLIT }, facecam: { ...DEFAULT_FACECAM } },
     look: { brightness: 1, contrast: 1, saturation: 1 },
     // Split screen puts captions on the seam between the two videos.
     captions: { on: !!captions, preset: "bold", ...preset, y: framing === "split" ? 0.5 : framing === "cam" ? DEFAULT_FACECAM.share : 0.72, mask: false },
@@ -63,6 +64,8 @@ const pick = (v, list, name) => { if (!list.includes(v)) fail(name + " is not a 
 const text = (v, max, name) => { if (typeof v !== "string") fail(name + " must be text"); return v.replace(/[\r\n]+/g, " ").replace(/[{}\\]/g, "").slice(0, max); };
 const obj = (v, name) => { if (!v || typeof v !== "object" || Array.isArray(v)) fail(name + " is missing"); return v; };
 // The webcam's rectangle in the stream, as fractions of its width and height (null: not set).
+// A list of library background ids (no gallery clips), at most 30, without repeats.
+const pool = v => { if (v === undefined || v === null) return []; if (!Array.isArray(v) || v.length > 30) fail("Background set is not valid"); return [...new Set(v.map(x => { const id = ref(x, "Background set"); if (!id || id.startsWith("clip:")) fail("Background set is not valid"); return id; }))]; };
 const camBox = v => {
   if (v === null || v === undefined) return null;
   const b = obj(v, "Facecam box"), w = num(b.w, 0.05, 1, "Facecam width"), h = num(b.h, 0.05, 1, "Facecam height");
@@ -78,7 +81,7 @@ export function normalizeStyle(input, base = defaultStyle()) {
   const h = { ...base.hook, ...(s.hook ?? {}) }, p = { ...base.progress, ...(s.progress ?? {}) };
   const fc = { ...DEFAULT_FACECAM, ...(base.frame.facecam ?? {}), ...(s.frame?.facecam ?? {}) };
   return {
-    frame: { mode: pick(f.mode, FRAMINGS, "Framing"), zoom: num(f.zoom, 1, 3, "Zoom"), x: num(f.x, -1, 1, "Horizontal position"), y: num(f.y, -1, 1, "Vertical position"), background: ref(f.background, "Background video"),
+    frame: { mode: pick(f.mode, FRAMINGS, "Framing"), zoom: num(f.zoom, 1, 3, "Zoom"), x: num(f.x, -1, 1, "Horizontal position"), y: num(f.y, -1, 1, "Vertical position"), background: ref(f.background, "Background video"), pool: pool(f.pool),
       split: { share: num(sp.share, 0.3, 0.8, "Stream share"), top: pick(sp.top, SPLIT_TOPS, "Split order"), divider: sp.divider === null ? null : color(sp.divider, "Divider colour"), volume: num(sp.volume, 0, 1, "Background volume") },
       facecam: { box: camBox(fc.box), share: num(fc.share, 0.2, 0.5, "Facecam height"), corner: pick(fc.corner, CORNERS, "Facecam corner"), size: num(fc.size, 0.2, 0.5, "Facecam size") } },
     look: { brightness: num(l.brightness, 0.5, 1.5, "Brightness"), contrast: num(l.contrast, 0.5, 1.5, "Contrast"), saturation: num(l.saturation, 0, 2, "Saturation") },

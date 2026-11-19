@@ -403,3 +403,27 @@ button.account-streamers{max-width:none;justify-self:start}
 .account-picker .pick-all{border-style:dashed;color:var(--muted)}
 .account-picker label small{color:var(--muted)}
 .connection-actions{flex-wrap:wrap}
+/* Settings: split screen per streamer */
+.split-settings{margin-top:22px}
+.split-rows{display:flex;flex-direction:column}
+.split-row{display:grid;grid-template-columns:minmax(130px,1fr) auto minmax(170px,1.4fr) minmax(130px,.9fr) minmax(130px,.9fr) minmax(130px,.9fr) auto;gap:14px;align-items:center;padding:12px 23px;border-top:1px solid var(--border)}
+.split-row:first-child{border-top:0}
+.split-row{position:relative}
+.split-row:has(details[open]){z-index:7}
+.split-row:not(.on) .split-pool summary,.split-row:not(.on) .split-field{opacity:.45}
+.split-who{display:flex;flex-direction:column;min-width:0}
+.split-who strong{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.split-who small{font-size:11px;color:var(--muted)}
+.split-row .switch-row{display:flex;align-items:center;gap:8px;font-size:13px;white-space:nowrap}
+.split-field{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#c9d3de}
+.split-field span{color:var(--lime);font-size:11px}
+.split-field select{font-size:12px;padding:6px 8px}
+.split-pool{position:relative;font-size:12px}
+.split-pool summary{cursor:pointer;border:1px solid #344050;border-radius:6px;padding:7px 10px;background:#0f141a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;list-style:none}
+.split-pool[open] summary{border-color:#4b6638}
+.split-pool-list{position:absolute;z-index:6;top:calc(100% + 4px);left:0;min-width:240px;max-height:260px;overflow:auto;background:#171d25;border:1px solid #3a4654;border-radius:8px;padding:8px;box-shadow:0 12px 40px #0009;display:flex;flex-direction:column;gap:6px}
+.split-pool-list label{display:flex;gap:8px;align-items:center;font-size:13px}
+.split-pool-list label span{display:flex;flex-direction:column}
+.split-pool-list small{font-size:11px;color:var(--muted)}
+.split-row .primary{padding:7px 12px;font-size:13px}
+@media (max-width:1100px){.split-row{grid-template-columns:1fr 1fr;}.split-row .primary{grid-column:1/-1}}
