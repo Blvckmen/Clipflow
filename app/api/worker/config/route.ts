@@ -9,9 +9,10 @@ export async function GET(request:Request){
   if(!owner)return Response.json({error:"Invalid worker token."},{status:401});
   const [s,p,r,,b,rec,req]=await Promise.all([
    db.prepare("SELECT id,url,status,style,capture_mode FROM streamers WHERE owner=? ORDER BY created_at").bind(owner).all<{id:string;url:string;status:string;style:string|null;capture_mode:string|null}>(),
-   db.prepare("SELECT duration,daily_limit,captions,framing,control,style,transcribe,recording_days FROM preferences WHERE owner=?").bind(owner).first(),
+   db.prepare("SELECT duration,daily_limit,captions,framing,control,style,transcribe,recording_days,import_clips FROM preferences WHERE owner=?").bind(owner).first(),
    // Edits saved in the dashboard that still need rendering, oldest request first.
-   db.prepare("SELECT id,edit,edit_rev,transcript,source_meta FROM clips WHERE owner=? AND render_state='queued' AND edit IS NOT NULL ORDER BY coalesce(rendered_at,created_at) LIMIT 5").bind(owner).all<{id:string;edit:string;edit_rev:number;transcript:string|null;source_meta:string|null}>(),
+   // signals: the source's loudness, for jump cuts and punch-in zooms.
+   db.prepare("SELECT id,edit,edit_rev,transcript,source_meta,signals FROM clips WHERE owner=? AND render_state='queued' AND edit IS NOT NULL ORDER BY coalesce(rendered_at,created_at) LIMIT 5").bind(owner).all<{id:string;edit:string;edit_rev:number;transcript:string|null;source_meta:string|null;signals:string|null}>(),
    db.prepare("UPDATE worker_tokens SET last_seen=? WHERE owner=?").bind(new Date().toISOString(),owner).run(),
    // Split-screen background videos the worker may download (GET /api/worker/backgrounds/<id>).
    db.prepare("SELECT id,name,size,duration,content_type FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all<{id:string;name:string;size:number;duration:number|null;content_type:string}>(),
@@ -23,11 +24,11 @@ export async function GET(request:Request){
    control:p?.control??defaults.control,duration:p?.duration??defaults.duration,dailyLimit:p?.daily_limit??defaults.dailyLimit,captions:p?!!p.captions:defaults.captions,transcribe:p?!!p.transcribe:defaults.transcribe,framing:p?.framing??defaults.framing,
    style:parse(p?.style),
    streamers:s.results.map(x=>({id:x.id,url:x.url,status:x.status,style:parse(x.style),captureMode:x.capture_mode??"clip"})),
-   recordingDays:(p?.recording_days as number|undefined)??defaults.recordingDays,recordings:rec.results.map(x=>x.id),
+   recordingDays:(p?.recording_days as number|undefined)??defaults.recordingDays,importClips:(p?.import_clips as number|undefined)??defaults.importClips,recordings:rec.results.map(x=>x.id),
    clipRequests:req.results.map(x=>x.kind==="moment"?{id:x.id,recordingId:x.recording_id,kind:x.kind,start:x.start,end:x.end}:{id:x.id,recordingId:x.recording_id,kind:x.kind,count:x.count}),
    // kind: a looping video, or a still image (rendered for the clip's whole length).
    backgrounds:b.results.map(({content_type,...x})=>({...x,kind:content_type.startsWith("image/")?"image":"video",type:content_type})),
-   renders:r.results.map(x=>({id:x.id,rev:x.edit_rev,edit:parse(x.edit),words:parse(x.transcript)??[],source:parse(x.source_meta)})).filter(x=>x.edit),
+   renders:r.results.map(x=>({id:x.id,rev:x.edit_rev,edit:parse(x.edit),words:parse(x.transcript)??[],source:parse(x.source_meta),signals:parse(x.signals)})).filter(x=>x.edit),
   },{headers:{"Cache-Control":"private, no-store"}});
  }catch(error){console.error("Worker config failed",error);return Response.json({error:"Config unavailable."},{status:503});}
 }

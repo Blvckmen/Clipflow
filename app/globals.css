@@ -486,3 +486,9 @@ button.account-streamers{max-width:none;justify-self:start}
 .aspect-icon{display:inline-block;border:2px solid currentColor;border-radius:3px;opacity:.8}
 .aspect-icon.a9x16{width:9px;height:16px}.aspect-icon.a4x5{width:12px;height:15px}.aspect-icon.a1x1{width:14px;height:14px}.aspect-icon.a16x9{width:18px;height:10px}
 .segmented button:disabled{opacity:.4;cursor:not-allowed}
+
+/* Editor: jump cuts marked on the trim strip, and the pace controls. */
+.heat-cut{position:absolute;top:0;bottom:0;min-width:2px;background:repeating-linear-gradient(135deg,#ff5d5d99 0 4px,#0b0e1299 4px 8px);pointer-events:none}
+.pace-controls{display:grid;gap:12px;padding:14px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+.pace-controls small[role=status]{color:var(--lime)}
+

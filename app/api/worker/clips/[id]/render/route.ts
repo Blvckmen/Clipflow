@@ -27,7 +27,9 @@ export async function PUT(request:Request,{params}:{params:Promise<{id:string}>}
   const key="clips/"+id+"-r"+rev+".mp4",iso=new Date().toISOString();
   await store.put(key,bytes,{httpMetadata:{contentType:"video/mp4"},sha256:sha});
   const edit=JSON.parse(clip.edit??"{}") as {trim?:{start:number;end:number}};
-  const duration=edit.trim?Math.round(edit.trim.end-edit.trim.start):null;
+  // The worker's length after jump cuts (at most the trim); older workers don't send it.
+  const told=Number(request.headers.get("x-clip-duration")),trimmed=edit.trim?Math.round(edit.trim.end-edit.trim.start):null;
+  const duration=Number.isInteger(told)&&told>=1&&told<=(trimmed??600)?told:trimmed;
   const saved=await db.prepare("UPDATE clips SET file_key=?,sha=?,size=?,duration=coalesce(?,duration),render_state=NULL,render_error=NULL,rendered_at=? WHERE id=? AND owner=? AND edit_rev=?").bind(key,sha,bytes.byteLength,duration,iso,id,owner,rev).run();
   if(!saved.meta.changes){await store.delete(key);return Response.json({error:"A newer edit is waiting."},{status:409});}
   if(clip.file_key&&clip.file_key!==key)await store.delete(clip.file_key);

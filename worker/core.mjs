@@ -42,6 +42,9 @@ export function validateControl(c) {
     if (!["clip","record","both"].includes(s.captureMode)) throw new Error("Invalid capture mode");
     channelUrl(s.url); ids.add(s.id);
   }
+  // Viewers' Twitch clips: the fewest views a clip needs to be imported, 0 for off (and for older dashboards).
+  c.importClips ??= 0;
+  if (!Number.isInteger(c.importClips) || c.importClips < 0 || c.importClips > 1000) throw new Error("Invalid clip import setting");
   c.recordingDays ??= 7;
   if (!Number.isInteger(c.recordingDays) || c.recordingDays < 1 || c.recordingDays > 30) throw new Error("Invalid recording retention");
   // Recordings the dashboard still has (null: a dashboard that predates recording, so nothing is pruned for it),

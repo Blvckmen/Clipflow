@@ -113,8 +113,34 @@ logs to `worker\data\worker.log`.
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | Where Ollama runs |
 | `OLLAMA_MODEL` | `qwen2.5:7b` | Model the AI writer uses (`ollama pull` it first); `qwen2.5:3b` is twice as fast with weaker hooks |
 | `PYTHON` | `python` | Python executable |
+| `TWITCH_CLIENT_ID` | none | Your Twitch app's Client ID, for importing viewers' Twitch clips (see below) |
+| `TWITCH_CLIENT_SECRET` | none | That app's Client Secret. Keep it in `.env` on this PC; it never goes to the dashboard |
+| `IMPORT_MINUTES` | `30` | How often viewers' Twitch clips are looked for |
 
 Only capture channels you have permission to record and repost.
+
+## Viewers' Twitch clips (optional)
+
+With Settings → "Viewers' Twitch clips" switched on, the worker looks every `IMPORT_MINUTES` for the most-viewed
+clips viewers made in the last day on each running Twitch streamer's channel. It downloads them with streamlink and
+turns them into clips in the streamer's look, the same way as clips it captures itself: transcribed, framed, and
+sent for review or posting. It takes up to 2 a streamer at a time, within the daily clip limit, only clips at least
+15 seconds long, and never the same one twice. Kick clips aren't imported.
+
+It uses Twitch's official API with your own Twitch app (free, about 5 minutes to set up):
+
+1. Sign in at [dev.twitch.tv/console/apps](https://dev.twitch.tv/console/apps) and choose **Register Your Application**.
+2. Name: anything (for example "Clipflow worker"). OAuth Redirect URL: `http://localhost`. Category: **Application
+   Integration**. Client Type: **Confidential**.
+3. Open the app, copy its **Client ID**, choose **New Secret** and copy the secret.
+4. Add both to this worker's `.env`, then restart the worker:
+
+   ```sh
+   TWITCH_CLIENT_ID=...
+   TWITCH_CLIENT_SECRET=...
+   ```
+
+No one signs in to Twitch: the worker uses an app access token, which can only read public information like clips.
 
 ## AI writer (optional)
 

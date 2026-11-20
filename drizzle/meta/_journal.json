@@ -162,6 +162,17 @@
       "when": 1794996736648,
       "tag": "0022_clip_thumbnails",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1795140530495,
+      "tag": "0023_viewer_clip_import",
+      "breakpoints": true
+    },
+    {
+      "version": "6",
+      "breakpoints": true
     }
   ]
 }

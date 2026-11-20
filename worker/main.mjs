@@ -14,6 +14,7 @@ import { Recorder } from "./recorder.mjs";
 import { chatSample, writeClipText, writerEnabled } from "./writer.mjs";
 import { command } from "./process.mjs";
 import { bucketSignals, encodePreview, extractRange, joinSegments, parts, pickMoments } from "./recordings.mjs";
+import { Twitch, clipUrl, pickClips, twitchLogin } from "./twitch.mjs";
 const run = promisify(execFile);
 
 const env = process.env;
@@ -33,7 +34,7 @@ const maxSessions = Math.max(1, Math.floor(Number(env.MAX_CAPTURES ?? 1)));
 const liveCheckMs = seconds(env.LIVE_CHECK_SECONDS, 120), probeConcurrency = 3, probesPerCycle = 15;
 const postRollMs = 20_000;
 // Why a clip was cut; the code is sent to the dashboard with the clip.
-const reasonLabel = { chat: "chat spike", audio: "loudest moment", best: "best moment of a recording", manual: "picked in a recording" };
+const reasonLabel = { chat: "chat spike", audio: "loudest moment", best: "best moment of a recording", manual: "picked in a recording", viewer: "a viewer's Twitch clip" };
 // Whole-stream recordings: background work (joining, measuring, previews) runs one recording step at a time beside
 // clip processing; `recordingRetry` holds a failed step's retry time. `requestsSeen`: clip requests already taken on.
 let backgroundBusy = false, backgroundRow = null;
@@ -226,7 +227,8 @@ async function processJobs() {
     let made = false, why = null;
     try {
       // The streamer's name and stream title help Whisper spell them and give the AI writer context.
-      const who = streamerInfo(job.streamer.url), title = live.get(job.streamer.id)?.title ?? null;
+      // An imported viewer's clip brings its own title.
+      const who = streamerInfo(job.streamer.url), title = job.title ?? live.get(job.streamer.id)?.title ?? null;
       const writer = ({ transcript, from, to }) => writeClipText({ transcript, streamer: who.name, platform: who.platform, title,
         chat: job.chatLines?.length ? chatSample(job.chatLines, job.rawStartMs + from * 1000, job.rawStartMs + to * 1000 + 10_000) : [] }, { signal: controller.signal });
       const result = await processWindow(job.raw, { settings: job.settings, style: job.style, focusFrom: job.focusFrom, focusTo: job.focusTo, chat: job.chat, exact: !!job.exact,
@@ -290,6 +292,56 @@ async function checkSessions() {
       session.lastClipMs = now;
       void clipWindow(session, latest - lookbackS * 1000, latest, "audio");
     }
+  }
+}
+
+// ---- Viewers' Twitch clips ----
+// With Settings → "Viewers' Twitch clips" on (config.importClips: the fewest views a clip needs), every
+// IMPORT_MINUTES (30) the most-viewed clips viewers made in the last day on each running Twitch streamer's channel
+// are downloaded and turned into clips, up to 2 a streamer at a time and within the daily clip limit. Needs this
+// worker's own Twitch app (TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET). Imported clip ids are remembered for a week in
+// viewer-clips.json so none is imported twice.
+const twitch = Twitch.fromEnv(env), importEveryMs = seconds(env.IMPORT_MINUTES, 30) * 60, seenFile = join(dataDir, "viewer-clips.json");
+let lastImport = 0, importing = false, twitchWarned = false;
+async function importViewerClips() {
+  if (importing || stopping || !config || !(config.importClips > 0) || Date.now() - lastImport < importEveryMs) return;
+  if (!twitch) {
+    if (!twitchWarned) { twitchWarned = true; problem("Viewers' Twitch clips are switched on, but this worker has no Twitch app: set TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET (see the worker README) and restart it."); }
+    return;
+  }
+  importing = true; lastImport = Date.now();
+  try {
+    const seen = await readJson(seenFile, {}), weekAgo = Date.now() - 7 * 86_400_000, settings = config;
+    for (const [clip, at] of Object.entries(seen)) if (!(Date.parse(at) > weekAgo)) delete seen[clip];
+    for (const streamer of settings.streamers) {
+      const login = twitchLogin(streamer.url), room = settings.dailyLimit - store.countToday(streamer.id);
+      if (!login || !allowed(settings, streamer.id) || room <= 0 || stopping) continue;
+      let list;
+      try { list = await twitch.clips(login, new Date(Date.now() - 86_400_000)); }
+      catch (error) { problem("Couldn't list viewers' Twitch clips for " + login + ": " + error.message); continue; }
+      for (const clip of pickClips(list, { minViews: settings.importClips, seen: new Set(Object.keys(seen)), max: Math.min(2, room) })) {
+        seen[clip.id] = new Date().toISOString();
+        await writeFile(seenFile, JSON.stringify(seen));
+        await importClip(streamer, clip, settings);
+      }
+    }
+  } catch (error) { problem("Importing viewers' Twitch clips failed: " + error.message); }
+  finally { importing = false; }
+}
+async function importClip(streamer, clip, settings) {
+  const id = crypto.randomUUID(), dir = join(dataDir, "clips", streamer.id, id), raw = join(dir, "window.mp4");
+  try {
+    await mkdir(dir, { recursive: true });
+    await command(streamlink, ["--http-timeout", "20", "--force", "-o", raw, clipUrl(clip.id), "best"], { timeout: 180_000 }).done;
+    store.add(id, streamer.id, join(dir, "clip.mp4"), Math.min(90, Math.max(15, Math.round(Number(clip.duration)))), settings.captions && settings.transcribe !== false, "viewer");
+    const style = settings.streamers.find(s => s.id === streamer.id)?.style ?? settings.style ?? null;
+    // The whole clip, as the viewer cut it.
+    jobs.push({ id, dir, raw, streamer, settings, style, reason: "viewer", exact: true, focusFrom: 0, focusTo: Infinity, chat: [], title: String(clip.title ?? "").trim().slice(0, 140) || null });
+    console.log("Imported a viewer's Twitch clip from", streamer.url, "(" + clip.view_count + " views):", clip.id);
+    void processJobs();
+  } catch (error) {
+    await rm(dir, { recursive: true, force: true });
+    problem("Couldn't download the viewer's Twitch clip " + clip.id + ": " + error.message);
   }
 }
 
@@ -562,8 +614,9 @@ async function rerender(job) {
     const info = job.source?.width ? job.source : await videoInfo(source, controller.signal);
     const edit = normalizeEdit(job.edit, { duration: info.duration || job.source?.duration || 600 });
     const out = join(scratch, "render-" + job.rev + ".mp4");
-    const result = await renderClip(source, { edit, words: job.edit.words ?? job.words ?? [], width: info.width, height: info.height, background: await backgroundFor(edit, job.id) }, out, controller.signal);
-    const upload = await api("/api/worker/clips/" + job.id + "/render", { method: "PUT", body: await readFile(out), headers: { "content-type": "video/mp4", "x-edit-rev": String(job.rev), "x-clip-sha256": result.sha }, timeout: 180_000 });
+    const result = await renderClip(source, { edit, words: job.edit.words ?? job.words ?? [], width: info.width, height: info.height, background: await backgroundFor(edit, job.id), energy: job.signals?.energy ?? null }, out, controller.signal);
+    // The clip's length after jump cuts, which can be shorter than its trim.
+    const upload = await api("/api/worker/clips/" + job.id + "/render", { method: "PUT", body: await readFile(out), headers: { "content-type": "video/mp4", "x-edit-rev": String(job.rev), "x-clip-sha256": result.sha, "x-clip-duration": String(result.duration) }, timeout: 180_000 });
     // 409: the clip was edited again meanwhile; the newer revision arrives with the next config poll.
     if (!upload.ok && upload.status !== 409) throw new Error("upload HTTP " + upload.status);
     console.log("Re-rendered clip", job.id, "(edit " + job.rev + ", " + result.duration + "s)");
@@ -643,6 +696,7 @@ async function tick() {
   await probe(dueForProbe(config, live, { running: new Set(sessions.keys()), now: Date.now(), interval: liveCheckMs, limit: probesPerCycle }));
   const { start } = plan(config, { running: new Set(sessions.keys()), blockedUntil, countToday: id => store.countToday(id), now: Date.now(), maxCaptures: maxSessions, isLive });
   for (const streamer of start) await startSession(streamer);
+  await importViewerClips();
   await reportStatus();
   await report();
   await syncRecordings();

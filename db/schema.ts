@@ -25,6 +25,8 @@ export const preferences=sqliteTable("preferences",{
  transcribe:integer("transcribe",{mode:"boolean"}).notNull().default(true),
  // Days full stream recordings are kept (on the worker PC, and their previews in R2).
  recordingDays:integer("recording_days").notNull().default(7),
+ // Viewers' Twitch clips: the fewest views a clip needs for the worker to import it (0: off).
+ importClips:integer("import_clips").notNull().default(0),
  // No longer used: the single Zernio key setting, moved to zernio_keys by migration 0011.
  zernioKeyEnc:text("zernio_key_enc"),zernioLabel:text("zernio_label"),
 });

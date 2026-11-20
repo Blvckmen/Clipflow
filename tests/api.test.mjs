@@ -97,6 +97,19 @@ describe("worker token", () => {
     }
     assert.equal((await dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, destinations, framing: "stretch" } })).status, 400);
   });
+  test("importing viewers' Twitch clips is a setting the worker sees, and an imported clip says where it came from", async () => {
+    const { mode, duration, dailyLimit, captions, destinations, framing } = originalSettings, set = importClips => dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, destinations, framing, importClips } });
+    assert.equal((await set(10)).status, 200);
+    assert.equal((await (await worker("/api/worker/config")).json()).importClips, 10);
+    assert.equal((await dash()).body.settings.importClips, 10);
+    assert.equal((await set(-1)).status, 400);
+    assert.equal((await set(0)).status, 200);
+    assert.equal((await (await worker("/api/worker/config")).json()).importClips, 0);
+    const { clip, response } = await reportClip(Buffer.alloc(2048, 9), { reason: "viewer" });
+    assert.equal(response.status, 200);
+    assert.equal((await dash()).body.clips.find(c => c.id === clip.id).reason, "viewer");
+    await dash({ action: "deleteClip", id: clip.id });
+  });
   test("replacing the token revokes the old one", async () => {
     const old = token;
     token = (await dash({ action: "token" })).body.token;
@@ -252,7 +265,7 @@ describe("clip editor", () => {
   let clip;
   const edit = id => fetch(base + "/api/clips/" + id + "/edit", { headers: { cookie } });
   const save = (id, body) => fetch(base + "/api/clips/" + id + "/edit", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body) });
-  const render = (id, bytes, rev, sha = sha256(bytes)) => worker("/api/worker/clips/" + id + "/render", { method: "PUT", headers: { "content-type": "video/mp4", "x-edit-rev": String(rev), "x-clip-sha256": sha }, body: bytes });
+  const render = (id, bytes, rev, sha = sha256(bytes), duration) => worker("/api/worker/clips/" + id + "/render", { method: "PUT", headers: { "content-type": "video/mp4", "x-edit-rev": String(rev), "x-clip-sha256": sha, ...(duration && { "x-clip-duration": String(duration) }) }, body: bytes });
 
   test("the webcam box the worker found comes back with the clip's source, for the facecam layouts", async () => {
     const face = { x: 0, y: 0.33, w: 0.26, h: 0.5 };
@@ -326,7 +339,8 @@ describe("clip editor", () => {
     const invalid = await save(clip.id, { edit: { ...firstEdit, captions: { ...firstEdit.captions, color: "red" } }, rev: 0 });
     assert.equal(invalid.status, 400);
     assert.match((await invalid.json()).error, /colour/);
-    const changed = { ...firstEdit, trim: { start: 10, end: 30 }, hook: { ...firstEdit.hook, text: "watch this" }, words: [[6.2, 6.6, "Hi"], [6.7, 7.1, ""]] };
+    const changed = { ...firstEdit, trim: { start: 10, end: 30 }, hook: { ...firstEdit.hook, text: "watch this" }, pace: { cuts: "tight", zooms: true }, words: [[6.2, 6.6, "Hi"], [6.7, 7.1, ""]] };
+    assert.equal((await save(clip.id, { edit: { ...changed, pace: { cuts: "brutal", zooms: true } }, rev: 0 })).status, 400, "an unknown jump-cut level is refused");
     const saved = await save(clip.id, { edit: changed, rev: 0, saveStyle: "streamer" });
     assert.equal(saved.status, 200);
     assert.equal((await saved.json()).rev, 1);
@@ -335,7 +349,8 @@ describe("clip editor", () => {
     assert.deepEqual([row.render_state, row.edit_rev], ["queued", 1]);
     const config = await (await worker("/api/worker/config")).json();
     const job = config.renders.find(r => r.id === clip.id);
-    assert.deepEqual([job.rev, job.edit.trim, job.edit.hook.text, job.edit.words[1][2], job.source.width], [1, { start: 10, end: 30 }, "watch this", "", 1920]);
+    assert.deepEqual([job.rev, job.edit.trim, job.edit.hook.text, job.edit.words[1][2], job.source.width, job.edit.pace], [1, { start: 10, end: 30 }, "watch this", "", 1920, { cuts: "tight", zooms: true }]);
+    assert.ok("signals" in job, "the loudness goes with the job, for jump cuts and zooms");
     assert.ok(config.streamers.find(s => s.id === streamer.id).style, "saveStyle stored the look for the streamer");
     await dash({ action: "style", streamerId: streamer.id, style: null });
   });
@@ -343,9 +358,10 @@ describe("clip editor", () => {
     const rendered = Buffer.alloc(6000, 8);
     assert.equal((await render(clip.id, rendered, 0)).status, 409, "old revision");
     assert.equal((await render(clip.id, rendered, 1, "f".repeat(64))).status, 422, "hash mismatch");
-    assert.equal((await render(clip.id, rendered, 1)).status, 200);
+    // The worker says how long the clip came out after jump cuts (the trim is 20s).
+    assert.equal((await render(clip.id, rendered, 1, undefined, 17)).status, 200);
     const row = (await dash()).body.clips.find(c => c.id === clip.id);
-    assert.deepEqual([row.render_state, row.duration, row.size], [null, 20, rendered.length]);
+    assert.deepEqual([row.render_state, row.duration, row.size], [null, 17, rendered.length]);
     const got = await fetch(base + "/api/clips/" + clip.id + "/file", { headers: { cookie } });
     assert.deepEqual(Buffer.from(await got.arrayBuffer()), rendered);
     assert.equal((await render(clip.id, rendered, 1)).status, 409, "already rendered");

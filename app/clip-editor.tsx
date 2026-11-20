@@ -3,7 +3,7 @@
 // worker renders with, so what you see is what gets posted. Saving stores the edit; the worker re-renders it.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, Scissors, Sparkles, Undo2 } from "lucide-react";
-import { ANIMATIONS, ASPECTS, ASPECT_LABELS, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, MAX_CLIP, MIN_CLIP, PRESETS, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks } from "../worker/edit.mjs";
+import { ANIMATIONS, ASPECTS, ASPECT_LABELS, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, MAX_CLIP, MIN_CLIP, PRESETS, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks, timeline, zoomAt } from "../worker/edit.mjs";
 
 import { applyAutomaticHook } from "../worker/hooks.mjs";
 
@@ -14,7 +14,8 @@ type Aspect = keyof typeof ASPECTS;
 type Frame = { mode: "blur" | "crop" | "fit" | "split" | "cam" | "pip" | "phone"; aspect?: Aspect; content?: CamBox | null; zoom: number; x: number; y: number; background?: string | null; split?: Split; facecam?: Facecam };
 type Captions = { on: boolean; preset: string; font: string; size: number; color: string; highlight: string; outline: number; outlineColor: string; box: boolean; boxColor: string; uppercase: boolean; animation: string; words: number; y: number; mask: boolean };
 type Word = [number, number, string];
-export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { text: string; seconds: number; color: string; bg: string }; progress: { on: boolean; color: string }; words?: Word[] };
+export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { text: string; seconds: number; color: string; bg: string }; progress: { on: boolean; color: string }; pace?: Pace; words?: Word[] };
+type Pace = { cuts: "off" | "gentle" | "tight"; zooms: boolean };
 type Bundle = { id: string; streamerId: string; streamer: string | null; edit: Edit; rev: number; words: Word[]; signals: { energy: number[]; chat: number[] } | null; source: { width: number; height: number; duration: number; face?: CamBox | null; content?: CamBox | null }; legacy: boolean; sourceStored: boolean; render: { state: string | null; error: string | null; at: string | null }; createdAt: string; caption: { text: string | null; source: string | null; error: string | null; ai: boolean } };
 type Tab = "frame" | "captions" | "extras" | "transcript" | "post";
 
@@ -103,7 +104,10 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
 
   const words: Word[] = useMemo(() => edit?.words ?? bundle?.words ?? [], [edit?.words, bundle?.words]);
   const cueList = useMemo(() => edit ? cues(words, edit) : [], [words, edit]);
-  const cueRef = useRef(cueList), backgroundsRef = useRef(backgrounds);
+  const energy = bundle?.signals?.energy ?? null;
+  const tl = useMemo(() => edit ? timeline(edit, words, energy) : null, [edit, words, energy]);
+  const cueRef = useRef(cueList), backgroundsRef = useRef(backgrounds), tlRef = useRef(tl);
+  useEffect(() => { tlRef.current = tl; }, [tl]);
   useEffect(() => { backgroundsRef.current = backgrounds; }, [backgrounds]);
   useEffect(() => { cueRef.current = cueList; }, [cueList]);
   const duration = bundle?.source.duration ?? 0;
@@ -120,13 +124,19 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
       const ctx = cv.getContext("2d");
       if (!ctx) return;
       if (v.currentTime >= e.trim.end - 0.03 || v.currentTime < e.trim.start - 0.25) { v.currentTime = e.trim.start; }
-      const t = v.currentTime, rel = t - e.trim.start;
+      const tr = tlRef.current, gap = !v.paused && tr?.cuts.find(([a, b]) => v.currentTime - e.trim.start >= a && v.currentTime - e.trim.start < b - 0.02);
+      if (gap) v.currentTime = e.trim.start + gap[1];
+      const t = v.currentTime, rel = t - e.trim.start, out = tr ? tr.toClip(rel) : rel, clipLen = tr?.length ?? e.trim.end - e.trim.start;
+      const zoom = tr?.punches.length ? zoomAt(tr.punches, out) : 1;
       setTime(prev => Math.abs(prev - t) > 0.05 ? t : prev);
       const sw = v.videoWidth || bundle.source.width, sh = v.videoHeight || bundle.source.height;
       const box = layout(e.frame, sw, sh), l = e.look;
       const look = `brightness(${l.brightness}) contrast(${l.contrast}) saturate(${l.saturation})`;
       ctx.save();
       ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
+      // A punch-in zooms the whole picture on its middle (captions stay put).
+      ctx.save();
+      if (zoom !== 1) { ctx.translate(W / 2, H / 2); ctx.scale(zoom, zoom); ctx.translate(-W / 2, -H / 2); }
       if (v.readyState >= 2 && e.frame.mode === "split") {
         // The stream in its part (cut off at the seam), the background in the other, in the chosen order.
         const areas = splitAreas(e.frame), sb = areas.background, divider = e.frame.split?.divider;
@@ -168,6 +178,7 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
         ctx.drawImage(v, box.src.x, box.src.y, box.src.w, box.src.h, box.x, box.y, box.w, box.h);
         ctx.filter = "none";
       }
+      ctx.restore();
       const c = e.captions, hit = c.on ? activeCue(cueRef.current, rel) : null;
       if (hit) {
         const { cue, word } = hit, w = cue.words[word];
@@ -175,8 +186,8 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
         if (c.animation === "word") drawText(ctx, [{ t: w.t, color: c.color }], c, W / 2, y, "middle", pop(rel - w.s));
         else drawText(ctx, cue.words.map((x: { t: string }, i: number) => ({ t: x.t, color: c.animation === "karaoke" && i === word ? c.highlight : c.color })), c, W / 2, y, "middle", c.animation === "pop" || c.animation === "karaoke" ? pop(rel - cue.start) : 1);
       }
-      if (e.hook.text && rel < e.hook.seconds) drawText(ctx, [{ t: e.hook.text, color: e.hook.color }], { font: c.font, size: 52, outline: 0, outlineColor: "#000000", box: true, boxColor: e.hook.bg }, W / 2, 150, "top", pop(rel), 60);
-      if (e.progress.on) { ctx.fillStyle = e.progress.color; ctx.fillRect(0, H - 10, W * clamp(rel / (e.trim.end - e.trim.start), 0, 1), 10); }
+      if (e.hook.text && out < e.hook.seconds) drawText(ctx, [{ t: e.hook.text, color: e.hook.color }], { font: c.font, size: 52, outline: 0, outlineColor: "#000000", box: true, boxColor: e.hook.bg }, W / 2, 150, "top", pop(out), 60);
+      if (e.progress.on) { ctx.fillStyle = e.progress.color; ctx.fillRect(0, H - 10, W * clamp(out / clipLen, 0, 1), 10); }
       ctx.restore();
     };
     raf = requestAnimationFrame(draw);
@@ -267,7 +278,8 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
     setPlaying(false); setTime(edit.trim.start);
     setHookNote("Hook generated locally from the current transcript. Preview it, then Save edit to render it into the video. Undo restores the previous hook.");
   };
-  const c = edit.captions, len = edit.trim.end - edit.trim.start;
+  const c = edit.captions, len = edit.trim.end - edit.trim.start, finished = tl?.length ?? len, pace = { cuts: "off", zooms: false, ...edit.pace } as Pace;
+  const cutTotal = Math.round((len - finished) * 10) / 10;
   // Split-screen backgrounds long enough for this clip (as trimmed now); a library video of unknown length counts.
   const fits = (d?: number | null) => !d || d + 0.05 >= len, secs = (n: number) => n >= 60 ? Math.floor(n / 60) + ":" + String(Math.round(n % 60)).padStart(2, "0") : Math.round(n) + "s";
   const fitLibrary = backgrounds.filter(b => fits(b.duration)), fitClips = bgClips.filter(c => c.duration + 0.05 >= len);
@@ -290,7 +302,7 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
   return <div className="editor-shell" role="dialog" aria-label="Clip editor">
     <header className="editor-top">
       <button className="secondary" onClick={onClose}><ArrowLeft size={16} />Clips</button>
-      <div className="editor-title"><strong>{bundle.streamer ?? "Clip"}</strong><small>{new Date(bundle.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} · {len.toFixed(1)}s{bundle.render.state === "queued" ? " · rendering a saved edit" : bundle.render.state === "failed" ? " · last render failed" : ""}</small></div>
+      <div className="editor-title"><strong>{bundle.streamer ?? "Clip"}</strong><small>{new Date(bundle.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} · {finished.toFixed(1)}s{bundle.render.state === "queued" ? " · rendering a saved edit" : bundle.render.state === "failed" ? " · last render failed" : ""}</small></div>
       <div className="editor-actions">
         <button className="icon-button" aria-label="Undo" title="Undo (Ctrl+Z)" disabled={!past.length} onClick={undo}><Undo2 size={17} /></button>
         <button className="icon-button" aria-label="Redo" title="Redo (Ctrl+Shift+Z)" disabled={!future.length} onClick={redo}><Redo2 size={17} /></button>
@@ -313,7 +325,7 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
         <video ref={video} className="editor-video" src={bundle.sourceStored ? "/api/clips/" + clipId + "/source" : undefined} playsInline preload="auto" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onLoadedMetadata={e => { e.currentTarget.currentTime = edit.trim.start; }} />
         <div className="stage-controls">
           <button className="icon-button play" aria-label={playing ? "Pause" : "Play"} onClick={toggle}>{playing ? <Pause size={18} /> : <Play size={18} />}</button>
-          <span className="timecode">{fmt(Math.max(0, time - edit.trim.start))} / {fmt(len)}</span>
+          <span className="timecode">{fmt(Math.max(0, tl ? tl.toClip(time - edit.trim.start) : time - edit.trim.start))} / {fmt(finished)}</span>
           <button className="text-button" onClick={() => setSafe(s => !s)} title="Show where TikTok, Reels and Shorts draw their buttons">{safe ? <EyeOff size={14} /> : <Eye size={14} />}{safe ? "Hide" : "Show"} safe zones</button>
         </div>
       </section>
@@ -328,6 +340,7 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
               <span className="handle start" role="slider" aria-label="Clip start" aria-valuenow={edit.trim.start} tabIndex={0} data-which="start" onPointerDown={dragHandle} onKeyDown={ev => { if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") setTrim("start", edit.trim.start + (ev.key === "ArrowLeft" ? -0.25 : 0.25)); }} />
               <span className="handle end" role="slider" aria-label="Clip end" aria-valuenow={edit.trim.end} tabIndex={0} data-which="end" onPointerDown={dragHandle} onKeyDown={ev => { if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") setTrim("end", edit.trim.end + (ev.key === "ArrowLeft" ? -0.25 : 0.25)); }} />
             </div>
+            {tl?.cuts.map(([a, b]) => <div key={a} className="heat-cut" title={"Jump cut: " + (b - a).toFixed(1) + "s pause"} style={{ left: pct(edit.trim.start + a) + "%", width: pct(b - a) + "%" }} />)}
             <div className="playhead" style={{ left: pct(time) + "%" }} />
           </div>
           {bundle.signals && <div className="heat-legend"><span><i className="loud" />Loudness</span><span><i className="chat" />Chat activity</span><span className="muted">Why this moment was clipped</span></div>}
@@ -466,6 +479,12 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
                 <span className="check-inline"><input type="checkbox" checked={edit.hook.seconds >= len} onChange={e => set("hook", { seconds: e.target.checked ? 90 : 5 })} />Keep for the whole clip</span></label>
               <label className="color">Hook text<input type="color" value={edit.hook.color} onChange={e => set("hook", { color: e.target.value })} /></label>
               <label className="color">Hook background<input type="color" value={edit.hook.bg} onChange={e => set("hook", { bg: e.target.value })} /></label>
+            </div>
+            <div className="pace-controls">
+              <label className="wide">Jump cuts <small>Takes quiet pauses out between words. Pauses full of game sound or shouting are kept, and so are the opening and ending.</small>
+                <div className="segmented">{(["off", "gentle", "tight"] as const).map(level => <button key={level} type="button" className={pace.cuts === level ? "active" : ""} onClick={() => change("pace-cuts", e => ({ ...e, pace: { ...pace, ...e.pace, cuts: level } }))}>{{ off: "Off", gentle: "Gentle", tight: "Tight" }[level]}</button>)}</div>
+                {pace.cuts !== "off" && <small role="status">{bundle.legacy || !words.length ? "This clip has no transcript, so there are no pauses to find." : tl?.cuts.length ? `Takes out ${tl.cuts.length} pause${tl.cuts.length === 1 ? "" : "s"} (${cutTotal}s): the clip becomes ${finished.toFixed(1)}s. Marked in the timeline.` : "No pauses long and quiet enough to cut in this trim."}</small>}</label>
+              <label className="switch-row"><input type="checkbox" checked={pace.zooms} onChange={e => { const on = e.target.checked; change("pace-zooms", x => ({ ...x, pace: { ...pace, ...x.pace, zooms: on } })); }} />Punch-in zooms on the loudest moments <small>{pace.zooms ? (tl?.punches.length ? tl.punches.length + " zoom" + (tl.punches.length === 1 ? "" : "s") + " at " + tl.punches.map(p => p.toFixed(1) + "s").join(", ") : energy ? "No moment stands out enough in this trim." : "Needs the loudness the worker records; this clip has none.") : "A quick zoom on a shout, a punchline or a big play"}</small></label>
             </div>
             <label className="switch-row"><input type="checkbox" checked={edit.progress.on} onChange={e => set("progress", { on: e.target.checked })} />Progress bar along the bottom <small>Viewers who can see the end coming watch to it</small></label>
             {edit.progress.on && <label className="color inline">Bar colour<input type="color" value={edit.progress.color} onChange={e => set("progress", { color: e.target.value })} /></label>}

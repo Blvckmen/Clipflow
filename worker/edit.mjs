@@ -41,6 +41,11 @@ export const MIN_CLIP = 5, MAX_CLIP = 90;
 export const DEFAULT_HOOK_SECONDS = 5;
 export const DEFAULT_SPLIT = { share: 0.5, top: "stream", divider: null, volume: 0 };
 export const SPLIT_TOPS = ["stream", "background"];
+// Pace: pace.cuts takes quiet pauses out of the speech ("gentle" or "tight" jump cuts), pace.zooms punches in on the
+// loudest moments. Neither is stored as a list: both are worked out from the transcript and the source's per-second
+// loudness by timeline(), the same way in the editor and in the render.
+export const CUT_LEVELS = ["off", "gentle", "tight"];
+export const DEFAULT_PACE = { cuts: "off", zooms: false };
 
 // Caption looks. Picking a preset copies its values; every value can then be changed on its own.
 export const PRESETS = {
@@ -62,6 +67,7 @@ export function defaultStyle({ framing = "blur", captions = true } = {}) {
     captions: { on: !!captions, preset: "bold", ...preset, y: framing === "split" ? 0.5 : framing === "cam" ? DEFAULT_FACECAM.share : 0.72, mask: false },
     hook: { color: "#111111", bg: "#ffffff", seconds: DEFAULT_HOOK_SECONDS },
     progress: { on: false, color: "#bcfa76" },
+    pace: { ...DEFAULT_PACE },
   };
 }
 
@@ -89,7 +95,7 @@ const ref = (v, name) => { if (v === null || v === undefined) return null; if (t
 export function normalizeStyle(input, base = defaultStyle()) {
   const s = obj(input, "Style");
   const f = { ...base.frame, ...(s.frame ?? {}) }, sp = { ...DEFAULT_SPLIT, ...(base.frame.split ?? {}), ...(s.frame?.split ?? {}) }, l = { ...base.look, ...(s.look ?? {}) }, c = { ...base.captions, ...(s.captions ?? {}) };
-  const h = { ...base.hook, ...(s.hook ?? {}) }, p = { ...base.progress, ...(s.progress ?? {}) };
+  const h = { ...base.hook, ...(s.hook ?? {}) }, p = { ...base.progress, ...(s.progress ?? {}) }, pc = { ...DEFAULT_PACE, ...(base.pace ?? {}), ...(s.pace ?? {}) };
   const fc = { ...DEFAULT_FACECAM, ...(base.frame.facecam ?? {}), ...(s.frame?.facecam ?? {}) };
   const aspect = pick(f.aspect ?? "9:16", Object.keys(ASPECTS), "Clip shape");
   // A landscape clip has no room to stack two pictures: split screen and facecam-on-top become the blurred fill.
@@ -107,12 +113,13 @@ export function normalizeStyle(input, base = defaultStyle()) {
     },
     hook: { color: color(h.color, "Hook text colour"), bg: color(h.bg, "Hook background"), seconds: num(h.seconds ?? DEFAULT_HOOK_SECONDS, 1, MAX_CLIP, "Hook length") },
     progress: { on: bool(p.on, "Progress bar"), color: color(p.color, "Progress bar colour") },
+    pace: { cuts: pick(pc.cuts, CUT_LEVELS, "Jump cuts"), zooms: bool(pc.zooms, "Punch-in zooms") },
   };
 }
 
 export function styleOf(edit) {
-  const { frame, look, captions, hook, progress } = edit;
-  return { frame, look, captions, hook: { color: hook.color, bg: hook.bg, seconds: hook.seconds }, progress };
+  const { frame, look, captions, hook, progress, pace = { ...DEFAULT_PACE } } = edit;
+  return { frame, look, captions, hook: { color: hook.color, bg: hook.bg, seconds: hook.seconds }, progress, pace };
 }
 
 // A first edit for a freshly captured clip: the chosen moment, in the streamer's (or workspace's) style.
@@ -248,18 +255,88 @@ export function activeCue(list, t) {
   return { cue, word };
 }
 
+// ---- Pace: jump cuts and punch-in zooms ----
+// A pause between two spoken words is cut when it is at least `gap` seconds long and quiet (no second inside it
+// reaches QUIET of the source's loudest second: a pause full of game sound or shouting is kept). `pad` seconds of
+// it stay either side so words don't get clipped. Without loudness (older clips) only pauses up to 1.2s are cut.
+// Cuts stop before the clip would get shorter than MIN_CLIP. Only pauses *between* words go: the clip's opening and
+// ending, often action without talking, are always kept.
+const CUT_SIZES = { gentle: { gap: 0.8, pad: 0.25 }, tight: { gap: 0.45, pad: 0.12 } };
+export const QUIET = 0.3;
+const quietBetween = (energy, a, b) => {
+  if (!Array.isArray(energy) || !energy.length) return b - a <= 1.2;
+  // The seconds whose middle falls inside the pause (a short pause may have none: it is quiet).
+  for (let i = Math.max(0, Math.ceil(a - 0.5)); i + 0.5 <= b; i++) if ((energy[i] ?? 0) >= QUIET) return false;
+  return true;
+};
+// Spans taken out of the clip, as [from, to] seconds into the trimmed clip, in order.
+export function jumpCuts(edit, words, energy) {
+  const size = CUT_SIZES[edit.pace?.cuts];
+  if (!size) return [];
+  const { start, end } = edit.trim, len = end - start;
+  const said = (words ?? []).filter(w => w[0] >= start - 0.05 && w[1] <= end + 0.05).sort((x, y) => x[0] - y[0]);
+  const out = [];
+  let removed = 0, spoken = said[0]?.[1] ?? 0;
+  for (let i = 1; i < said.length; i++) {
+    const before = spoken, next = said[i][0], a = before + size.pad, b = next - size.pad;
+    spoken = Math.max(spoken, said[i][1]);
+    if (next - before < size.gap || b - a < 0.2 || !quietBetween(energy, a, b)) continue;
+    if (len - removed - (b - a) < MIN_CLIP) break;
+    out.push([round(a - start), round(b - start)]);
+    removed += round(b - start) - round(a - start);
+  }
+  return out;
+}
+// Punch-ins: the picture zooms in by PUNCH.zoom over `rise` seconds, holds, and eases back out over `fall`.
+export const PUNCH = { zoom: 0.14, rise: 0.15, hold: 1.1, fall: 0.4 };
+// The loudest moments (a second at least 75% as loud as the loudest, and louder than the seconds either side), at
+// least 5s apart, not in the first second, about one per 8s of clip (1-6). Times are seconds into the finished clip.
+function punchTimes(edit, energy, cuts, toClip, length) {
+  if (!edit.pace?.zooms || !Array.isArray(energy) || !energy.length) return [];
+  const { start, end } = edit.trim, found = [], picks = [];
+  for (let i = Math.ceil(start); i < end - 1; i++) {
+    const e = energy[i] ?? 0;
+    if (e >= 0.75 && e >= (energy[i - 1] ?? 0) && e >= (energy[i + 1] ?? 0)) found.push([i, e]);
+  }
+  found.sort((x, y) => y[1] - x[1] || x[0] - y[0]);
+  const most = Math.max(1, Math.min(6, Math.round(length / 8)));
+  for (const [i] of found) {
+    const rel = i - start;
+    if (rel < 1 || cuts.some(([a, b]) => rel >= a && rel < b)) continue;
+    const t = round(toClip(rel));
+    if (t > length - PUNCH.rise - PUNCH.hold || picks.some(p => Math.abs(p - t) < 5)) continue;
+    picks.push(t);
+    if (picks.length >= most) break;
+  }
+  return picks.sort((x, y) => x - y);
+}
+// How far the picture is zoomed (1 = not at all) at `t` seconds into the finished clip.
+const ramp = (punches, t) => { let z = 0; for (const p of punches) z = Math.max(z, Math.min(1, Math.max(0, (t - p) / PUNCH.rise)) * Math.min(1, Math.max(0, (p + PUNCH.rise + PUNCH.hold + PUNCH.fall - t) / PUNCH.fall))); return z; };
+export const zoomAt = (punches, t) => 1 + PUNCH.zoom * ramp(punches, t);
+// The finished clip's timeline: the jump cuts (seconds into the trimmed source), its length after them, toClip (a
+// time in the trimmed source to a time in the finished clip) and the punch-in times (finished clip).
+export function timeline(edit, words, energy) {
+  const cuts = jumpCuts(edit, words, energy), len = edit.trim.end - edit.trim.start;
+  const length = round(len - cuts.reduce((n, [a, b]) => n + b - a, 0));
+  const toClip = t => { let gone = 0; for (const [a, b] of cuts) { if (t >= b) gone += b - a; else if (t > a) gone += t - a; } return t - gone; };
+  return { cuts, length, toClip, punches: punchTimes(edit, energy, cuts, toClip, length) };
+}
+const plain = edit => ({ cuts: [], length: edit.trim.end - edit.trim.start, toClip: t => t, punches: [] });
+
 // ---- ASS subtitles for the render ----
 // ASS colours are &HAABBGGRR with AA=00 opaque.
 export function assColor(hex, alpha = 0) {
   const h = hex.replace("#", "");
   return "&H" + alpha.toString(16).padStart(2, "0").toUpperCase() + (h.slice(4, 6) + h.slice(2, 4) + h.slice(0, 2)).toUpperCase();
 }
-const stamp = t => { const cs = Math.max(0, Math.round(t * 100)); return Math.floor(cs / 360000) + ":" + String(Math.floor(cs / 6000) % 60).padStart(2, "0") + ":" + String(Math.floor(cs / 100) % 60).padStart(2, "0") + "." + String(cs % 100).padStart(2, "0"); };
+const clock = t => { const cs = Math.max(0, Math.round(t * 100)); return Math.floor(cs / 360000) + ":" + String(Math.floor(cs / 6000) % 60).padStart(2, "0") + ":" + String(Math.floor(cs / 100) % 60).padStart(2, "0") + "." + String(cs % 100).padStart(2, "0"); };
 const esc = t => t.replace(/[{}\\]/g, "");
 const POP = "{\\fscx82\\fscy82\\t(0,110,\\fscx100\\fscy100)}";
 
-export function buildAss(edit, words) {
-  const { W, H } = canvas(edit.frame), c = edit.captions, len = edit.trim.end - edit.trim.start, y = Math.round(c.y * H);
+// `tl` (see timeline) moves every caption to its time in the finished clip, after any jump cuts.
+export function buildAss(edit, words, tl = plain(edit)) {
+  const { W, H } = canvas(edit.frame), c = edit.captions, len = tl.length, y = Math.round(c.y * H), at = tl.toClip;
+  const stamp = t => clock(at(t));
   const boxStyle = c.box ? { border: 3, outline: Math.max(8, Math.round(c.size * 0.22)), outlineColor: assColor(c.boxColor) } : { border: 1, outline: c.outline, outlineColor: assColor(c.outlineColor) };
   const lines = [
     "[Script Info]", "ScriptType: v4.00+", "PlayResX: " + W, "PlayResY: " + H, "WrapStyle: 0", "ScaledBorderAndShadow: yes", "",
@@ -269,26 +346,27 @@ export function buildAss(edit, words) {
     `Style: Hook,${c.font},52,${assColor(edit.hook.color)},${assColor(edit.hook.color)},${assColor(edit.hook.bg)},${assColor("#000000", 0x80)},-1,0,0,0,100,100,0,0,3,14,0,8,60,60,0,1`,
     "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
   ];
-  const at = "{\\an5\\pos(" + W / 2 + "," + y + ")}";
+  const pos = "{\\an5\\pos(" + W / 2 + "," + y + ")}";
   const hl = "{\\c" + assColor(c.highlight) + "}", base = "{\\c" + assColor(c.color) + "}";
   if (c.on) for (const cue of cues(words, edit)) {
     if (c.animation === "word") {
       cue.words.forEach((w, i) => {
         const end = i + 1 < cue.words.length ? cue.words[i + 1].s : cue.end;
-        lines.push(`Dialogue: 0,${stamp(w.s)},${stamp(Math.max(end, w.s + 0.15))},Cap,,0,0,0,,${at}${POP}${esc(w.t)}`);
+        lines.push(`Dialogue: 0,${stamp(w.s)},${stamp(Math.max(end, w.s + 0.15))},Cap,,0,0,0,,${pos}${POP}${esc(w.t)}`);
       });
     } else if (c.animation === "karaoke") {
       cue.words.forEach((w, i) => {
         const from = i === 0 ? cue.start : w.s, to = i + 1 < cue.words.length ? cue.words[i + 1].s : cue.end;
         const body = cue.words.map((x, j) => j === i ? hl + esc(x.t) + base : esc(x.t)).join(" ");
-        lines.push(`Dialogue: 0,${stamp(from)},${stamp(to)},Cap,,0,0,0,,${at}${i === 0 ? POP : ""}${body}`);
+        lines.push(`Dialogue: 0,${stamp(from)},${stamp(to)},Cap,,0,0,0,,${pos}${i === 0 ? POP : ""}${body}`);
       });
     } else {
       const body = cue.words.map(w => esc(w.t)).join(" ");
-      lines.push(`Dialogue: 0,${stamp(cue.start)},${stamp(cue.end)},Cap,,0,0,0,,${at}${c.animation === "pop" ? POP : ""}${body}`);
+      lines.push(`Dialogue: 0,${stamp(cue.start)},${stamp(cue.end)},Cap,,0,0,0,,${pos}${c.animation === "pop" ? POP : ""}${body}`);
     }
   }
-  if (edit.hook.text) lines.push(`Dialogue: 1,${stamp(0)},${stamp(Math.min(len, edit.hook.seconds))},Hook,,0,0,0,,{\\an8\\pos(${W / 2},150)}${POP}${esc(edit.hook.text)}`);
+  // The hook's times are already in the finished clip.
+  if (edit.hook.text) lines.push(`Dialogue: 1,${clock(0)},${clock(Math.min(len, edit.hook.seconds))},Hook,,0,0,0,,{\\an8\\pos(${W / 2},150)}${POP}${esc(edit.hook.text)}`);
   return lines.join("\n") + "\n";
 }
 
@@ -299,8 +377,10 @@ const fmt = n => String(Math.round(n * 1000) / 1000);
 // directory (absolute Windows paths break filter syntax), or null when there is nothing to draw. `background` says
 // whether input 1 is a split-screen background video; split screen without one falls back to the blurred fill.
 // `audio`: { source, background } (which inputs have sound); the background video's sound is mixed in at
-// frame.split.volume when it has some and the volume is above 0, ending with the clip.
-export function filterGraph(edit, { width, height }, subtitles, { background = false, audio = null } = {}) {
+// frame.split.volume when it has some and the volume is above 0, ending with the clip. `tl` (see timeline): jump cuts
+// are taken out of the picture and the stream's sound (audio.source must say whether it has sound), and punch-ins
+// zoom the whole picture (not the captions).
+export function filterGraph(edit, { width, height }, subtitles, { background = false, audio = null, tl = plain(edit) } = {}) {
   const split = edit.frame.mode === "split" && background;
   // Split screen without a background, or a facecam layout without a webcam box, falls back to the blurred fill.
   const noCam = (edit.frame.mode === "cam" || edit.frame.mode === "pip") && !edit.frame.facecam?.box;
@@ -309,8 +389,10 @@ export function filterGraph(edit, { width, height }, subtitles, { background = f
   // Brightness scales luma above video black (16), like the preview's CSS brightness(), through a lookup table:
   // colorchannelmixer did the same per pixel in floating point and made renders about four times slower.
   const look = [l.brightness !== 1 && `lutyuv=y=clip(16+(val-16)*${fmt(l.brightness)}\\,0\\,255)`, (l.contrast !== 1 || l.saturation !== 1) && `eq=contrast=${fmt(l.contrast)}:saturation=${fmt(l.saturation)}`].filter(Boolean).join(",");
-  // Phone mode cuts the phone picture out of the stream first.
-  const src = "[0:v]" + (frame.mode === "phone" ? `crop=${cut.w}:${cut.h}:${cut.x}:${cut.y},` : "") + (look ? look + "," : "");
+  // Jump cuts drop the frames (and sound) inside each cut and close up the gaps; at a steady 30 fps first, so frame
+  // numbers are times. Then phone mode cuts the phone picture out of the stream.
+  const gone = tl.cuts.length ? tl.cuts.map(([a, b]) => `between(t,${fmt(a)},${fmt(b)})`).join("+") : "";
+  const src = "[0:v]" + (gone ? `fps=30,select='not(${gone})',setpts=N/30/TB,` : "") + (frame.mode === "phone" ? `crop=${cut.w}:${cut.h}:${cut.x}:${cut.y},` : "") + (look ? look + "," : "");
   const parts = [];
   if (split) {
     // The stream scaled to cover its part and cut to it; the background covering the rest; stacked in the chosen
@@ -338,19 +420,28 @@ export function filterGraph(edit, { width, height }, subtitles, { background = f
     parts.push(`color=c=black:s=${W}x${H}:r=30[bg]`, src + `scale=${w}:${h}[fg]`, `[bg][fg]overlay=${x}:${y}:shortest=1[v0]`);
   }
   let last = "v0";
+  if (tl.punches.length) {
+    // The same curve as zoomAt, per output frame (on/30 seconds), zooming on the middle of the picture.
+    const T = "(on/30)", r = PUNCH;
+    const z = tl.punches.map(p => `clip((${T}-${fmt(p)})/${r.rise},0,1)*clip((${fmt(p + r.rise + r.hold + r.fall)}-${T})/${r.fall},0,1)`).join("+");
+    parts.push(`[v0]fps=30,zoompan=z='1+${r.zoom}*min(1,${z})':x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d=1:s=${W}x${H}:fps=30[vz]`);
+    last = "vz";
+  }
   if (subtitles) { parts.push(`[${last}]subtitles=${subtitles}[v1]`); last = "v1"; }
   if (edit.progress.on) {
-    const len = fmt(edit.trim.end - edit.trim.start);
+    const len = fmt(tl.length);
     parts.push(`color=c=${hex6(edit.progress.color)}:s=${W}x10:r=30[bar]`, `[${last}][bar]overlay=x='-w+w*t/${len}':y=main_h-10:eval=frame:shortest=1[v2]`);
     last = "v2";
   }
   parts.push(`[${last}]format=yuv420p,setsar=1[vout]`);
-  const volume = edit.frame.split?.volume ?? 0, len = fmt(edit.trim.end - edit.trim.start);
+  const volume = edit.frame.split?.volume ?? 0, len = fmt(tl.length);
+  // The stream's sound with the jump cuts taken out, like the picture.
+  const cutSound = gone && audio?.source ? `aselect='not(${gone})',asetpts=N/SR/TB,` : "";
   if (split && audio?.background && volume > 0) {
     const bg = `[1:a]volume=${fmt(volume)},aresample=48000`;
-    parts.push(audio.source ? `[0:a]aresample=48000[sa];${bg}[ba];[sa][ba]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]`
+    parts.push(audio.source ? `[0:a]${cutSound}aresample=48000[sa];${bg}[ba];[sa][ba]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]`
       : `${bg},atrim=duration=${len},asetpts=PTS-STARTPTS[aout]`);
-  }
+  } else if (cutSound) parts.push(`[0:a]${cutSound}aresample=48000[aout]`);
   return parts.join(";");
 }
 

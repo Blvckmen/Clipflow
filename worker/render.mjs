@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { readFile, rm, stat, writeFile } from "node:fs/promises";
 import { command } from "./process.mjs";
 import { clipHash } from "./core.mjs";
-import { buildAss, filterGraph, needsSubtitles } from "./edit.mjs";
+import { buildAss, filterGraph, needsSubtitles, timeline } from "./edit.mjs";
 const run = promisify(execFile);
 
 export const MAX_CLIP_BYTES = 32 * 1024 * 1024;
@@ -53,17 +53,20 @@ export async function hasAudio(file, signal) {
   } catch { return false; }
 }
 
-// Writes the rendered clip to `out`. Returns { sha, size, duration }. `background` ({ path, start }) is the
-// split-screen video, looped from `start` seconds; without it split screen renders as the blurred fill.
-export async function renderClip(source, { edit, words, width, height, background = null }, out, signal) {
+// Writes the rendered clip to `out`. Returns { sha, size, duration } (duration after any jump cuts). `background`
+// ({ path, start }) is the split-screen video, looped from `start` seconds; without it split screen renders as the
+// blurred fill. `energy` is the source's per-second loudness (the clip's signals), for jump cuts and punch-ins.
+export async function renderClip(source, { edit, words, width, height, background = null, energy = null }, out, signal) {
   const dir = dirname(out), ass = basename(out).replace(/\.mp4$/, "") + ".ass";
+  const tl = timeline(edit, words, energy);
   const subtitles = needsSubtitles(edit, words) ? ass : null;
-  if (subtitles) await writeFile(join(dir, ass), buildAss(edit, words), "utf8");
+  if (subtitles) await writeFile(join(dir, ass), buildAss(edit, words, tl), "utf8");
   const length = edit.trim.end - edit.trim.start, split = edit.frame.mode === "split" && !!background;
-  // The background video's sound, when it is turned up and the video has some.
+  // The background video's sound, when it is turned up and the video has some; the stream's, when cuts are taken
+  // out of it.
   const mixing = split && !background.image && (edit.frame.split?.volume ?? 0) > 0;
-  const audio = mixing ? { source: await hasAudio(source, signal), background: await hasAudio(background.path, signal) } : null;
-  const graph = filterGraph(edit, { width, height }, subtitles, { background: split, audio });
+  const audio = mixing || tl.cuts.length ? { source: await hasAudio(source, signal), background: mixing && await hasAudio(background.path, signal) } : null;
+  const graph = filterGraph(edit, { width, height }, subtitles, { background: split, audio, tl });
   try {
     await command("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-ss", String(edit.trim.start), "-t", String(length), "-i", source,
       // A video background loops from its start point; an image is repeated as a 30 fps stream.
@@ -74,5 +77,5 @@ export async function renderClip(source, { edit, words, width, height, backgroun
   } finally { if (subtitles) await rm(join(dir, ass), { force: true }); }
   const size = (await stat(out)).size;
   if (size < 1024 || size > MAX_CLIP_BYTES) throw new Error("Rendered clip size outside allowed range (" + size + " bytes)");
-  return { sha: clipHash(await readFile(out)), size, duration: Math.round(length) };
+  return { sha: clipHash(await readFile(out)), size, duration: Math.round(tl.length) };
 }
