@@ -32,7 +32,7 @@ export function validateControl(c) {
   if (!["blur","crop","fit","split","cam","pip","phone"].includes(c.framing)) throw new Error("Invalid framing");
   // Split-screen background videos in the workspace library; dashboards that predate them omit the list.
   c.backgrounds = validBackgrounds(c.backgrounds);
-  if (!Number.isInteger(c.duration) || c.duration < 15 || c.duration > 90 || typeof c.captions !== "boolean" || !Number.isInteger(c.dailyLimit) || c.dailyLimit < 1 || c.dailyLimit > 50) throw new Error("Invalid clip settings");
+  if (!Number.isInteger(c.duration) || c.duration < 15 || c.duration > 90 || typeof c.captions !== "boolean" || !Number.isInteger(c.dailyLimit) || c.dailyLimit < 1 || c.dailyLimit > 100) throw new Error("Invalid clip settings");
   const ids = new Set();
   for (const s of c.streamers) {
     if (!/^[0-9a-f-]{36}$/i.test(s.id) || ids.has(s.id) || !["armed","paused","stopped"].includes(s.status)) throw new Error("Invalid streamer");

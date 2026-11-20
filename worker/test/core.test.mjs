@@ -50,6 +50,8 @@ test("channelUrl accepts channels and rejects non-channel pages", () => {
 test("validateControl requires a valid daily limit", () => {
   assert.equal(validateControl(config()).dailyLimit, 2);
   assert.throws(() => validateControl(config({ dailyLimit: 0 })));
+  assert.equal(validateControl(config({ dailyLimit: 100 })).dailyLimit, 100, "up to 100 a day");
+  assert.throws(() => validateControl(config({ dailyLimit: 101 })));
   assert.throws(() => validateControl(config({ dailyLimit: undefined })));
   assert.throws(() => validateControl(config({ control: "on" })));
 });
