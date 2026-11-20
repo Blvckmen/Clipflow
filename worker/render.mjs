@@ -22,6 +22,29 @@ export async function videoInfo(file, signal) {
   } catch { return { width: 0, height: 0, duration: 0 }; }
 }
 
+// A stream filmed on a phone (Twitch and Kick IRL streams): an upright picture with black bars either side of the
+// landscape stream. Finds that picture with ffmpeg's cropdetect over four seconds from the middle of the source (the
+// largest picture seen, so a dark moment doesn't shrink it). Returns its rectangle as fractions of the frame, or null
+// when the stream isn't like that (see phonePicture).
+export async function findPhonePicture(file, { width, height, duration }, signal) {
+  if (!(width > height)) return null;
+  try {
+    const at = Math.max(0, Math.min((duration || 0) - 4, (duration || 0) / 2 - 2));
+    const { stderr } = await run("ffmpeg", ["-hide_banner", "-ss", String(at), "-i", file, "-t", "4", "-an", "-sn", "-vf", "fps=2,cropdetect=limit=24:round=2:reset=0", "-f", "null", "-"], { signal, timeout: 60_000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+    const last = [...stderr.matchAll(/crop=(\d+):(\d+):(\d+):(\d+)/g)].at(-1);
+    if (!last) return null;
+    const [w, h, x, y] = last.slice(1, 5).map(Number);
+    return phonePicture({ x, y, w, h }, width, height);
+  } catch { return null; }
+}
+// The decision, on cropdetect's rectangle (pixels): a phone picture is upright (taller than wide) and leaves bars of
+// at least a tenth of the width beside it; anything else (a normal landscape stream, a letterboxed film) is null.
+export function phonePicture({ x, y, w, h }, width, height) {
+  if (!(width > 0 && height > 0 && w > 0 && h > 0) || w > width * 0.8 || h < w * 1.05 || h < height * 0.6) return null;
+  const r = n => Math.round(n * 10000) / 10000;
+  return { x: r(x / width), y: r(y / height), w: r(Math.min(w, width - x) / width), h: r(Math.min(h, height - y) / height) };
+}
+
 // Whether a media file has a sound track.
 export async function hasAudio(file, signal) {
   try {

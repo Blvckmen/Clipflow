@@ -427,3 +427,10 @@ button.account-streamers{max-width:none;justify-self:start}
 .split-pool-list small{font-size:11px;color:var(--muted)}
 .split-row .primary{padding:7px 12px;font-size:13px}
 @media (max-width:1100px){.split-row{grid-template-columns:1fr 1fr;}.split-row .primary{grid-column:1/-1}}
+
+/* Editor: the preview in the clip's shape (landscape sized by width), and the clip shape picker's little frames. */
+.phone.landscape{height:auto;width:min(100%,720px)}
+.aspect-picker button{display:inline-flex;align-items:center;gap:7px}
+.aspect-icon{display:inline-block;border:2px solid currentColor;border-radius:3px;opacity:.8}
+.aspect-icon.a9x16{width:9px;height:16px}.aspect-icon.a4x5{width:12px;height:15px}.aspect-icon.a1x1{width:14px;height:14px}.aspect-icon.a16x9{width:18px;height:10px}
+.segmented button:disabled{opacity:.4;cursor:not-allowed}

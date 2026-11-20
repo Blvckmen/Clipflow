@@ -39,13 +39,13 @@ test("normalizeStyle fills parts an older saved style lacks", () => {
 });
 
 test("layout fits, covers, zooms and pans on the 720x1280 frame", () => {
-  assert.deepEqual(layout({ mode: "fit", zoom: 1, x: 0, y: 0 }, 1920, 1080), { w: 720, h: 406, x: 0, y: 437, area: { w: 720, h: 1280, y: 0 } });
-  assert.deepEqual(layout({ mode: "crop", zoom: 1, x: 0, y: 0 }, 1920, 1080), { w: 2276, h: 1280, x: -778, y: 0, area: { w: 720, h: 1280, y: 0 } });
+  assert.deepEqual(layout({ mode: "fit", zoom: 1, x: 0, y: 0 }, 1920, 1080), { w: 720, h: 406, x: 0, y: 437, area: { w: 720, h: 1280, y: 0 }, src: { x: 0, y: 0, w: 1920, h: 1080 } });
+  assert.deepEqual(layout({ mode: "crop", zoom: 1, x: 0, y: 0 }, 1920, 1080), { w: 2276, h: 1280, x: -778, y: 0, area: { w: 720, h: 1280, y: 0 }, src: { x: 0, y: 0, w: 1920, h: 1080 } });
   assert.equal(layout({ mode: "crop", zoom: 1, x: 1, y: 0 }, 1920, 1080).x, 0, "sliding the picture fully right shows its left edge");
   assert.equal(layout({ mode: "crop", zoom: 1, x: -1, y: 0 }, 1920, 1080).x, 720 - 2276, "fully left shows its right edge");
   const zoomed = layout({ mode: "blur", zoom: 2, x: 0, y: 0 }, 1920, 1080);
   assert.deepEqual([zoomed.w, zoomed.h], [1440, 810]);
-  for (const v of Object.values(layout({ mode: "fit", zoom: 1.37, x: 0.3, y: -0.2 }, 1279, 721))) if (typeof v === "number") assert.equal(Number.isInteger(v), true);
+  for (const v of Object.values(layout({ mode: "fit", zoom: 1.37, x: 0.3, y: -0.2 }, 1279, 721)).filter(v => typeof v === "number")) if (typeof v === "number") assert.equal(Number.isInteger(v), true);
 });
 
 test("cues group words by line length, pauses and sentence ends, relative to the trim", () => {
@@ -107,7 +107,7 @@ test("filterGraph frames, adjusts colour, burns subtitles and draws the progress
 test("split screen: the stream covers the top half and a background video the bottom half", async () => {
   const { filterGraph, SPLIT_H, normalizeStyle, defaultStyle } = await import("../edit.mjs");
   const top = layout({ mode: "split", zoom: 1, x: 0, y: 0 }, 1920, 1080);
-  assert.deepEqual(top, { w: 1138, h: 640, x: -209, y: 0, area: { w: 720, h: SPLIT_H, y: 0 } }, "16:9 covers 720x640, centred");
+  assert.deepEqual(top, { w: 1138, h: 640, x: -209, y: 0, area: { w: 720, h: SPLIT_H, y: 0 }, src: { x: 0, y: 0, w: 1920, h: 1080 } }, "16:9 covers 720x640, centred");
   const edit = { ...defaultStyle({ framing: "split" }), trim: { start: 0, end: 10 }, hook: { text: "", seconds: 3, color: "#111111", bg: "#ffffff" } };
   assert.equal(edit.captions.y, 0.5, "captions sit on the seam");
   const graph = filterGraph(edit, { width: 1920, height: 1080 }, null, { background: true });
@@ -172,4 +172,50 @@ test("facecam layouts: the webcam across the top or in a corner, cut from the sa
   assert.equal(corner.y + corner.h, 1280 - 230, "kept clear of the captions");
   assert.match(filterGraph(pip, { width: 1280, height: 720 }, null), /pad=296:\d+:4:4:color=white\[cam\];\[game\]\[cam\]overlay=24:/);
   assert.match(filterGraph({ ...edit, frame: { ...cam, facecam: { ...cam.facecam, box: null } } }, { width: 1280, height: 720 }, null), /boxblur/, "no webcam box: blurred fill");
+});
+
+test("clip shapes: every layout, caption and render follows the chosen aspect", async () => {
+  const { filterGraph, normalizeStyle, defaultStyle, canvas, layout, buildAss, ASPECTS } = await import("../edit.mjs");
+  assert.deepEqual(Object.keys(ASPECTS), ["9:16", "4:5", "1:1", "16:9"]);
+  assert.equal(normalizeStyle({ frame: {} }).frame.aspect, "9:16", "older styles stay portrait");
+  assert.throws(() => normalizeStyle({ frame: { aspect: "3:1" } }), /Clip shape/);
+  for (const [aspect, [w, h]] of Object.entries(ASPECTS)) {
+    assert.deepEqual(canvas({ aspect }), { W: w, H: h });
+    assert.ok(Math.abs(w * h - 720 * 1280) / (720 * 1280) < 0.05, aspect + " has about the same number of pixels");
+    const style = normalizeStyle({ frame: { aspect, mode: "blur" } });
+    const edit = { ...style, trim: { start: 0, end: 8 }, hook: { text: "Hi", seconds: 3, color: "#111111", bg: "#ffffff" } };
+    const g = filterGraph(edit, { width: 1920, height: 1080 }, "clip.ass");
+    assert.match(g, new RegExp("crop=" + w + ":" + h + ",scale=" + w / 4 + ":" + h / 4 + ",boxblur"), aspect + " blurred fill at its size");
+    assert.match(buildAss(edit, []), new RegExp("PlayResX: " + w + "\\nPlayResY: " + h));
+    const fit = layout(style.frame, 1920, 1080);
+    assert.ok(fit.w <= w && fit.h <= h && (fit.w === w || fit.h === h), aspect + " fits the stream inside");
+  }
+  // Landscape: nothing to stack, so split screen and facecam-on-top become the blurred fill; the corner box stays.
+  assert.equal(normalizeStyle({ frame: { aspect: "16:9", mode: "split" } }).frame.mode, "blur");
+  assert.equal(normalizeStyle({ frame: { aspect: "16:9", mode: "cam" } }).frame.mode, "blur");
+  assert.equal(normalizeStyle({ frame: { aspect: "16:9", mode: "pip" } }).frame.mode, "pip");
+  assert.equal(normalizeStyle({ frame: { aspect: "1:1", mode: "split" } }).frame.mode, "split", "a square still stacks");
+  assert.equal(defaultStyle().frame.aspect, "9:16");
+});
+
+test("phone mode: the upright phone picture is cut out of the landscape stream and fills the frame", async () => {
+  const { filterGraph, normalizeStyle, phoneBox, layout } = await import("../edit.mjs");
+  // No picture found: an upright 9:16 picture in the middle of a 1920x1080 stream.
+  assert.deepEqual(phoneBox({}, 1920, 1080), { x: 656, y: 0, w: 608, h: 1080 });
+  const content = { x: 0.3, y: 0, w: 0.4, h: 1 };
+  const frame = normalizeStyle({ frame: { mode: "phone", content } }).frame;
+  assert.deepEqual(frame.content, content);
+  assert.equal(normalizeStyle({ frame: { mode: "phone", content: { x: 0, y: 0, w: 0, h: 1 } } }).frame.content.w, 0.05, "too thin is widened, not refused");
+  assert.throws(() => normalizeStyle({ frame: { mode: "phone", content: { x: "a", y: 0, w: 0.4, h: 1 } } }), /Phone picture left/);
+  const box = phoneBox(frame, 1920, 1080);
+  assert.deepEqual(box, { x: 576, y: 0, w: 768, h: 1080 });
+  const l = layout(frame, 1920, 1080);
+  assert.deepEqual(l.src, box);
+  assert.ok(l.w >= 720 && l.h >= 1280 && (l.w === 720 || l.h === 1280), "covers the frame");
+  const edit = { ...normalizeStyle({ frame: { mode: "phone", content } }), trim: { start: 0, end: 8 }, hook: { text: "", seconds: 3, color: "#111111", bg: "#ffffff" } };
+  const g = filterGraph(edit, { width: 1920, height: 1080 }, null);
+  assert.match(g, /^color=c=black:s=720x1280:r=30\[bg\];\[0:v\]crop=768:1080:576:0,scale=\d+:\d+\[fg\]/);
+  // In a square clip it is cut to fill the square.
+  const square = filterGraph({ ...edit, frame: { ...edit.frame, aspect: "1:1" } }, { width: 1920, height: 1080 }, null);
+  assert.match(square, /s=960x960/);
 });

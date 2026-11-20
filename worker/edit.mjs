@@ -2,7 +2,7 @@
 // what the editor shows is laid out by the same numbers the render uses. Pure functions only: no Node or DOM APIs.
 //
 // An edit describes how to turn a clip's *source* (the captured moment plus a few seconds either side, unframed)
-// into the published 720x1280 clip. Times are seconds from the start of the source.
+// into the published clip: 720x1280 (9:16) unless frame.aspect picks another shape (see ASPECTS). Times are seconds from the start of the source.
 //   { v, trim:{start,end}, frame:{mode,zoom,x,y,background}, look:{brightness,contrast,saturation},
 //     captions:{on,preset,font,size,color,highlight,outline,outlineColor,box,boxColor,uppercase,animation,words,y,mask},
 //     hook:{text,seconds,color,bg}, progress:{on,color}, words?:[[start,end,text],...] }
@@ -11,6 +11,14 @@
 // its own style, so every new clip from that streamer comes out with that streamer's look.
 
 export const W = 720, H = 1280;
+// Clip shapes: the output size of each. All are about the same number of pixels (so renders take about as long and
+// caption sizes, which are in pixels, look about the same). Portrait 9:16 is the default (TikTok, Reels, Shorts).
+export const ASPECTS = { "9:16": [720, 1280], "4:5": [864, 1080], "1:1": [960, 960], "16:9": [1280, 720] };
+export const ASPECT_LABELS = { "9:16": "Portrait 9:16", "4:5": "Portrait 4:5", "1:1": "Square 1:1", "16:9": "Landscape 16:9" };
+// The output size of a clip with this frame.
+export const canvas = frame => { const [w, h] = ASPECTS[frame?.aspect] ?? ASPECTS["9:16"]; return { W: w, H: h }; };
+// Split screen and facecam-on-top stack two pictures, so they need a frame at least as tall as it is wide.
+export const stacks = frame => { const c = canvas(frame); return c.H >= c.W; };
 export const FONTS = ["Arial", "Impact", "Verdana", "Trebuchet MS", "Georgia", "Comic Sans MS", "DejaVu Sans"];
 // "split": the stream fills part of the frame and a background (a looping video or a still image from the workspace's
 // library) the rest. frame.split: share (the stream's part of the height, 0.3-0.8), top ("stream" or "background":
@@ -21,7 +29,10 @@ export const FONTS = ["Arial", "Impact", "Verdana", "Trebuchet MS", "Georgia", "
 // "cam": the streamer's webcam (frame.facecam.box, a rectangle of the stream as fractions) across the top
 // (facecam.share of the height) and the stream cut to fill the rest. "pip": the stream fills the frame and the webcam
 // sits in a bordered box in a corner (facecam.corner, facecam.size of the width). Without a box both render as "blur".
-export const FRAMINGS = ["blur", "crop", "fit", "split", "cam", "pip"];
+// "phone": a stream filmed on a phone (common on Twitch and Kick IRL streams), an upright picture with black bars
+// either side of a landscape stream. frame.content is that picture's rectangle (fractions of the stream, found by the
+// worker); it is cut out and fills the frame. Without one, an upright 9:16 picture in the middle is assumed.
+export const FRAMINGS = ["blur", "crop", "fit", "split", "cam", "pip", "phone"];
 export const CORNERS = ["tl", "tr", "bl", "br"];
 export const DEFAULT_FACECAM = { box: null, share: 0.35, corner: "tr", size: 0.36 };
 export const ANIMATIONS = ["none", "pop", "karaoke", "word"];
@@ -45,7 +56,7 @@ export function defaultStyle({ framing = "blur", captions = true } = {}) {
   const preset = { ...PRESETS.bold };
   delete preset.label;
   return {
-    frame: { mode: FRAMINGS.includes(framing) ? framing : "blur", zoom: 1, x: 0, y: 0, background: null, pool: [], split: { ...DEFAULT_SPLIT }, facecam: { ...DEFAULT_FACECAM } },
+    frame: { mode: FRAMINGS.includes(framing) ? framing : "blur", aspect: "9:16", zoom: 1, x: 0, y: 0, content: null, background: null, pool: [], split: { ...DEFAULT_SPLIT }, facecam: { ...DEFAULT_FACECAM } },
     look: { brightness: 1, contrast: 1, saturation: 1 },
     // Split screen puts captions on the seam between the two videos.
     captions: { on: !!captions, preset: "bold", ...preset, y: framing === "split" ? 0.5 : framing === "cam" ? DEFAULT_FACECAM.share : 0.72, mask: false },
@@ -64,14 +75,14 @@ const pick = (v, list, name) => { if (!list.includes(v)) fail(name + " is not a 
 const text = (v, max, name) => { if (typeof v !== "string") fail(name + " must be text"); return v.replace(/[\r\n]+/g, " ").replace(/[{}\\]/g, "").slice(0, max); };
 const obj = (v, name) => { if (!v || typeof v !== "object" || Array.isArray(v)) fail(name + " is missing"); return v; };
 // The webcam's rectangle in the stream, as fractions of its width and height (null: not set).
-// A list of library background ids (no gallery clips), at most 30, without repeats.
-const pool = v => { if (v === undefined || v === null) return []; if (!Array.isArray(v) || v.length > 30) fail("Background set is not valid"); return [...new Set(v.map(x => { const id = ref(x, "Background set"); if (!id || id.startsWith("clip:")) fail("Background set is not valid"); return id; }))]; };
-const camBox = v => {
+const camBox = (v, what = "Facecam") => {
   if (v === null || v === undefined) return null;
-  const b = obj(v, "Facecam box"), w = num(b.w, 0.05, 1, "Facecam width"), h = num(b.h, 0.05, 1, "Facecam height");
-  return { x: num(b.x, 0, 1 - w, "Facecam left"), y: num(b.y, 0, 1 - h, "Facecam top"), w, h };
+  const b = obj(v, what + " box"), w = num(b.w, 0.05, 1, what + " width"), h = num(b.h, 0.05, 1, what + " height");
+  return { x: num(b.x, 0, 1 - w, what + " left"), y: num(b.y, 0, 1 - h, what + " top"), w, h };
 };
 // A background video: a library video's id, or "clip:<id>" for another clip from the gallery.
+// A list of library background ids (no gallery clips), at most 30, without repeats.
+const pool = v => { if (v === undefined || v === null) return []; if (!Array.isArray(v) || v.length > 30) fail("Background set is not valid"); return [...new Set(v.map(x => { const id = ref(x, "Background set"); if (!id || id.startsWith("clip:")) fail("Background set is not valid"); return id; }))]; };
 const ref = (v, name) => { if (v === null || v === undefined) return null; if (typeof v !== "string" || !/^(clip:)?[0-9a-f-]{36}$/i.test(v)) fail(name + " is not valid"); return v.toLowerCase(); };
 
 // Validates a style from an untrusted client (or an older saved one), filling any missing part from the defaults.
@@ -80,8 +91,11 @@ export function normalizeStyle(input, base = defaultStyle()) {
   const f = { ...base.frame, ...(s.frame ?? {}) }, sp = { ...DEFAULT_SPLIT, ...(base.frame.split ?? {}), ...(s.frame?.split ?? {}) }, l = { ...base.look, ...(s.look ?? {}) }, c = { ...base.captions, ...(s.captions ?? {}) };
   const h = { ...base.hook, ...(s.hook ?? {}) }, p = { ...base.progress, ...(s.progress ?? {}) };
   const fc = { ...DEFAULT_FACECAM, ...(base.frame.facecam ?? {}), ...(s.frame?.facecam ?? {}) };
+  const aspect = pick(f.aspect ?? "9:16", Object.keys(ASPECTS), "Clip shape");
+  // A landscape clip has no room to stack two pictures: split screen and facecam-on-top become the blurred fill.
+  const mode = pick(f.mode, FRAMINGS, "Framing"), fits = stacks({ aspect }) || (mode !== "split" && mode !== "cam");
   return {
-    frame: { mode: pick(f.mode, FRAMINGS, "Framing"), zoom: num(f.zoom, 1, 3, "Zoom"), x: num(f.x, -1, 1, "Horizontal position"), y: num(f.y, -1, 1, "Vertical position"), background: ref(f.background, "Background video"), pool: pool(f.pool),
+    frame: { mode: fits ? mode : "blur", aspect, content: camBox(f.content, "Phone picture"), zoom: num(f.zoom, 1, 3, "Zoom"), x: num(f.x, -1, 1, "Horizontal position"), y: num(f.y, -1, 1, "Vertical position"), background: ref(f.background, "Background video"), pool: pool(f.pool),
       split: { share: num(sp.share, 0.3, 0.8, "Stream share"), top: pick(sp.top, SPLIT_TOPS, "Split order"), divider: sp.divider === null ? null : color(sp.divider, "Divider colour"), volume: num(sp.volume, 0, 1, "Background volume") },
       facecam: { box: camBox(fc.box), share: num(fc.share, 0.2, 0.5, "Facecam height"), corner: pick(fc.corner, CORNERS, "Facecam corner"), size: num(fc.size, 0.2, 0.5, "Facecam size") } },
     look: { brightness: num(l.brightness, 0.5, 1.5, "Brightness"), contrast: num(l.contrast, 0.5, 1.5, "Contrast"), saturation: num(l.saturation, 0, 2, "Saturation") },
@@ -140,12 +154,14 @@ const even = n => Math.max(2, 2 * Math.round(n / 2));
 export const SPLIT_H = H / 2;
 // Split screen's two parts: where the stream and the background sit (y and height, whole even pixels), and the seam.
 export function splitAreas(frame) {
+  const { H } = canvas(frame);
   const sp = { ...DEFAULT_SPLIT, ...(frame?.split ?? {}) };
   const streamH = even(H * Math.min(0.8, Math.max(0.3, sp.share))), bgH = H - streamH, streamTop = sp.top !== "background";
   return { stream: { y: streamTop ? 0 : bgH, h: streamH }, background: { y: streamTop ? streamH : 0, h: bgH }, seam: streamTop ? streamH : bgH };
 }
 // Facecam + game: the webcam strip across the top and the game below it.
 export function camAreas(frame) {
+  const { H } = canvas(frame);
   const camH = even(H * Math.min(0.5, Math.max(0.2, frame.facecam?.share ?? DEFAULT_FACECAM.share)));
   return { cam: { y: 0, h: camH }, game: { y: camH, h: H - camH }, seam: camH };
 }
@@ -154,7 +170,7 @@ export function camAreas(frame) {
 // (the box's own shape, frame.facecam.size of the width, kept clear of the hook at the top and captions low down).
 export const PIP_MARGIN = 28, PIP_TOP = 170, PIP_BOTTOM = 230;
 export function facecamPlacement(frame, width, height) {
-  const fc = { ...DEFAULT_FACECAM, ...(frame.facecam ?? {}) }, b = fc.box;
+  const fc = { ...DEFAULT_FACECAM, ...(frame.facecam ?? {}) }, b = fc.box, { W, H } = canvas(frame);
   if (!b) return null;
   const SW = width > 0 ? width : 1280, SH = height > 0 ? height : 720;
   let sx = b.x * SW, sy = b.y * SH, bw = b.w * SW, bh = b.h * SH;
@@ -166,17 +182,28 @@ export function facecamPlacement(frame, width, height) {
     return { sx: Math.round(sx), sy: Math.round(sy), sw: even(bw), sh: even(bh), x: 0, y: cam.y, w: W, h: cam.h };
   }
   const w = even(W * fc.size), h = even(w * bh / bw);
-  const x = fc.corner.endsWith("l") ? PIP_MARGIN : W - PIP_MARGIN - w, y = fc.corner.startsWith("t") ? PIP_TOP : H - PIP_BOTTOM - h;
+  const x = fc.corner.endsWith("l") ? PIP_MARGIN : W - PIP_MARGIN - w, y = Math.max(PIP_MARGIN, fc.corner.startsWith("t") ? PIP_TOP : H - PIP_BOTTOM - h);
   return { sx: Math.round(sx), sy: Math.round(sy), sw: even(bw), sh: even(bh), x, y, w, h };
 }
+// The phone picture inside the stream, in stream pixels: frame.content, or an upright 9:16 picture in the middle.
+export function phoneBox(frame, width, height) {
+  const SW = width > 0 ? width : 1280, SH = height > 0 ? height : 720, b = frame.content;
+  // Even pixels (yuv420p crops need them); positions may be 0, sizes stay inside the stream.
+  const at = n => 2 * Math.floor(n / 2);
+  if (b) { const x = at(b.x * SW), y = at(b.y * SH); return { x, y, w: Math.min(even(b.w * SW), at(SW - x)), h: Math.min(even(b.h * SH), at(SH - y)) }; }
+  const w = Math.min(at(SW), even(SH * 9 / 16));
+  return { x: at((SW - w) / 2), y: 0, w, h: at(SH) };
+}
+// src: the part of the stream that is shown (all of it, or the phone picture), in stream pixels.
 export function layout(frame, width, height) {
-  const sw = width > 0 ? width : 1280, sh = height > 0 ? height : 720;
+  const fw = width > 0 ? width : 1280, fh = height > 0 ? height : 720, { W, H } = canvas(frame);
+  const src = frame.mode === "phone" ? phoneBox(frame, fw, fh) : { x: 0, y: 0, w: fw, h: fh }, sw = src.w, sh = src.h;
   const cam = frame.mode === "cam" && frame.facecam?.box ? camAreas(frame) : null;
   const areas = frame.mode === "split" ? splitAreas(frame) : cam ? { stream: cam.game } : null;
   const AW = W, AH = areas ? areas.stream.h : H;
-  const base = ["crop", "split", "cam", "pip"].includes(frame.mode) ? Math.max(AW / sw, AH / sh) : Math.min(AW / sw, AH / sh);
+  const base = ["crop", "split", "cam", "pip", "phone"].includes(frame.mode) ? Math.max(AW / sw, AH / sh) : Math.min(AW / sw, AH / sh);
   const w = even(sw * base * frame.zoom), h = even(sh * base * frame.zoom);
-  return { w, h, x: Math.round((AW - w) / 2 + frame.x * Math.abs(AW - w) / 2), y: Math.round((AH - h) / 2 + frame.y * Math.abs(AH - h) / 2), area: { w: AW, h: AH, y: areas ? areas.stream.y : 0 } };
+  return { w, h, x: Math.round((AW - w) / 2 + frame.x * Math.abs(AW - w) / 2), y: Math.round((AH - h) / 2 + frame.y * Math.abs(AH - h) / 2), area: { w: AW, h: AH, y: areas ? areas.stream.y : 0 }, src };
 }
 
 const SWEAR = /^(fuck|shit|bitch|cunt|dick|puss|asshole|bastard|cock|slut|whore|fag|nigg|motherf)/i;
@@ -232,7 +259,7 @@ const esc = t => t.replace(/[{}\\]/g, "");
 const POP = "{\\fscx82\\fscy82\\t(0,110,\\fscx100\\fscy100)}";
 
 export function buildAss(edit, words) {
-  const c = edit.captions, len = edit.trim.end - edit.trim.start, y = Math.round(c.y * H);
+  const { W, H } = canvas(edit.frame), c = edit.captions, len = edit.trim.end - edit.trim.start, y = Math.round(c.y * H);
   const boxStyle = c.box ? { border: 3, outline: Math.max(8, Math.round(c.size * 0.22)), outlineColor: assColor(c.boxColor) } : { border: 1, outline: c.outline, outlineColor: assColor(c.outlineColor) };
   const lines = [
     "[Script Info]", "ScriptType: v4.00+", "PlayResX: " + W, "PlayResY: " + H, "WrapStyle: 0", "ScaledBorderAndShadow: yes", "",
@@ -278,11 +305,12 @@ export function filterGraph(edit, { width, height }, subtitles, { background = f
   // Split screen without a background, or a facecam layout without a webcam box, falls back to the blurred fill.
   const noCam = (edit.frame.mode === "cam" || edit.frame.mode === "pip") && !edit.frame.facecam?.box;
   const frame = (edit.frame.mode === "split" && !background) || noCam ? { ...edit.frame, mode: "blur" } : edit.frame;
-  const { w, h, x, y } = layout(frame, width, height), l = edit.look;
+  const { w, h, x, y, src: cut } = layout(frame, width, height), l = edit.look, { W, H } = canvas(edit.frame);
   // Brightness scales luma above video black (16), like the preview's CSS brightness(), through a lookup table:
   // colorchannelmixer did the same per pixel in floating point and made renders about four times slower.
   const look = [l.brightness !== 1 && `lutyuv=y=clip(16+(val-16)*${fmt(l.brightness)}\\,0\\,255)`, (l.contrast !== 1 || l.saturation !== 1) && `eq=contrast=${fmt(l.contrast)}:saturation=${fmt(l.saturation)}`].filter(Boolean).join(",");
-  const src = "[0:v]" + (look ? look + "," : "");
+  // Phone mode cuts the phone picture out of the stream first.
+  const src = "[0:v]" + (frame.mode === "phone" ? `crop=${cut.w}:${cut.h}:${cut.x}:${cut.y},` : "") + (look ? look + "," : "");
   const parts = [];
   if (split) {
     // The stream scaled to cover its part and cut to it; the background covering the rest; stacked in the chosen
@@ -305,7 +333,7 @@ export function filterGraph(edit, { width, height }, subtitles, { background = f
         `[game][cam]overlay=${fp.x - 4}:${fp.y - 4}[v0]`);
     }
   } else if (frame.mode === "blur") {
-    parts.push(src + "split[a][b]", `[a]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},scale=180:320,boxblur=8:2,eq=brightness=-0.12,scale=${W}:${H}[bg]`, `[b]scale=${w}:${h}[fg]`, `[bg][fg]overlay=${x}:${y}[v0]`);
+    parts.push(src + "split[a][b]", `[a]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},scale=${even(W / 4)}:${even(H / 4)},boxblur=8:2,eq=brightness=-0.12,scale=${W}:${H}[bg]`, `[b]scale=${w}:${h}[fg]`, `[bg][fg]overlay=${x}:${y}[v0]`);
   } else {
     parts.push(`color=c=black:s=${W}x${H}:r=30[bg]`, src + `scale=${w}:${h}[fg]`, `[bg][fg]overlay=${x}:${y}:shortest=1[v0]`);
   }

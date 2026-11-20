@@ -264,6 +264,16 @@ describe("clip editor", () => {
     await dash({ action: "deleteClip", id: c.id });
   });
 
+  test("a phone stream's picture comes back with the clip's source, and a clip can be any of the clip shapes", async () => {
+    const content = { x: 0.34, y: 0, w: 0.32, h: 1 };
+    const { clip: c, response } = await reportClip(Buffer.alloc(3000, 6), { edit: { ...firstEdit, frame: { ...firstEdit.frame, mode: "phone", aspect: "4:5", content } }, transcript: words, source: { width: 1920, height: 1080, duration: 42, sha: sha256(source), size: source.length, content } });
+    assert.equal(response.status, 200);
+    const opened = await (await edit(c.id)).json();
+    assert.deepEqual([opened.source.content, opened.edit.frame.mode, opened.edit.frame.aspect, opened.edit.frame.content], [content, "phone", "4:5", content]);
+    assert.equal((await save(c.id, { edit: { ...opened.edit, frame: { ...opened.edit.frame, aspect: "21:9" } }, rev: opened.rev })).status, 400, "an unknown shape is refused");
+    await dash({ action: "deleteClip", id: c.id });
+  });
+
   test("the library thumbnail the browser takes is kept for the clip's current version and goes with the clip", async () => {
     const bytes = Buffer.alloc(6000, 7), { clip: c } = await reportClip(bytes);
     assert.equal((await upload(c.id, bytes)).status, 200);

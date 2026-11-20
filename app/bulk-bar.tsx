@@ -27,6 +27,7 @@ export function BulkBar({ count, shown, allShown, busy, onSelectShown, onClear, 
         <option value="frame:crop">Framing: centre crop</option>
         <option value="frame:fit">Framing: fit with black bars</option>
         <option value="frame:split">Framing: split screen</option>
+        <option value="frame:phone">Framing: phone stream (upright picture fills the frame)</option>
       </select>
       <button className="danger" disabled={busy} onClick={onDelete}><Trash2 size={14} />Delete</button>
     </div>

@@ -3,18 +3,19 @@
 // worker renders with, so what you see is what gets posted. Saving stores the edit; the worker re-renders it.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, Scissors, Sparkles, Undo2 } from "lucide-react";
-import { ANIMATIONS, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, H, MAX_CLIP, MIN_CLIP, PRESETS, W, activeCue, camAreas, cues, facecamPlacement, layout, splitAreas } from "../worker/edit.mjs";
+import { ANIMATIONS, ASPECTS, ASPECT_LABELS, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, MAX_CLIP, MIN_CLIP, PRESETS, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks } from "../worker/edit.mjs";
 
 import { applyAutomaticHook } from "../worker/hooks.mjs";
 
 type Split = { share: number; top: "stream" | "background"; divider: string | null; volume: number };
 type CamBox = { x: number; y: number; w: number; h: number };
 type Facecam = { box: CamBox | null; share: number; corner: "tl" | "tr" | "bl" | "br"; size: number };
-type Frame = { mode: "blur" | "crop" | "fit" | "split" | "cam" | "pip"; zoom: number; x: number; y: number; background?: string | null; split?: Split; facecam?: Facecam };
+type Aspect = keyof typeof ASPECTS;
+type Frame = { mode: "blur" | "crop" | "fit" | "split" | "cam" | "pip" | "phone"; aspect?: Aspect; content?: CamBox | null; zoom: number; x: number; y: number; background?: string | null; split?: Split; facecam?: Facecam };
 type Captions = { on: boolean; preset: string; font: string; size: number; color: string; highlight: string; outline: number; outlineColor: string; box: boolean; boxColor: string; uppercase: boolean; animation: string; words: number; y: number; mask: boolean };
 type Word = [number, number, string];
 export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { text: string; seconds: number; color: string; bg: string }; progress: { on: boolean; color: string }; words?: Word[] };
-type Bundle = { id: string; streamerId: string; streamer: string | null; edit: Edit; rev: number; words: Word[]; signals: { energy: number[]; chat: number[] } | null; source: { width: number; height: number; duration: number; face?: CamBox | null }; legacy: boolean; sourceStored: boolean; render: { state: string | null; error: string | null; at: string | null }; createdAt: string; caption: { text: string | null; source: string | null; error: string | null; ai: boolean } };
+type Bundle = { id: string; streamerId: string; streamer: string | null; edit: Edit; rev: number; words: Word[]; signals: { energy: number[]; chat: number[] } | null; source: { width: number; height: number; duration: number; face?: CamBox | null; content?: CamBox | null }; legacy: boolean; sourceStored: boolean; render: { state: string | null; error: string | null; at: string | null }; createdAt: string; caption: { text: string | null; source: string | null; error: string | null; ai: boolean } };
 type Tab = "frame" | "captions" | "extras" | "transcript" | "post";
 
 const animationLabels: Record<string, string> = { none: "Static", pop: "Pop in", karaoke: "Karaoke", word: "One word at a time" };
@@ -41,7 +42,7 @@ function drawText(ctx: CanvasRenderingContext2D, parts: { t: string; color: stri
   ctx.save();
   ctx.font = `bold ${c.size}px "${c.font}", "DejaVu Sans", Arial, sans-serif`;
   ctx.textBaseline = "middle"; ctx.lineJoin = "round";
-  const lines = wrap(ctx, parts.map(p => p.t), W - 2 * margin), lh = c.size * 1.18, space = ctx.measureText(" ").width;
+  const lines = wrap(ctx, parts.map(p => p.t), cx * 2 - 2 * margin), lh = c.size * 1.18, space = ctx.measureText(" ").width;
   const top = anchor === "middle" ? y - (lines.length * lh) / 2 : y;
   ctx.translate(cx, top + (lines.length * lh) / 2); ctx.scale(scale, scale); ctx.translate(-cx, -(top + (lines.length * lh) / 2));
   lines.forEach((line, li) => {
@@ -114,6 +115,8 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
       raf = requestAnimationFrame(draw);
       const v = video.current, cv = canvas.current, e = editRef.current;
       if (!v || !cv || !e || !bundle) return;
+      const { W, H } = frameSize(e.frame);
+      if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
       const ctx = cv.getContext("2d");
       if (!ctx) return;
       if (v.currentTime >= e.trim.end - 0.03 || v.currentTime < e.trim.start - 0.25) { v.currentTime = e.trim.start; }
@@ -162,7 +165,7 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
           ctx.drawImage(v, (W - cw) / 2 - 30, (H - ch) / 2 - 30, cw + 60, ch + 60);
         }
         ctx.filter = look;
-        ctx.drawImage(v, box.x, box.y, box.w, box.h);
+        ctx.drawImage(v, box.src.x, box.src.y, box.src.w, box.src.h, box.x, box.y, box.w, box.h);
         ctx.filter = "none";
       }
       const c = e.captions, hit = c.on ? activeCue(cueRef.current, rel) : null;
@@ -209,7 +212,7 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
   const onPointerMove = (ev: React.PointerEvent<HTMLCanvasElement>) => {
     const d = drag.current, cv = canvas.current, v = video.current;
     if (!d || !cv || !bundle) return;
-    const scale = W / cv.getBoundingClientRect().width;
+    const scale = frameSize(editRef.current!.frame).W / cv.getBoundingClientRect().width;
     const box = layout({ ...editRef.current!.frame, x: 0, y: 0 }, v?.videoWidth || bundle.source.width, v?.videoHeight || bundle.source.height);
     const roomX = Math.abs(box.area.w - box.w) / 2, roomY = Math.abs(box.area.h - box.h) / 2;
     change("pan", e => ({ ...e, frame: { ...e.frame, x: roomX ? clamp(d.fx + (ev.clientX - d.x) * scale / roomX, -1, 1) : 0, y: roomY ? clamp(d.fy + (ev.clientY - d.y) * scale / roomY, -1, 1) : 0 } }));
@@ -276,7 +279,7 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
   const setSplit = (value: Partial<Split>) => change("frame-split" + Object.keys(value).join(), e => {
     const split = { ...DEFAULT_SPLIT, ...e.frame.split, ...value } as Split;
     const moved = value.share !== undefined || value.top !== undefined;
-    return { ...e, frame: { ...e.frame, split }, captions: moved ? { ...e.captions, y: splitAreas({ split }).seam / H } : e.captions };
+    return { ...e, frame: { ...e.frame, split }, captions: moved ? { ...e.captions, y: splitAreas({ ...e.frame, split }).seam / frameSize(e.frame).H } : e.captions };
   });
   const set = <K extends keyof Edit>(key: K, value: Partial<Edit[K]>) => change(String(key) + Object.keys(value).join(), e => ({ ...e, [key]: { ...(e[key] as object), ...value } }));
   const setCaption = (value: Partial<Captions>) => change("captions" + Object.keys(value).join(), e => ({ ...e, captions: { ...e.captions, ...value, preset: "preset" in value ? value.preset! : "custom" } }));
@@ -301,8 +304,8 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
     {!bundle.sourceStored && <div className="notice editor-error"><p>The editable source isn&apos;t in clip storage yet, so the preview can&apos;t play. The worker still re-renders your edits while it keeps this clip.</p></div>}
     <div className="editor-body">
       <section className="editor-stage">
-        <div className="phone">
-          <canvas ref={canvas} width={W} height={H} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={() => { drag.current = null; }} title="Drag to reposition the picture" />
+        <div className={"phone" + (stacks(edit.frame) ? "" : " landscape")} style={{ aspectRatio: frameSize(edit.frame).W + " / " + frameSize(edit.frame).H }}>
+          <canvas ref={canvas} width={frameSize(edit.frame).W} height={frameSize(edit.frame).H} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={() => { drag.current = null; }} title="Drag to reposition the picture" />
           {safe && <div className="safe-zones" aria-hidden><span className="sz-top" /><span className="sz-right">App buttons</span><span className="sz-bottom">Username &amp; caption</span></div>}
         </div>
         {edit.frame.mode === "split" && bgPreview && bgIsImage && <img ref={bgImage} key={bgPreview} src={"/api/backgrounds/" + bgPreview + "/file"} alt="" hidden />}
@@ -363,20 +366,49 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
             </div>
           </>}
           {tab === "frame" && <>
-            <div className="segmented">{(["blur", "crop", "fit", "split", "cam", "pip"] as const).map(m => <button key={m} className={edit.frame.mode === m ? "active" : ""} onClick={() => change("frame-mode", e => {
-              const facecam = { ...DEFAULT_FACECAM, ...e.frame.facecam } as Facecam;
+            <label className="wide">Clip shape<div className="segmented aspect-picker">{(Object.keys(ASPECTS) as Aspect[]).map(a => <button key={a} type="button" className={(edit.frame.aspect ?? "9:16") === a ? "active" : ""} title={ASPECT_LABELS[a]} onClick={() => change("frame-aspect", e => {
+              // A landscape clip can't stack two pictures: split screen and facecam-on-top become the blurred fill there.
+              const frame = { ...e.frame, aspect: a }, flat = !stacks(frame) && (e.frame.mode === "split" || e.frame.mode === "cam");
+              return { ...e, frame: flat ? { ...frame, mode: "blur" } : frame, captions: flat ? { ...e.captions, y: 0.72 } : e.captions };
+            })}><span className={"aspect-icon a" + a.replace(":", "x")} aria-hidden />{a}</button>)}</div>
+              <small>{ASPECT_LABELS[(edit.frame.aspect ?? "9:16") as Aspect]}. {(edit.frame.aspect ?? "9:16") === "9:16" ? "Best for TikTok, Reels and Shorts." : (edit.frame.aspect === "16:9" ? "For YouTube videos and X; TikTok and Reels show it with bars, and YouTube doesn't treat it as a Short." : "Fills more of the feed on Instagram and Facebook; TikTok shows it with bars.")}</small></label>
+            <div className="segmented">{(["blur", "crop", "fit", "phone", "split", "cam", "pip"] as const).map(m => <button key={m} className={edit.frame.mode === m ? "active" : ""} disabled={!stacks(edit.frame) && (m === "split" || m === "cam")} title={!stacks(edit.frame) && (m === "split" || m === "cam") ? "Needs a portrait or square clip shape" : undefined} onClick={() => change("frame-mode", e => {
+              const facecam = { ...DEFAULT_FACECAM, ...e.frame.facecam } as Facecam, H = frameSize(e.frame).H;
               if ((m === "cam" || m === "pip") && !facecam.box) facecam.box = bundle.source.face ?? null;
+              const content = m === "phone" && !e.frame.content ? bundle.source.content ?? null : e.frame.content ?? null;
               // Captions follow the seam in the layouts that have one, and go back to the lower third otherwise.
-              const seam = m === "split" ? splitAreas(e.frame).seam / H : m === "cam" ? camAreas({ facecam }).seam / H : 0.72;
+              const seam = m === "split" ? splitAreas(e.frame).seam / H : m === "cam" ? camAreas({ ...e.frame, facecam }).seam / H : 0.72;
               const atSeam = Math.abs(e.captions.y - 0.72) < 0.01 || (e.frame.mode === "split" && Math.abs(e.captions.y - splitAreas(e.frame).seam / H) < 0.01) || (e.frame.mode === "cam" && Math.abs(e.captions.y - camAreas(e.frame).seam / H) < 0.01);
-              return { ...e, frame: { ...e.frame, mode: m, facecam }, captions: atSeam ? { ...e.captions, y: seam } : e.captions };
-            })}>{{ blur: "Blurred fill", crop: "Fill (crop)", fit: "Fit with bars", split: "Split screen", cam: "Facecam + game", pip: "Facecam in corner" }[m]}</button>)}</div>
+              return { ...e, frame: { ...e.frame, mode: m, facecam, content }, captions: atSeam ? { ...e.captions, y: seam } : e.captions };
+            })}>{{ blur: "Blurred fill", crop: "Fill (crop)", fit: "Fit with bars", phone: "Phone stream", split: "Split screen", cam: "Facecam + game", pip: "Facecam in corner" }[m]}</button>)}</div>
+            {edit.frame.mode === "phone" && (() => {
+              // The phone picture's edges in the stream (fractions). Without one, an upright picture in the middle.
+              const sw = bundle.source.width || 1280, sh = bundle.source.height || 720, auto = Math.min(1, (sh * 9 / 16) / sw);
+              const b = edit.frame.content ?? { x: (1 - auto) / 2, y: 0, w: auto, h: 1 };
+              const setContent = (value: Partial<CamBox> | null) => change("frame-content" + (value ? Object.keys(value).join() : ""), e => {
+                if (!value) return { ...e, frame: { ...e.frame, content: null } };
+                const nb = { ...b, ...value }; nb.w = clamp(nb.w, 0.05, 1); nb.h = clamp(nb.h, 0.05, 1); nb.x = clamp(nb.x, 0, 1 - nb.w); nb.y = clamp(nb.y, 0, 1 - nb.h);
+                return { ...e, frame: { ...e.frame, content: nb } };
+              });
+              const found = bundle.source.content, usingFound = !!found && edit.frame.content === found;
+              return <div className="facecam-controls">
+                <small>{usingFound ? "Phone picture found automatically. " : edit.frame.content ? "" : found === undefined ? "This clip was captured before phone detection: an upright picture in the middle is assumed. " : "No black bars were found, so an upright picture in the middle is used. "}Move the edges until only the phone picture shows; it fills the clip.
+                  {found && !usingFound && <> <button type="button" className="text-button" onClick={() => setContent(found)}>Use the detected picture</button></>}
+                  {edit.frame.content && <> <button type="button" className="text-button" onClick={() => setContent(null)}>Centre it automatically</button></>}</small>
+                <div className="control-grid">
+                  <label>Picture left <span>{Math.round(b.x * 100)}%</span><input type="range" min={0} max={0.95} step={0.005} value={b.x} onChange={e => setContent({ x: Number(e.target.value) })} /></label>
+                  <label>Picture width <span>{Math.round(b.w * 100)}%</span><input type="range" min={0.05} max={1} step={0.005} value={b.w} onChange={e => setContent({ w: Number(e.target.value) })} /></label>
+                  <label>Picture top <span>{Math.round(b.y * 100)}%</span><input type="range" min={0} max={0.95} step={0.005} value={b.y} onChange={e => setContent({ y: Number(e.target.value) })} /></label>
+                  <label>Picture height <span>{Math.round(b.h * 100)}%</span><input type="range" min={0.05} max={1} step={0.005} value={b.h} onChange={e => setContent({ h: Number(e.target.value) })} /></label>
+                </div>
+              </div>;
+            })()}
             {(edit.frame.mode === "cam" || edit.frame.mode === "pip") && (() => {
               const fc = { ...DEFAULT_FACECAM, ...edit.frame.facecam } as Facecam, b = fc.box;
               const setCam = (value: Partial<Facecam>) => change("frame-facecam" + Object.keys(value).join(), e => {
                 const facecam = { ...DEFAULT_FACECAM, ...e.frame.facecam, ...value } as Facecam;
                 const moved = value.share !== undefined && e.frame.mode === "cam";
-                return { ...e, frame: { ...e.frame, facecam }, captions: moved ? { ...e.captions, y: camAreas({ facecam }).seam / H } : e.captions };
+                return { ...e, frame: { ...e.frame, facecam }, captions: moved ? { ...e.captions, y: camAreas({ ...e.frame, facecam }).seam / frameSize(e.frame).H } : e.captions };
               });
               const setBox = (value: Partial<CamBox>) => { const nb = { ...(b ?? { x: 0, y: 0, w: 0.3, h: 0.4 }), ...value }; nb.w = Math.min(1, Math.max(0.05, nb.w)); nb.h = Math.min(1, Math.max(0.05, nb.h)); nb.x = Math.min(1 - nb.w, Math.max(0, nb.x)); nb.y = Math.min(1 - nb.h, Math.max(0, nb.y)); setCam({ box: nb }); };
               return <div className="facecam-controls">

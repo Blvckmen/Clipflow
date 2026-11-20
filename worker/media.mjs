@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { channelUrl, clipHash, probeResult } from "./core.mjs";
 import { pickWindow, snapToSentences } from "./highlights.mjs";
 import { defaultEdit, defaultStyle, maskWord, normalizeStyle } from "./edit.mjs";
-import { encodeTimeout, renderClip, videoInfo } from "./render.mjs";
+import { encodeTimeout, findPhonePicture, renderClip, videoInfo } from "./render.mjs";
 import { applyAutomaticHook } from "./hooks.mjs";
 const run=promisify(execFile);
 export const streamlink=process.env.STREAMLINK||"streamlink";
@@ -109,13 +109,17 @@ export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infi
     }
     let edit=applyAutomaticHook(withAi,words,{enabled:hooks});
     const face=findFacecam?await findFacecam(source,signal).catch(()=>null):null;
+    // A stream filmed on a phone: keep where its picture is, and frame it as a phone stream instead of a small
+    // picture on a blurred fill (or between black bars).
+    const content=await findPhonePicture(source,info,signal);
+    if(content)edit={...edit,frame:{...edit.frame,content:edit.frame.content??content,...((edit.frame.mode==="blur"||edit.frame.mode==="fit")&&{mode:"phone"})}};
     if(face&&(edit.frame.mode==="cam"||edit.frame.mode==="pip")&&!edit.frame.facecam?.box)edit={...edit,frame:{...edit.frame,facecam:{...edit.frame.facecam,box:face}}};
     // The background picked for this clip is kept in its edit, so re-renders and the editor use the same one.
     const bg=background?await background(edit):null;
     if(bg?.ref&&!edit.frame.background)edit={...edit,frame:{...edit.frame,background:bg.ref}};
     const rendered=await renderClip(source,{edit,words,width:info.width,height:info.height,background:bg},join(dir,"clip.mp4"),signal);
     const sourceBytes=await readFile(source);
-    const meta={edit,words,...(ai?.caption&&{postCaption:ai.caption}),signals:sourceSignals(energy,chat,from,to),source:{width:info.width,height:info.height,duration:Math.round((info.duration||to-from)*100)/100,face},sourceSha:clipHash(sourceBytes),sourceSize:sourceBytes.length};
+    const meta={edit,words,...(ai?.caption&&{postCaption:ai.caption}),signals:sourceSignals(energy,chat,from,to),source:{width:info.width,height:info.height,duration:Math.round((info.duration||to-from)*100)/100,face,content},sourceSha:clipHash(sourceBytes),sourceSize:sourceBytes.length};
     await writeFile(join(dir,"meta.json"),JSON.stringify(meta));
     return {...rendered,start,end};
   } finally {

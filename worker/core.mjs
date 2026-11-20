@@ -29,7 +29,7 @@ export function validateControl(c) {
   // Dashboards that predate the transcribe setting omit it: transcribe, as before.
   c.transcribe ??= true;
   if (typeof c.transcribe !== "boolean") throw new Error("Invalid transcribe setting");
-  if (!["blur","crop","fit","split","cam","pip"].includes(c.framing)) throw new Error("Invalid framing");
+  if (!["blur","crop","fit","split","cam","pip","phone"].includes(c.framing)) throw new Error("Invalid framing");
   // Split-screen background videos in the workspace library; dashboards that predate them omit the list.
   c.backgrounds = validBackgrounds(c.backgrounds);
   if (!Number.isInteger(c.duration) || c.duration < 15 || c.duration > 90 || typeof c.captions !== "boolean" || !Number.isInteger(c.dailyLimit) || c.dailyLimit < 1 || c.dailyLimit > 50) throw new Error("Invalid clip settings");

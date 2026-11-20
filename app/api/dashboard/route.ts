@@ -42,7 +42,7 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("postClip"),id:z.string().uuid(),accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)]),draft:z.boolean().optional()}),
  // Bulk actions on clips picked in the library: post them all to the chosen accounts, or review, edit or delete them.
  z.object({action:z.literal("postClips"),ids:clipIds,accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)]),draft:z.boolean().optional()}),
- z.object({action:z.literal("bulkClips"),ids:clipIds,op:z.enum(["approve","reject","pending","delete","captionsOn","captionsOff","frame"]),frame:z.enum(["blur","crop","fit","split"]).optional()}),
+ z.object({action:z.literal("bulkClips"),ids:clipIds,op:z.enum(["approve","reject","pending","delete","captionsOn","captionsOff","frame"]),frame:z.enum(["blur","crop","fit","split","phone"]).optional()}),
  // Removes a split-screen background video from the library (clips using it switch to another one).
  z.object({action:z.literal("deleteBackground"),id:z.string().uuid()}),
  // A library video's length, measured in the browser for videos uploaded before lengths were recorded.
@@ -324,7 +324,9 @@ export async function POST(request:Request){
      :{path:"$.captions.on",value:payload.op==="captionsOn"?"true":"false"};
     if(payload.op==="frame"&&!payload.frame)return Response.json({error:"Choose a framing."},{status:400});
     const needsWords=payload.op==="captionsOn"?1:0;
-    const r=await db.prepare(`UPDATE clips SET edit=json_set(edit,'${set.path}',json(?)${payload.op==="frame"&&payload.frame==="split"?",'$.captions.y',0.5":""}),edit_rev=edit_rev+1,render_state='queued',render_error=NULL
+    // Split screen puts captions on the seam; phone mode uses the phone picture the worker found (if the edit has none).
+    const extra=payload.op!=="frame"?"":payload.frame==="split"?",'$.captions.y',0.5":payload.frame==="phone"?",'$.frame.content',json(coalesce(json_extract(edit,'$.frame.content'),json_extract(source_meta,'$.content'),'null'))":"";
+    const r=await db.prepare(`UPDATE clips SET edit=json_set(edit,'${set.path}',json(?)${extra}),edit_rev=edit_rev+1,render_state='queued',render_error=NULL
      WHERE owner=? AND id IN (${marks}) AND edit IS NOT NULL AND source_key IS NOT NULL AND coalesce(json_extract(edit,'${set.path}'),'')!=json_extract(json(?),'$')
      AND (?=0 OR coalesce(json_array_length(transcript),0)>0) RETURNING id`).bind(set.value,owner,idList,set.value,needsWords).all();
     const k=n(r),skipped=payload.ids.length-k;
