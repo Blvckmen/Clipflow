@@ -11,6 +11,9 @@ export const streamers = sqliteTable("streamers", {
  // What happens to this streamer's new clips: "review" (wait for review), "automatic" (approved, so they post
  // straight away), or null to follow the workspace's publishing mode.
  publishMode:text("publish_mode"),
+ // This streamer's transcription, subtitles and automatic hook: JSON {transcribe,subtitles,hook}, each true, false or
+ // left out to follow the workspace. Null follows the workspace for all three.
+ clipText:text("clip_text"),
 },t=>[uniqueIndex("streamers_owner_url").on(t.owner,t.url)]);
 export const preferences=sqliteTable("preferences",{
  owner:text("owner").primaryKey(),mode:text("mode").notNull().default("automatic"),duration:integer("duration").notNull().default(45),dailyLimit:integer("daily_limit").notNull().default(5),captions:integer("captions",{mode:"boolean"}).notNull().default(true),destinations:text("destinations").notNull().default('[]'),control:text("control").notNull().default("paused"),framing:text("framing").notNull().default("blur"),

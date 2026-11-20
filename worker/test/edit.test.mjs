@@ -26,7 +26,7 @@ test("normalizeEdit clamps ranges and rejects bad values with readable messages"
 
 test("normalizeEdit strips subtitle override syntax from user text", () => {
   const e = edit({ hook: { text: "wait for it {\\b1}\nnow", seconds: 4 }, words: [[1, 2, "hi{\\i1}"]] });
-  assert.equal(e.hook.text, "wait for it b1 now");
+  assert.equal(e.hook.text, "wait for it b1\nnow", "line breaks in a hook are kept");
   assert.deepEqual(e.words, [[1, 2, "hii1"]]);
 });
 
@@ -218,4 +218,11 @@ test("phone mode: the upright phone picture is cut out of the landscape stream a
   // In a square clip it is cut to fill the square.
   const square = filterGraph({ ...edit, frame: { ...edit.frame, aspect: "1:1" } }, { width: 1920, height: 1080 }, null);
   assert.match(square, /s=960x960/);
+});
+
+test("a hook keeps its line breaks (up to 3 lines) and renders them as new lines", () => {
+  const edit = normalizeEdit({ ...defaultEdit(defaultStyle(), { trimStart: 0, trimEnd: 20 }), hook: { text: "He did NOT\r\n\n  see   that\ncoming\nat all\nreally", seconds: 4, color: "#111111", bg: "#ffffff" } }, { duration: 60 });
+  assert.equal(edit.hook.text, "He did NOT\nsee that\ncoming", "empty lines dropped, spaces tidied, 3 lines at most");
+  assert.match(buildAss(edit, []), /He did NOT\\Nsee that\\Ncoming/);
+  assert.equal(normalizeEdit({ ...edit, hook: { ...edit.hook, text: "one line {\\b1}" } }, { duration: 60 }).hook.text, "one line b1", "override codes are stripped");
 });

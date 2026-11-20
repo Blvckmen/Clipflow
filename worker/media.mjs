@@ -58,7 +58,7 @@ export function sourceSignals(energy,chat,from,to) {
 // may write the hook and post caption from the clip's transcript, else the transcript-based ones are used.
 // `findFacecam(sourcePath, signal)` (see facecam.py) finds the streamer's webcam overlay: it's kept with the source for
 // the editor, and fills in the webcam box when the clip's look uses a facecam layout and has none yet.
-export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false,hint="",writer=null,findFacecam=null},dir,signal) {
+export async function processWindow(raw,{settings,text=null,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false,hint="",writer=null,findFacecam=null},dir,signal) {
   const source=join(dir,"source.mp4"), energyFile=join(dir,"energy.json"), wordsFile=join(dir,"words.json");
   await mkdir(dir,{recursive:true});
   try {
@@ -66,8 +66,9 @@ export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infi
     await command(python,[script("highlight.py"),raw,energyFile],{signal,timeout:120_000}).done;
     const {energy}=JSON.parse(await readFile(energyFile,"utf8"));
     let segments=[];
-    // Transcription off (a workspace setting): no Whisper, so no subtitles and no sentence-aligned cuts.
-    const transcribe=settings.transcribe!==false, captions=transcribe&&!!settings.captions;
+    // Transcription off (for this streamer, or the workspace): no Whisper, so no subtitles, no automatic hook and no
+    // sentence-aligned cuts. `text` is the streamer's choices (see clipTextFor); without it, the workspace's.
+    const transcribe=text?text.transcribe:settings.transcribe!==false, captions=text?text.subtitles:transcribe&&!!settings.captions;
     if(transcribe)try {
       await command(python,[script("captions.py"),"words",raw,wordsFile,String(hint).slice(0,200)],{signal,timeout:600_000}).done;
       segments=JSON.parse(await readFile(wordsFile,"utf8")).segments;
@@ -90,12 +91,12 @@ export async function processWindow(raw,{settings,style,focusFrom=0,focusTo=Infi
     let base=null;
     try { if(style)base=normalizeStyle(style); } catch { /* an unreadable saved style falls back to the defaults */ }
     base??=defaultStyle({framing:settings.framing,captions});
-    // The workspace's on/off switch for captions always wins over a saved style.
+    // The subtitles switch (the streamer's own, else the workspace's) always wins over a saved style.
     base.captions.on=captions;
     const initialEdit=defaultEdit(base,{trimStart:start-from,trimEnd:end-from});
     // Build the title before the first render; the saved edit and dashboard preview share it. The AI writer's hook
     // comes first when it has one; otherwise (or with AUTO_HOOKS=false off) the transcript-based one.
-    const hooks=transcribe && process.env.AUTO_HOOKS!=="false";
+    const hooks=transcribe && (text?text.hook:true) && process.env.AUTO_HOOKS!=="false";
     let ai=null;
     if(writer&&!signal.aborted){
       const said=words.filter(w=>w[0]>=initialEdit.trim.start-.05&&w[1]<=initialEdit.trim.end+.05).map(w=>w[2]).join(" ");

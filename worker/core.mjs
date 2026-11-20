@@ -21,6 +21,13 @@ export function channelUrl(value) {
   } else throw new Error("Unsupported channel host");
   return u.href;
 }
+// A streamer's transcription, subtitles and automatic hook: its own choice where it made one, else the workspace's
+// (transcription and subtitles are workspace settings; automatic hooks are on). Subtitles and hooks are made from the
+// transcript, so without transcription there are neither.
+export function clipTextFor(settings, streamer) {
+  const own = streamer?.text ?? {}, transcribe = own.transcribe ?? settings.transcribe !== false;
+  return { transcribe, subtitles: transcribe && (own.subtitles ?? !!settings.captions), hook: transcribe && (own.hook ?? true) };
+}
 export function validateControl(c) {
   if (!c || !["running","paused","stopped"].includes(c.control) || !Array.isArray(c.streamers)) throw new Error("Invalid control response");
   if (c.streamers.length > 500) throw new Error("Too many channels");
@@ -40,6 +47,9 @@ export function validateControl(c) {
     // Dashboards that predate recording omit the capture mode: clip live, as before.
     s.captureMode ??= "clip";
     if (!["clip","record","both"].includes(s.captureMode)) throw new Error("Invalid capture mode");
+    // This streamer's own transcription, subtitles and hook choices; dashboards that predate them omit the object.
+    s.text ??= {};
+    if (typeof s.text !== "object" || Array.isArray(s.text) || Object.entries(s.text).some(([k, v]) => !["transcribe","subtitles","hook"].includes(k) || typeof v !== "boolean")) throw new Error("Invalid streamer text settings");
     channelUrl(s.url); ids.add(s.id);
   }
   // Viewers' Twitch clips: the fewest views a clip needs to be imported, 0 for off (and for older dashboards).

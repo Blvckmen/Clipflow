@@ -3,7 +3,7 @@
 // worker renders with, so what you see is what gets posted. Saving stores the edit; the worker re-renders it.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, Scissors, Sparkles, Undo2 } from "lucide-react";
-import { ANIMATIONS, ASPECTS, ASPECT_LABELS, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, MAX_CLIP, MIN_CLIP, PRESETS, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks, timeline, zoomAt } from "../worker/edit.mjs";
+import { ANIMATIONS, ASPECTS, ASPECT_LABELS, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, HOOK_LINES, MAX_CLIP, MIN_CLIP, PRESETS, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks, timeline, zoomAt } from "../worker/edit.mjs";
 
 import { applyAutomaticHook } from "../worker/hooks.mjs";
 
@@ -29,6 +29,8 @@ function wrap(ctx: CanvasRenderingContext2D, words: string[], max: number) {
   let line: number[] = [], width = 0;
   const space = ctx.measureText(" ").width;
   words.forEach((w, i) => {
+    // A line break typed in the hook starts a new line.
+    if (w === "\n") { if (line.length) lines.push(line); line = []; width = 0; return; }
     const ww = ctx.measureText(w).width;
     if (line.length && width + space + ww > max) { lines.push(line); line = []; width = 0; }
     width += (line.length ? space : 0) + ww; line.push(i);
@@ -186,7 +188,8 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
         if (c.animation === "word") drawText(ctx, [{ t: w.t, color: c.color }], c, W / 2, y, "middle", pop(rel - w.s));
         else drawText(ctx, cue.words.map((x: { t: string }, i: number) => ({ t: x.t, color: c.animation === "karaoke" && i === word ? c.highlight : c.color })), c, W / 2, y, "middle", c.animation === "pop" || c.animation === "karaoke" ? pop(rel - cue.start) : 1);
       }
-      if (e.hook.text && out < e.hook.seconds) drawText(ctx, [{ t: e.hook.text, color: e.hook.color }], { font: c.font, size: 52, outline: 0, outlineColor: "#000000", box: true, boxColor: e.hook.bg }, W / 2, 150, "top", pop(out), 60);
+      // Word by word (wrapped like the render), with the hook's own line breaks.
+      if (e.hook.text && out < e.hook.seconds) drawText(ctx, e.hook.text.split("\n").flatMap((l, i) => [...(i ? [{ t: "\n", color: e.hook.color }] : []), ...l.split(" ").filter(Boolean).map(t => ({ t, color: e.hook.color }))]), { font: c.font, size: 52, outline: 0, outlineColor: "#000000", box: true, boxColor: e.hook.bg }, W / 2, 150, "top", pop(out), 60);
       if (e.progress.on) { ctx.fillStyle = e.progress.color; ctx.fillRect(0, H - 10, W * clamp(out / clipLen, 0, 1), 10); }
       ctx.restore();
     };
@@ -473,7 +476,10 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
             <p className="hint">The same local hook generator used during clipping. Uses your current trim and transcript corrections; no API key needed.</p>
             <button className="secondary" disabled={saving} onClick={generateOpeningHook}><Sparkles size={15} />{edit.hook.text ? "Regenerate hook" : "Generate hook"}</button>
             {hookNote && <p className="hint" role="status">{hookNote}</p>}
-            <label className="wide">Hook title <small>Shown at the top for the first seconds, to stop the scroll</small><input maxLength={90} placeholder="e.g. He did NOT see that coming" value={edit.hook.text} onChange={e => set("hook", { text: e.target.value })} /></label>
+            <label className="wide">Hook title <small>Shown at the top for the first seconds, to stop the scroll. Press Enter for a new line (up to {HOOK_LINES} lines).</small>
+              <textarea className="hook-text" rows={Math.min(HOOK_LINES, Math.max(2, edit.hook.text.split("\n").length))} maxLength={90} placeholder={"e.g. He did NOT\nsee that coming"} value={edit.hook.text}
+                onKeyDown={e => { if (e.key === "Enter" && edit.hook.text.split("\n").length >= HOOK_LINES) e.preventDefault(); }}
+                onChange={e => set("hook", { text: e.target.value.split("\n").slice(0, HOOK_LINES).join("\n") })} /></label>
             <div className="control-grid">
               <label>Hook length <span>{edit.hook.seconds >= len ? "Whole clip" : edit.hook.seconds + "s"}</span><input type="range" min={1} max={Math.max(1, Math.min(30, Math.floor(len)))} step={0.5} value={Math.min(edit.hook.seconds, Math.max(1, Math.min(30, Math.floor(len))))} disabled={edit.hook.seconds >= len} onChange={e => set("hook", { seconds: Number(e.target.value) })} />
                 <span className="check-inline"><input type="checkbox" checked={edit.hook.seconds >= len} onChange={e => set("hook", { seconds: e.target.checked ? 90 : 5 })} />Keep for the whole clip</span></label>

@@ -20,6 +20,8 @@ const clipIds=z.array(z.string().uuid()).min(1).max(200).transform(x=>[...new Se
 const captureMode=z.enum(["clip","record","both"]);
 // A streamer's publishing mode: review first, post directly, or the workspace's ("workspace" is stored as null).
 const publishMode=z.enum(["workspace","review","automatic"]);
+// A streamer's own transcription, subtitles and automatic hook: true or false, or left out to follow the workspace.
+const clipTextInput=z.object({transcribe:z.boolean().optional(),subtitles:z.boolean().optional(),hook:z.boolean().optional()}).strict();
 const storedMode=(m:z.infer<typeof publishMode>|undefined)=>m===undefined||m==="workspace"?null:m;
 const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("add"),url:z.string().max(500),name:z.string().trim().max(80).optional(),accounts:accountIds.optional(),captureMode:captureMode.optional(),publishMode:publishMode.optional()}),
@@ -61,7 +63,7 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("assign"),streamerId:z.string().uuid(),accounts:accountIds}),
  z.object({action:z.literal("assignAccount"),accountId:z.string().uuid(),streamers:z.array(z.string().uuid()).max(500).transform(x=>[...new Set(x)])}),
  // Edits a streamer: display name, channel URL, whether it is clipped, and (optionally) which accounts post its clips.
- z.object({action:z.literal("editStreamer"),id:z.string().uuid(),name:z.string().trim().min(1).max(80),url:z.string().max(500),status:z.enum(["armed","paused","stopped"]).optional(),accounts:accountIds.optional(),captureMode:captureMode.optional(),publishMode:publishMode.optional()}),
+ z.object({action:z.literal("editStreamer"),id:z.string().uuid(),name:z.string().trim().min(1).max(80),url:z.string().max(500),status:z.enum(["armed","paused","stopped"]).optional(),accounts:accountIds.optional(),captureMode:captureMode.optional(),publishMode:publishMode.optional(),clipText:clipTextInput.optional()}),
  // Clips from a whole-stream recording: one moment picked in the player (seconds into it), or the best few.
  z.object({action:z.literal("makeClip"),recordingId:z.string().uuid(),start:z.number().int().min(0),end:z.number().int().min(1)}),
  z.object({action:z.literal("findMoments"),recordingId:z.string().uuid(),count:z.number().int().min(1).max(20)}),
@@ -152,7 +154,7 @@ export async function POST(request:Request){
    message="@"+account.username+(found.length?" now posts clips from "+found.map(s=>s.name).join(", ")+".":" no longer posts any streamer's clips.");
   }
   if(payload.action==="editStreamer"){
-   const current=await db.prepare("SELECT name,url,status,capture_mode,publish_mode FROM streamers WHERE id=? AND owner=?").bind(payload.id,owner).first<{name:string;url:string;status:string;capture_mode:string;publish_mode:string|null}>();
+   const current=await db.prepare("SELECT name,url,status,capture_mode,publish_mode,clip_text FROM streamers WHERE id=? AND owner=?").bind(payload.id,owner).first<{name:string;url:string;status:string;capture_mode:string;publish_mode:string|null;clip_text:string|null}>();
    if(!current)return Response.json({error:"Streamer not found."},{status:404});
    let channel;try{channel=parseStreamer(payload.url);}catch(error){return Response.json({error:(error as Error).message},{status:400});}
    const moved=channel.url!==current.url;
@@ -160,7 +162,9 @@ export async function POST(request:Request){
    // A new capture mode applies from the streamer's next stream (one being recorded now carries on as it began).
    // A new publishing mode applies to clips that arrive from now on; clips already waiting keep their state.
    const mode=payload.publishMode===undefined?current.publish_mode:storedMode(payload.publishMode);
-   statements.push(db.prepare("UPDATE streamers SET name=?,url=?,platform=?,status=?,capture_mode=?,publish_mode=?"+(moved?",live_status=NULL,live_checked_at=NULL,live_title=NULL":"")+" WHERE id=? AND owner=?").bind(payload.name,channel.url,channel.platform,payload.status??current.status,payload.captureMode??current.capture_mode,mode,payload.id,owner));
+   // Transcription, subtitles and hook choices apply to clips captured from now on; nothing chosen stores null.
+   const text=payload.clipText===undefined?current.clip_text:Object.keys(payload.clipText).length?JSON.stringify(payload.clipText):null;
+   statements.push(db.prepare("UPDATE streamers SET name=?,url=?,platform=?,status=?,capture_mode=?,publish_mode=?,clip_text=?"+(moved?",live_status=NULL,live_checked_at=NULL,live_title=NULL":"")+" WHERE id=? AND owner=?").bind(payload.name,channel.url,channel.platform,payload.status??current.status,payload.captureMode??current.capture_mode,mode,text,payload.id,owner));
    if(payload.accounts){
     const linked=await ownAccounts(payload.accounts);
     if(!linked)return Response.json({error:"One of those publishing accounts is no longer connected."},{status:404});

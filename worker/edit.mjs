@@ -78,6 +78,9 @@ const int = (v, min, max, name) => Math.round(num(v, min, max, name));
 const bool = (v, name) => { if (typeof v !== "boolean") fail(name + " must be true or false"); return v; };
 const color = (v, name) => { if (typeof v !== "string" || !/^#[0-9a-f]{6}$/i.test(v)) fail(name + " must be a #rrggbb colour"); return v.toLowerCase(); };
 const pick = (v, list, name) => { if (!list.includes(v)) fail(name + " is not a supported value"); return v; };
+// Hook text keeps the line breaks typed in the editor: at most HOOK_LINES lines, without empty ones.
+export const HOOK_LINES = 3;
+const hookText = v => { if (typeof v !== "string") fail("Hook text must be text"); return v.replace(/[{}\\]/g, "").split(/\r?\n/).map(l => l.replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, HOOK_LINES).join("\n").slice(0, 90).trim(); };
 const text = (v, max, name) => { if (typeof v !== "string") fail(name + " must be text"); return v.replace(/[\r\n]+/g, " ").replace(/[{}\\]/g, "").slice(0, max); };
 const obj = (v, name) => { if (!v || typeof v !== "object" || Array.isArray(v)) fail(name + " is missing"); return v; };
 // The webcam's rectangle in the stream, as fractions of its width and height (null: not set).
@@ -137,7 +140,7 @@ export function normalizeEdit(input, { duration }) {
   if (end - start > MAX_CLIP + 0.01) fail("A clip can be at most " + MAX_CLIP + " seconds long");
   const style = normalizeStyle(e);
   const hook = obj(e.hook ?? {}, "Hook");
-  const out = { v: 1, trim: { start: round(start), end: round(end) }, ...style, hook: { ...style.hook, text: text(hook.text ?? "", 90, "Hook text").trim(), seconds: num(hook.seconds ?? style.hook.seconds, 1, MAX_CLIP, "Hook length") } };
+  const out = { v: 1, trim: { start: round(start), end: round(end) }, ...style, hook: { ...style.hook, text: hookText(hook.text ?? ""), seconds: num(hook.seconds ?? style.hook.seconds, 1, MAX_CLIP, "Hook length") } };
   if (e.words !== undefined) out.words = normalizeWords(e.words, total);
   return out;
 }
@@ -366,7 +369,7 @@ export function buildAss(edit, words, tl = plain(edit)) {
     }
   }
   // The hook's times are already in the finished clip.
-  if (edit.hook.text) lines.push(`Dialogue: 1,${clock(0)},${clock(Math.min(len, edit.hook.seconds))},Hook,,0,0,0,,{\\an8\\pos(${W / 2},150)}${POP}${esc(edit.hook.text)}`);
+  if (edit.hook.text) lines.push(`Dialogue: 1,${clock(0)},${clock(Math.min(len, edit.hook.seconds))},Hook,,0,0,0,,{\\an8\\pos(${W / 2},150)}${POP}${esc(edit.hook.text).replace(/\n/g, "\\N")}`);
   return lines.join("\n") + "\n";
 }
 

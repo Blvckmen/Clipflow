@@ -156,3 +156,18 @@ test("validateControl accepts split screen and the background library", () => {
   assert.deepEqual([c.framing, c.backgrounds.length], ["split", 1]);
   assert.deepEqual(validateControl(config()).backgrounds, [], "older dashboards send none");
 });
+
+test("transcription, subtitles and hooks: the streamer's own choice, else the workspace's", async () => {
+  const { clipTextFor } = await import("../core.mjs");
+  const ws = { transcribe: true, captions: true };
+  assert.deepEqual(clipTextFor(ws, { text: {} }), { transcribe: true, subtitles: true, hook: true });
+  assert.deepEqual(clipTextFor(ws, { text: { subtitles: false } }), { transcribe: true, subtitles: false, hook: true });
+  assert.deepEqual(clipTextFor({ transcribe: true, captions: false }, { text: { subtitles: true, hook: false } }), { transcribe: true, subtitles: true, hook: false });
+  assert.deepEqual(clipTextFor(ws, { text: { transcribe: false, subtitles: true, hook: true } }), { transcribe: false, subtitles: false, hook: false }, "no transcript, no text");
+  assert.deepEqual(clipTextFor({ transcribe: false, captions: true }, { text: { transcribe: true } }), { transcribe: true, subtitles: true, hook: true });
+  assert.deepEqual(clipTextFor(ws, undefined), { transcribe: true, subtitles: true, hook: true }, "a removed streamer follows the workspace");
+  assert.deepEqual(validateControl(config({ streamers: [{ ...config().streamers[0], text: { hook: false } }] })).streamers[0].text, { hook: false });
+  assert.deepEqual(validateControl(config()).streamers[0].text, {}, "older dashboards");
+  assert.throws(() => validateControl(config({ streamers: [{ ...config().streamers[0], text: { hook: "no" } }] })), /text settings/);
+  assert.throws(() => validateControl(config({ streamers: [{ ...config().streamers[0], text: { captions: true } }] })), /text settings/);
+});

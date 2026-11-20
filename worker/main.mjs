@@ -3,7 +3,9 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { Store, allowed, channelUrl, dueForProbe, plan, retryDelay, validateControl } from "./core.mjs";
+import { Store, allowed, channelUrl, clipTextFor, dueForProbe, plan, retryDelay, validateControl } from "./core.mjs";
+// A streamer's transcription, subtitles and automatic hook with these settings (its own choices, else the workspace's).
+const textOf = (settings, id) => clipTextFor(settings, settings.streamers.find(s => s.id === id));
 import { chatSpike, perSecond } from "./highlights.mjs";
 import { openChat } from "./chat.mjs";
 import { PROBE_TIMEOUT_MS, probeLive, processWindow, streamlink } from "./media.mjs";
@@ -197,7 +199,7 @@ async function clipWindow(session, fromMs, toMs, reason) {
   const id = crypto.randomUUID(), dir = join(dataDir, "clips", streamer.id, id), raw = join(dir, "window.m2t");
   session.busy = true;
   try {
-    store.add(id, streamer.id, join(dir, "clip.mp4"), settings.duration, settings.captions && settings.transcribe !== false, reason);
+    store.add(id, streamer.id, join(dir, "clip.mp4"), settings.duration, textOf(settings, streamer.id).subtitles, reason);
     await rm(dir, { recursive: true, force: true });
     await mkdir(dir, { recursive: true });
     const rawStartMs = await session.recorder.extract(fromMs, toMs, raw, AbortSignal.timeout(60_000));
@@ -231,7 +233,7 @@ async function processJobs() {
       const who = streamerInfo(job.streamer.url), title = job.title ?? live.get(job.streamer.id)?.title ?? null;
       const writer = ({ transcript, from, to }) => writeClipText({ transcript, streamer: who.name, platform: who.platform, title,
         chat: job.chatLines?.length ? chatSample(job.chatLines, job.rawStartMs + from * 1000, job.rawStartMs + to * 1000 + 10_000) : [] }, { signal: controller.signal });
-      const result = await processWindow(job.raw, { settings: job.settings, style: job.style, focusFrom: job.focusFrom, focusTo: job.focusTo, chat: job.chat, exact: !!job.exact,
+      const result = await processWindow(job.raw, { settings: job.settings, text: textOf(job.settings, job.streamer.id), style: job.style, focusFrom: job.focusFrom, focusTo: job.focusTo, chat: job.chat, exact: !!job.exact,
         hint: [who.name, title].filter(Boolean).join(". "), writer: writerEnabled() ? writer : null, findFacecam, background: edit => backgroundFor(edit, job.id, title ?? "") }, job.dir, controller.signal);
       store.ready(job.id, result.sha, Math.min(90, Math.max(15, Math.round(result.end - result.start))));
       made = true;
@@ -333,7 +335,7 @@ async function importClip(streamer, clip, settings) {
   try {
     await mkdir(dir, { recursive: true });
     await command(streamlink, ["--http-timeout", "20", "--force", "-o", raw, clipUrl(clip.id), "best"], { timeout: 180_000 }).done;
-    store.add(id, streamer.id, join(dir, "clip.mp4"), Math.min(90, Math.max(15, Math.round(Number(clip.duration)))), settings.captions && settings.transcribe !== false, "viewer");
+    store.add(id, streamer.id, join(dir, "clip.mp4"), Math.min(90, Math.max(15, Math.round(Number(clip.duration)))), textOf(settings, streamer.id).subtitles, "viewer");
     const style = settings.streamers.find(s => s.id === streamer.id)?.style ?? settings.style ?? null;
     // The whole clip, as the viewer cut it.
     jobs.push({ id, dir, raw, streamer, settings, style, reason: "viewer", exact: true, focusFrom: 0, focusTo: Infinity, chat: [], title: String(clip.title ?? "").trim().slice(0, 140) || null });
@@ -461,7 +463,7 @@ async function clipFromRecording(row, start, end, { reason, exact, tracker }) {
   const id = crypto.randomUUID(), dir = join(dataDir, "clips", row.streamer, id), raw = join(dir, "window.m2t");
   const from = await keyframeBefore(file, Math.max(0, start - RECORDING_PAD)), to = Math.min(row.duration ?? Infinity, end + RECORDING_PAD);
   const length = Math.round(end - start);
-  store.add(id, row.streamer, join(dir, "clip.mp4"), exact ? length : settings.duration, settings.captions && settings.transcribe !== false, reason);
+  store.add(id, row.streamer, join(dir, "clip.mp4"), exact ? length : settings.duration, textOf(settings, row.streamer).subtitles, reason);
   try {
     await mkdir(dir, { recursive: true });
     await extractRange(file, from, to, raw, backgroundController.signal);

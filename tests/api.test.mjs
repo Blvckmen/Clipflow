@@ -711,3 +711,24 @@ describe("split screen per streamer", () => {
     await dash({ action: "remove", id });
   });
 });
+
+describe("transcription, subtitles and hooks per streamer", () => {
+  test("a streamer's own choices are saved, sent to the worker, and cleared back to the workspace", async () => {
+    const added = await dash({ action: "add", url: "https://twitch.tv/tx" + Date.now().toString(36) });
+    const id = added.body.streamerId;
+    let s = (await dash()).body.streamers.find(x => x.id === id);
+    const configText = async () => (await (await worker("/api/worker/config")).json()).streamers.find(x => x.id === id).text;
+    assert.deepEqual(await configText(), {}, "new streamers follow the workspace");
+    assert.equal((await dash({ action: "editStreamer", id, name: s.name, url: s.url, clipText: { subtitles: false, hook: true } })).status, 200);
+    s = (await dash()).body.streamers.find(x => x.id === id);
+    assert.deepEqual(JSON.parse(s.clip_text), { subtitles: false, hook: true });
+    assert.deepEqual(await configText(), { subtitles: false, hook: true });
+    assert.equal((await dash({ action: "editStreamer", id, name: s.name, url: s.url })).status, 200, "edits without clipText keep it");
+    assert.deepEqual(await configText(), { subtitles: false, hook: true });
+    assert.equal((await dash({ action: "editStreamer", id, name: s.name, url: s.url, clipText: { captions: true } })).status, 400, "unknown keys are refused");
+    assert.equal((await dash({ action: "editStreamer", id, name: s.name, url: s.url, clipText: { hook: "yes" } })).status, 400);
+    assert.equal((await dash({ action: "editStreamer", id, name: s.name, url: s.url, clipText: {} })).status, 200);
+    assert.equal((await dash()).body.streamers.find(x => x.id === id).clip_text, null, "nothing chosen: the workspace again");
+    await dash({ action: "remove", id });
+  });
+});
