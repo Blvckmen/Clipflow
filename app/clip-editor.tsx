@@ -3,7 +3,7 @@
 // worker renders with, so what you see is what gets posted. Saving stores the edit; the worker re-renders it.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, Scissors, Sparkles, Undo2 } from "lucide-react";
-import { ANIMATIONS, ASPECTS, ASPECT_LABELS, KEYWORD_SCALE, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, HOOK_LINES, MAX_CLIP, MIN_CLIP, PRESETS, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks, timeline, zoomAt } from "../worker/edit.mjs";
+import { ANIMATIONS, ASPECTS, ASPECT_LABELS, KEYWORD_SCALE, CHAT_SIZE, DEFAULT_CHAT, chatWindows, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, HOOK_LINES, MAX_CLIP, MIN_CLIP, PRESETS, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks, timeline, zoomAt } from "../worker/edit.mjs";
 
 import { applyAutomaticHook } from "../worker/hooks.mjs";
 
@@ -14,9 +14,12 @@ type Aspect = keyof typeof ASPECTS;
 type Frame = { mode: "blur" | "crop" | "fit" | "split" | "cam" | "pip" | "phone"; aspect?: Aspect; content?: CamBox | null; zoom: number; x: number; y: number; background?: string | null; split?: Split; facecam?: Facecam };
 type Captions = { on: boolean; preset: string; font: string; size: number; color: string; highlight: string; outline: number; outlineColor: string; box: boolean; boxColor: string; uppercase: boolean; animation: string; words: number; y: number; mask: boolean; keywords: boolean; keywordColor: string };
 type Word = [number, number, string];
-export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { text: string; seconds: number; color: string; bg: string }; progress: { on: boolean; color: string }; pace?: Pace; words?: Word[] };
+export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { text: string; seconds: number; color: string; bg: string }; progress: { on: boolean; color: string }; pace?: Pace; chat?: ChatLook; words?: Word[] };
+type ChatLook = { on: boolean; y: number };
+// [seconds into the source, name, text, colour]: the Twitch chat sent during the clip's source.
+type ChatMessage = [number, string, string, string | null];
 type Pace = { cuts: "off" | "gentle" | "tight"; zooms: boolean };
-type Bundle = { id: string; streamerId: string; streamer: string | null; edit: Edit; rev: number; words: Word[]; signals: { energy: number[]; chat: number[] } | null; source: { width: number; height: number; duration: number; face?: CamBox | null; content?: CamBox | null }; legacy: boolean; sourceStored: boolean; render: { state: string | null; error: string | null; at: string | null }; createdAt: string; caption: { text: string | null; source: string | null; error: string | null; ai: boolean } };
+type Bundle = { id: string; streamerId: string; streamer: string | null; edit: Edit; rev: number; words: Word[]; signals: { energy: number[]; chat: number[]; messages?: ChatMessage[] } | null; source: { width: number; height: number; duration: number; face?: CamBox | null; content?: CamBox | null }; legacy: boolean; sourceStored: boolean; render: { state: string | null; error: string | null; at: string | null }; createdAt: string; caption: { text: string | null; source: string | null; error: string | null; ai: boolean } };
 type Tab = "frame" | "captions" | "extras" | "transcript" | "post";
 
 const animationLabels: Record<string, string> = { none: "Static", pop: "Pop in", karaoke: "Karaoke", word: "One word at a time" };
@@ -37,6 +40,22 @@ function wrap(ctx: CanvasRenderingContext2D, words: string[], max: number, measu
   });
   if (line.length) lines.push(line);
   return lines;
+}
+
+// Chat lines (name in its colour, then the message) stacked upwards from `bottom`, left-aligned at `x`, like the
+// render's Chat style: Arial bold CHAT_SIZE with a 3px black outline. Lines don't wrap (the render's \q2).
+function drawChat(ctx: CanvasRenderingContext2D, lines: { name: string; text: string; color: string }[], x: number, bottom: number, _max: number) {
+  ctx.save();
+  ctx.font = `bold ${CHAT_SIZE}px Arial, "DejaVu Sans", sans-serif`;
+  ctx.textBaseline = "bottom"; ctx.textAlign = "left"; ctx.lineJoin = "round"; ctx.lineWidth = 6; ctx.strokeStyle = "#000000";
+  const lh = CHAT_SIZE * 1.2;
+  lines.forEach((l, i) => {
+    const y = bottom - (lines.length - 1 - i) * lh, name = l.name + ":", rest = " " + l.text;
+    ctx.strokeText(name, x, y); ctx.fillStyle = l.color; ctx.fillText(name, x, y);
+    const nx = x + ctx.measureText(name).width;
+    ctx.strokeText(rest, nx, y); ctx.fillStyle = "#ffffff"; ctx.fillText(rest, nx, y);
+  });
+  ctx.restore();
 }
 
 // `margin` matches the subtitle style's left/right margins in buildAss (captions 40, hook 60), so lines wrap at
@@ -114,6 +133,10 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
   const energy = bundle?.signals?.energy ?? null;
   const tl = useMemo(() => edit ? timeline(edit, words, energy) : null, [edit, words, energy]);
   const cueRef = useRef(cueList), backgroundsRef = useRef(backgrounds), tlRef = useRef(tl);
+  const messages = bundle?.signals?.messages ?? null;
+  const chatList = useMemo(() => edit && messages ? chatWindows(messages, edit) : [], [messages, edit]);
+  const chatRef = useRef(chatList);
+  useEffect(() => { chatRef.current = chatList; }, [chatList]);
   useEffect(() => { tlRef.current = tl; }, [tl]);
   useEffect(() => { backgroundsRef.current = backgrounds; }, [backgrounds]);
   useEffect(() => { cueRef.current = cueList; }, [cueList]);
@@ -186,6 +209,9 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
         ctx.filter = "none";
       }
       ctx.restore();
+      // Chat on the clip: the same windows as the render's (chatWindows), bottom-left, under the captions and hook.
+      const chatNow = e.chat?.on ? chatRef.current.find(w => t >= w.start && t < w.end) : null;
+      if (chatNow) drawChat(ctx, chatNow.lines, 40, e.chat!.y * H, W - 80);
       const c = e.captions, hit = c.on ? activeCue(cueRef.current, rel) : null;
       if (hit) {
         const { cue, word } = hit, w = cue.words[word];
@@ -500,6 +526,8 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
                 {pace.cuts !== "off" && <small role="status">{bundle.legacy || !words.length ? "This clip has no transcript, so there are no pauses to find." : tl?.cuts.length ? `Takes out ${tl.cuts.length} pause${tl.cuts.length === 1 ? "" : "s"} (${cutTotal}s): the clip becomes ${finished.toFixed(1)}s. Marked in the timeline.` : "No pauses long and quiet enough to cut in this trim."}</small>}</label>
               <label className="switch-row"><input type="checkbox" checked={pace.zooms} onChange={e => { const on = e.target.checked; change("pace-zooms", x => ({ ...x, pace: { ...pace, ...x.pace, zooms: on } })); }} />Punch-in zooms on the loudest moments <small>{pace.zooms ? (tl?.punches.length ? tl.punches.length + " zoom" + (tl.punches.length === 1 ? "" : "s") + " at " + tl.punches.map(p => p.toFixed(1) + "s").join(", ") : energy ? "No moment stands out enough in this trim." : "Needs the loudness the worker records; this clip has none.") : "A quick zoom on a shout, a punchline or a big play"}</small></label>
             </div>
+            <label className="switch-row"><input type="checkbox" disabled={!messages?.length} checked={!!edit.chat?.on} onChange={e => { const on = e.target.checked; change("chat-on", x => ({ ...x, chat: { ...DEFAULT_CHAT, ...x.chat, on } })); }} />Show chat on the clip <small>{messages?.length ? "The Twitch chat sent during this moment, a few messages at a time, like watching it live (" + messages.length + " messages)" : "Only clips captured live from Twitch keep their chat."}</small></label>
+            {edit.chat?.on && <label>Chat position <span>{Math.round(edit.chat.y * 100)}% down</span><input type="range" min={15} max={95} value={Math.round(edit.chat.y * 100)} onChange={e => { const y = Number(e.target.value) / 100; change("chat-y", x => ({ ...x, chat: { ...DEFAULT_CHAT, ...x.chat, y } })); }} /></label>}
             <label className="switch-row"><input type="checkbox" checked={edit.progress.on} onChange={e => set("progress", { on: e.target.checked })} />Progress bar along the bottom <small>Viewers who can see the end coming watch to it</small></label>
             {edit.progress.on && <label className="color inline">Bar colour<input type="color" value={edit.progress.color} onChange={e => set("progress", { color: e.target.value })} /></label>}
           </>}

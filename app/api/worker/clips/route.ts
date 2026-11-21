@@ -9,7 +9,9 @@ const clipSchema=z.object({id:z.string().uuid(),streamerId:z.string().uuid(),cre
  edit:z.unknown().optional(),transcript:z.unknown().optional(),
  // A post caption written by the AI writer on the worker (worker/writer.mjs); without it one is made from the transcript.
  postCaption:z.string().trim().min(1).max(2200).optional(),
- signals:z.object({energy:z.array(z.number().min(0).max(1)).max(200),chat:z.array(z.number().int().min(0).max(100000)).max(200)}).optional(),
+ signals:z.object({energy:z.array(z.number().min(0).max(1)).max(200),chat:z.array(z.number().int().min(0).max(100000)).max(200),
+  // Twitch chat during the source: [seconds into it, name, text, colour], for showing chat on the clip.
+  messages:z.array(z.tuple([z.number().min(0).max(700),z.string().max(25),z.string().max(200),z.string().regex(/^#[0-9a-f]{6}$/i).nullable()])).max(400).optional()}).optional(),
  source:z.object({width:z.number().int().min(0).max(8192),height:z.number().int().min(0).max(8192),duration:z.number().min(1).max(200),sha,size:z.number().int().min(1024).max(64*1024*1024),
   // The streamer's webcam overlay found by the worker (fractions of the frame), for the facecam layouts.
   face:box.nullish(),

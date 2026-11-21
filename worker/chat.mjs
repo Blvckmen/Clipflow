@@ -21,6 +21,19 @@ export function clipCommand(line) {
   return { by, mod: tags.mod === "1" || badges.some(b => b === "broadcaster" || b === "moderator" || b === "vip") };
 }
 
+// One chat message's text, the sender's display name and their name colour (#rrggbb, or null when they never set one).
+export function chatMessage(line) {
+  const at = line.indexOf(" PRIVMSG #");
+  if (at < 0) return null;
+  const text = line.slice(line.indexOf(" :", at) + 2).trim().slice(0, 200);
+  const tags = line.startsWith("@") ? Object.fromEntries(line.slice(1, line.indexOf(" ")).split(";").map(kv => { const i = kv.indexOf("="); return [kv.slice(0, i), kv.slice(i + 1)]; })) : {};
+  const rest = line.startsWith("@") ? line.slice(line.indexOf(" ") + 1) : line;
+  const login = rest.startsWith(":") ? rest.slice(1).split("!")[0] : "";
+  // Display names can be in other scripts; the login is the plain fallback. "s" in a tag value is an escaped space.
+  const name = (tags["display-name"] || login).replace(/\\s/g, " ").slice(0, 25);
+  return { text, name, color: /^#[0-9a-f]{6}$/i.test(tags.color ?? "") ? tags.color.toLowerCase() : null };
+}
+
 export function openChat(url) {
   const login = twitchLogin(url);
   return login ? new TwitchChat(login) : null;
@@ -30,7 +43,7 @@ export class TwitchChat {
   constructor(login) {
     this.login = login;
     this.times = [];        // epoch ms of each chat message
-    this.lines = [];        // { t, text } of recent messages, for the AI writer (what chat said about a moment)
+    this.lines = [];        // { t, text, name, color } of recent messages: for the AI writer, and shown on clips
     this.commands = [];     // { t, by, mod } of recent "!clip" commands
     this.since = Date.now(); // start of continuous observation, reset after a reconnect gap
     this.closed = false;
@@ -52,8 +65,8 @@ export class TwitchChat {
         if (line.startsWith("PING")) ws.send("PONG" + line.slice(4));
         else if (line.includes(" PRIVMSG #")) {
           this.times.push(now);
-          const text = line.slice(line.indexOf(" :", line.indexOf(" PRIVMSG #")) + 2).trim().slice(0, 200);
-          if (text) this.lines.push({ t: now, text });
+          const message = chatMessage(line);
+          if (message?.text) this.lines.push({ t: now, ...message });
           const command = clipCommand(line);
           if (command) this.commands.push({ t: now, ...command });
         }

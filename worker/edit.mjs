@@ -5,7 +5,7 @@
 // into the published clip: 720x1280 (9:16) unless frame.aspect picks another shape (see ASPECTS). Times are seconds from the start of the source.
 //   { v, trim:{start,end}, frame:{mode,zoom,x,y,background}, look:{brightness,contrast,saturation},
 //     captions:{on,preset,font,size,color,highlight,outline,outlineColor,box,boxColor,uppercase,animation,words,y,mask,keywords,keywordColor},
-//     hook:{text,seconds,color,bg}, progress:{on,color}, words?:[[start,end,text],...] }
+//     hook:{text,seconds,color,bg}, progress:{on,color}, pace:{cuts,zooms}, chat:{on,y}, words?:[[start,end,text],...] }
 // A *style* is the reusable part of an edit (everything except trim, hook text and words; it includes how long the
 // hook stays up). Hook seconds at or past the clip's length keep the hook up for the whole clip. Each streamer can have
 // its own style, so every new clip from that streamer comes out with that streamer's look.
@@ -48,6 +48,10 @@ export const SPLIT_TOPS = ["stream", "background"];
 // loudness by timeline(), the same way in the editor and in the render.
 export const CUT_LEVELS = ["off", "gentle", "tight"];
 export const DEFAULT_PACE = { cuts: "off", zooms: false };
+// Chat on the clip: chat.on shows the Twitch chat messages sent during the clip (the clip's signals.messages), the
+// newest CHAT_LINES at a time, each for up to CHAT_HOLD seconds, in a column on the left whose bottom is chat.y down.
+export const DEFAULT_CHAT = { on: false, y: 0.62 };
+export const CHAT_LINES = 4, CHAT_HOLD = 8, CHAT_SIZE = 30;
 
 // Caption looks. Picking a preset copies its values; every value can then be changed on its own. keywordColor is the
 // colour that makes a line's most important word stand out (captions.keywords, see keywordScore).
@@ -70,6 +74,7 @@ export function defaultStyle({ framing = "blur", captions = true } = {}) {
     captions: { on: !!captions, preset: "bold", ...preset, keywords: true, y: framing === "split" ? 0.5 : framing === "cam" ? DEFAULT_FACECAM.share : 0.72, mask: false },
     hook: { color: "#111111", bg: "#ffffff", seconds: DEFAULT_HOOK_SECONDS },
     progress: { on: false, color: "#bcfa76" },
+    chat: { ...DEFAULT_CHAT },
     pace: { ...DEFAULT_PACE },
   };
 }
@@ -103,6 +108,7 @@ export function normalizeStyle(input, base = defaultStyle()) {
   const f = { ...base.frame, ...(s.frame ?? {}) }, sp = { ...DEFAULT_SPLIT, ...(base.frame.split ?? {}), ...(s.frame?.split ?? {}) }, l = { ...base.look, ...(s.look ?? {}) }, c = { ...base.captions, ...(s.captions ?? {}) };
   const h = { ...base.hook, ...(s.hook ?? {}) }, p = { ...base.progress, ...(s.progress ?? {}) }, pc = { ...DEFAULT_PACE, ...(base.pace ?? {}), ...(s.pace ?? {}) };
   const fc = { ...DEFAULT_FACECAM, ...(base.frame.facecam ?? {}), ...(s.frame?.facecam ?? {}) };
+  const ch = { ...DEFAULT_CHAT, ...(base.chat ?? {}), ...(s.chat ?? {}) };
   const aspect = pick(f.aspect ?? "9:16", Object.keys(ASPECTS), "Clip shape");
   // A landscape clip has no room to stack two pictures: split screen and facecam-on-top become the blurred fill.
   const mode = pick(f.mode, FRAMINGS, "Framing"), fits = stacks({ aspect }) || (mode !== "split" && mode !== "cam");
@@ -122,12 +128,13 @@ export function normalizeStyle(input, base = defaultStyle()) {
     hook: { color: color(h.color, "Hook text colour"), bg: color(h.bg, "Hook background"), seconds: num(h.seconds ?? DEFAULT_HOOK_SECONDS, 1, MAX_CLIP, "Hook length") },
     progress: { on: bool(p.on, "Progress bar"), color: color(p.color, "Progress bar colour") },
     pace: { cuts: pick(pc.cuts, CUT_LEVELS, "Jump cuts"), zooms: bool(pc.zooms, "Punch-in zooms") },
+    chat: { on: bool(ch.on, "Chat on the clip"), y: num(ch.y, 0.15, 0.95, "Chat position") },
   };
 }
 
 export function styleOf(edit) {
-  const { frame, look, captions, hook, progress, pace = { ...DEFAULT_PACE } } = edit;
-  return { frame, look, captions, hook: { color: hook.color, bg: hook.bg, seconds: hook.seconds }, progress, pace };
+  const { frame, look, captions, hook, progress, pace = { ...DEFAULT_PACE }, chat = { ...DEFAULT_CHAT } } = edit;
+  return { frame, look, captions, hook: { color: hook.color, bg: hook.bg, seconds: hook.seconds }, progress, pace, chat };
 }
 
 // A first edit for a freshly captured clip: the chosen moment, in the streamer's (or workspace's) style.
@@ -367,8 +374,45 @@ const clock = t => { const cs = Math.max(0, Math.round(t * 100)); return Math.fl
 const esc = t => t.replace(/[{}\\]/g, "");
 const POP = "{\\fscx82\\fscy82\\t(0,110,\\fscx100\\fscy100)}";
 
+// ---- Chat on the clip ----
+// A name colour for chatters who never picked one, the same for a name every time.
+const CHAT_COLORS = ["#ff7a7a", "#7ab8ff", "#9cff7a", "#ffd27a", "#d17aff", "#7affe9", "#ff9fd6", "#ffb37a"];
+export function chatColor(name, color) {
+  if (color && /^#[0-9a-f]{6}$/i.test(color)) return color.toLowerCase();
+  let h = 0; for (const ch of String(name)) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  return CHAT_COLORS[h % CHAT_COLORS.length];
+}
+// What chat shows over time: [{ start, end, lines: [{ name, text, color }] }] in source seconds, oldest line first.
+// `messages` are [time, name, text, color] (signals.messages). Each message shows from its time for CHAT_HOLD
+// seconds or until CHAT_LINES newer ones push it out; long ones are shortened.
+export function chatWindows(messages, edit) {
+  if (!edit.chat?.on || !Array.isArray(messages) || !messages.length) return [];
+  const { start, end } = edit.trim;
+  const list = messages.filter(m => Array.isArray(m) && Number.isFinite(m[0]) && m[0] >= start - CHAT_HOLD && m[0] <= end && String(m[2] ?? "").trim())
+    .sort((a, b) => a[0] - b[0])
+    .map(([t, name, text, color]) => {
+      let body = String(text).replace(/\s+/g, " ").trim();
+      if (edit.captions?.mask) body = body.split(" ").map(maskWord).join(" ");
+      // Lines don't wrap, so name and message together keep to about 44 characters (the frame's width at CHAT_SIZE).
+      const who = String(name || "viewer").slice(0, 20), room = Math.max(12, 44 - who.length);
+      return { t, name: who, text: body.length > room ? body.slice(0, room - 3) + "..." : body, color: chatColor(name, color) };
+    });
+  const points = [...new Set([start, end, ...list.flatMap(m => [m.t, m.t + CHAT_HOLD])].filter(t => t >= start && t <= end))].sort((a, b) => a - b);
+  const out = [];
+  for (let i = 0; i + 1 < points.length; i++) {
+    const a = points[i], b = points[i + 1];
+    const lines = list.filter(m => m.t <= a && m.t + CHAT_HOLD > a).slice(-CHAT_LINES).map(({ name, text, color }) => ({ name, text, color }));
+    if (!lines.length) continue;
+    const last = out.at(-1);
+    if (last && last.end === a && JSON.stringify(last.lines) === JSON.stringify(lines)) last.end = b;
+    else out.push({ start: a, end: b, lines });
+  }
+  return out;
+}
+
 // `tl` (see timeline) moves every caption to its time in the finished clip, after any jump cuts.
-export function buildAss(edit, words, tl = plain(edit)) {
+// `messages`: the clip's chat (signals.messages), drawn when edit.chat.on.
+export function buildAss(edit, words, tl = plain(edit), messages = []) {
   const { W, H } = canvas(edit.frame), c = edit.captions, len = tl.length, y = Math.round(c.y * H), at = tl.toClip;
   const stamp = t => clock(at(t));
   const boxStyle = c.box ? { border: 3, outline: Math.max(8, Math.round(c.size * 0.22)), outlineColor: assColor(c.boxColor) } : { border: 1, outline: c.outline, outlineColor: assColor(c.outlineColor) };
@@ -377,6 +421,7 @@ export function buildAss(edit, words, tl = plain(edit)) {
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     `Style: Cap,${c.font},${c.size},${assColor(c.color)},${assColor(c.highlight)},${boxStyle.outlineColor},${assColor("#000000", 0x80)},-1,0,0,0,100,100,0,0,${boxStyle.border},${boxStyle.outline},0,5,40,40,0,1`,
+    `Style: Chat,Arial,${CHAT_SIZE},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,0,1,40,40,0,1`,
     `Style: Hook,${c.font},52,${assColor(edit.hook.color)},${assColor(edit.hook.color)},${assColor(edit.hook.bg)},${assColor("#000000", 0x80)},-1,0,0,0,100,100,0,0,3,14,0,8,60,60,0,1`,
     "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
   ];
@@ -401,6 +446,14 @@ export function buildAss(edit, words, tl = plain(edit)) {
       const body = cue.words.map(w => kw(w)).join(" ");
       lines.push(`Dialogue: 0,${stamp(cue.start)},${stamp(cue.end)},Cap,,0,0,0,,${pos}${c.animation === "pop" ? POP : ""}${body}`);
     }
+  }
+  // Chat in a column on the left, under the hook and captions (layer 0, drawn first). Its windows are in source
+  // seconds; the timeline counts from the trim's start.
+  const t0 = edit.trim.start;
+  for (const w of chatWindows(messages, edit)) {
+    if (at(w.end - t0) - at(w.start - t0) < 0.05) continue;
+    const body = w.lines.map(l => "{\\c" + assColor(l.color) + "}" + esc(l.name) + "{\\c&H00FFFFFF&}: " + esc(l.text)).join("\\N");
+    lines.push("Dialogue: 0," + stamp(w.start - t0) + "," + stamp(w.end - t0) + ",Chat,,0,0,0,,{\\an1\\pos(40," + Math.round(edit.chat.y * H) + ")\\q2}" + body);
   }
   // The hook's times are already in the finished clip.
   if (edit.hook.text) lines.push(`Dialogue: 1,${clock(0)},${clock(Math.min(len, edit.hook.seconds))},Hook,,0,0,0,,{\\an8\\pos(${W / 2},150)}${POP}${esc(edit.hook.text).replace(/\n/g, "\\N")}`);
@@ -482,4 +535,4 @@ export function filterGraph(edit, { width, height }, subtitles, { background = f
   return parts.join(";");
 }
 
-export function needsSubtitles(edit, words) { return !!edit.hook.text || (edit.captions.on && (words?.length ?? 0) > 0); }
+export function needsSubtitles(edit, words, messages = []) { return !!edit.hook.text || (edit.captions.on && (words?.length ?? 0) > 0) || (!!edit.chat?.on && (messages?.length ?? 0) > 0); }

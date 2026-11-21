@@ -33,6 +33,13 @@ export async function probeLive(url,signal) {
   return result;
 }
 // Transcript words inside [from, to] of the window, shifted so 0 is `from`: [[start, end, text], ...].
+// `messages` are [seconds into the raw window, name, text, colour]; keeps those inside [from, to], shifted to the source's
+// start, at most 400 (spread evenly over a very busy chat).
+export function sourceMessages(messages,from,to) {
+  const inside=(messages??[]).filter(m=>m[0]>=from&&m[0]<=to).map(([t,name,text,color])=>[Math.round((t-from)*100)/100,String(name??"").slice(0,25),String(text??"").slice(0,200),color??null]);
+  if(inside.length<=400)return inside;
+  return Array.from({length:400},(_,i)=>inside[Math.floor(i*inside.length/400)]);
+}
 export function sourceWords(segments,from,to) {
   const out=[];
   for(const seg of segments??[])for(const [s,e,t] of seg.words??[]){
@@ -60,7 +67,7 @@ export function sourceSignals(energy,chat,from,to) {
 // the editor, and fills in the webcam box when the clip's look uses a facecam layout and has none yet.
 // `rater(texts)` (rateMoments in writer.mjs) scores candidate moments by what was said in them, 0..10 each; with it and
 // a transcript, the clip is the candidate that's best on loudness, chat and what was said together.
-export async function processWindow(raw,{settings,text=null,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false,hint="",writer=null,rater=null,findFacecam=null},dir,signal) {
+export async function processWindow(raw,{settings,text=null,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false,hint="",writer=null,rater=null,findFacecam=null,messages=[]},dir,signal) {
   const source=join(dir,"source.mp4"), energyFile=join(dir,"energy.json"), wordsFile=join(dir,"words.json");
   await mkdir(dir,{recursive:true});
   try {
@@ -130,8 +137,9 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
     // The background picked for this clip is kept in its edit, so re-renders and the editor use the same one.
     const bg=background?await background(edit):null;
     if(bg?.ref&&!edit.frame.background)edit={...edit,frame:{...edit.frame,background:bg.ref}};
-    const signals=sourceSignals(energy,chat,from,to);
-    const rendered=await renderClip(source,{edit,words,width:info.width,height:info.height,background:bg,energy:signals.energy},join(dir,"clip.mp4"),signal);
+    // The Twitch chat sent during the source ([seconds into it, name, text, colour]), kept for showing chat on the clip.
+    const signals={...sourceSignals(energy,chat,from,to),messages:sourceMessages(messages,from,to)};
+    const rendered=await renderClip(source,{edit,words,width:info.width,height:info.height,background:bg,energy:signals.energy,messages:signals.messages},join(dir,"clip.mp4"),signal);
     const sourceBytes=await readFile(source);
     const meta={edit,words,...(ai?.caption&&{postCaption:ai.caption}),signals,source:{width:info.width,height:info.height,duration:Math.round((info.duration||to-from)*100)/100,face,content},sourceSha:clipHash(sourceBytes),sourceSize:sourceBytes.length};
     await writeFile(join(dir,"meta.json"),JSON.stringify(meta));

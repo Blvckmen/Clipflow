@@ -246,6 +246,8 @@ async function processJobs() {
       const result = await processWindow(job.raw, { settings: job.settings, text: textOf(job.settings, job.streamer.id), style: job.style, focusFrom: job.focusFrom, focusTo: job.focusTo, chat: job.chat, exact: !!job.exact,
         hint: [who.name, title].filter(Boolean).join(". "), writer: writerEnabled() ? writer : null,
         // Weighs what was said when choosing the moment (not for exact picks, which are kept as they are).
+        // Twitch chat during the window, kept with the clip so it can be shown on it.
+        messages: (job.chatLines ?? []).map(l => [(l.t - job.rawStartMs) / 1000, l.name ?? "", l.text, l.color ?? null]),
         rater: pickerEnabled() && !job.exact ? texts => rateMoments(texts, { streamer: who.name, title, chat: job.chatLines?.length ? chatSample(job.chatLines, job.rawStartMs, job.rawStartMs + 120_000, 15) : [] }, { signal: controller.signal }) : null, findFacecam, background: edit => backgroundFor(edit, job.id, title ?? "") }, job.dir, controller.signal);
       store.ready(job.id, result.sha, Math.min(90, Math.max(15, Math.round(result.end - result.start))));
       made = true;
@@ -696,7 +698,7 @@ async function rerender(job) {
     const info = job.source?.width ? job.source : await videoInfo(source, controller.signal);
     const edit = normalizeEdit(job.edit, { duration: info.duration || job.source?.duration || 600 });
     const out = join(scratch, "render-" + job.rev + ".mp4");
-    const result = await renderClip(source, { edit, words: job.edit.words ?? job.words ?? [], width: info.width, height: info.height, background: await backgroundFor(edit, job.id), energy: job.signals?.energy ?? null }, out, controller.signal);
+    const result = await renderClip(source, { edit, words: job.edit.words ?? job.words ?? [], width: info.width, height: info.height, background: await backgroundFor(edit, job.id), energy: job.signals?.energy ?? null, messages: job.signals?.messages ?? [] }, out, controller.signal);
     // The clip's length after jump cuts, which can be shorter than its trim.
     const upload = await api("/api/worker/clips/" + job.id + "/render", { method: "PUT", body: await readFile(out), headers: { "content-type": "video/mp4", "x-edit-rev": String(job.rev), "x-clip-sha256": result.sha, "x-clip-duration": String(result.duration) }, timeout: 180_000 });
     // 409: the clip was edited again meanwhile; the newer revision arrives with the next config poll.

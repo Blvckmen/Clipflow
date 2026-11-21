@@ -56,11 +56,12 @@ export async function hasAudio(file, signal) {
 // Writes the rendered clip to `out`. Returns { sha, size, duration } (duration after any jump cuts). `background`
 // ({ path, start }) is the split-screen video, looped from `start` seconds; without it split screen renders as the
 // blurred fill. `energy` is the source's per-second loudness (the clip's signals), for jump cuts and punch-ins.
-export async function renderClip(source, { edit, words, width, height, background = null, energy = null }, out, signal) {
+// `messages` is the clip's Twitch chat (signals.messages), shown when the look has chat on.
+export async function renderClip(source, { edit, words, width, height, background = null, energy = null, messages = [] }, out, signal) {
   const dir = dirname(out), ass = basename(out).replace(/\.mp4$/, "") + ".ass";
   const tl = timeline(edit, words, energy);
-  const subtitles = needsSubtitles(edit, words) ? ass : null;
-  if (subtitles) await writeFile(join(dir, ass), buildAss(edit, words, tl), "utf8");
+  const subtitles = needsSubtitles(edit, words, messages) ? ass : null;
+  if (subtitles) await writeFile(join(dir, ass), buildAss(edit, words, tl, messages), "utf8");
   const length = edit.trim.end - edit.trim.start, split = edit.frame.mode === "split" && !!background;
   // The background video's sound, when it is turned up and the video has some; the stream's, when cuts are taken
   // out of it.
