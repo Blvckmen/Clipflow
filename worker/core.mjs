@@ -88,17 +88,25 @@ export function dueForProbe(c, live, { running, now, interval, limit }) {
   return c.streamers.filter(s => s.status === "armed" && !running.has(s.id) && now - checked(s.id) >= interval).sort((a, b) => checked(a.id) - checked(b.id)).slice(0, limit);
 }
 // Decides which captures to cancel and which to begin. A null config (unreachable dashboard) cancels everything.
+// c.streamers comes in recording-priority order (the dashboard sorts it). With every slot taken, a live streamer
+// ranked higher than one being captured takes that capture's slot: `bump` lists the captures to end for it,
+// lowest-ranked first.
 export function plan(c, { running, blockedUntil, countToday, now, maxCaptures, isLive }) {
-  const stop = [...running].filter(id => !allowed(c, id)), start = [];
-  if (c?.control !== "running") return { start, stop };
-  let slots = maxCaptures - (running.size - stop.length);
+  const stop = [...running].filter(id => !allowed(c, id)), start = [], bump = [];
+  if (c?.control !== "running") return { start, stop, bump };
+  const rank = new Map(c.streamers.map((s, i) => [s.id, i]));
+  const kept = [...running].filter(id => !stop.includes(id));
+  let slots = maxCaptures - kept.length;
   for (const s of c.streamers) {
-    if (slots <= 0) break;
     // The daily limit only limits clipping: a streamer that is also recorded keeps being recorded.
     if (s.status !== "armed" || running.has(s.id) || !isLive(s.id) || (blockedUntil.get(s.id) ?? 0) > now || ((s.captureMode ?? "clip") === "clip" && countToday(s.id) >= c.dailyLimit)) continue;
-    start.push(s); slots--;
+    if (slots > 0) { start.push(s); slots--; continue; }
+    const lower = kept.filter(id => !bump.includes(id) && rank.get(id) > rank.get(s.id)).sort((x, y) => rank.get(y) - rank.get(x));
+    // Streamers further down the list rank lower still, so none of them can take a slot either.
+    if (!lower.length) break;
+    bump.push(lower[0]); start.push(s);
   }
-  return { start, stop };
+  return { start, stop, bump };
 }
 export function retryDelay(attempt) { return Math.min(300_000, 30_000 * 2 ** Math.min(attempt, 4)); }
 export function clipHash(bytes) { return createHash("sha256").update(bytes).digest("hex"); }

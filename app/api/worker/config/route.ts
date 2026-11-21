@@ -10,7 +10,7 @@ export async function GET(request:Request){
   const db=database(),owner=await workerOwner(request,db);
   if(!owner)return Response.json({error:"Invalid worker token."},{status:401});
   const [s,p,r,,b,rec,req]=await Promise.all([
-   db.prepare("SELECT id,url,status,style,capture_mode,clip_text FROM streamers WHERE owner=? ORDER BY created_at").bind(owner).all<{id:string;url:string;status:string;style:string|null;capture_mode:string|null;clip_text:string|null}>(),
+   db.prepare("SELECT id,url,status,style,capture_mode,clip_text FROM streamers WHERE owner=? ORDER BY priority IS NULL,priority,created_at").bind(owner).all<{id:string;url:string;status:string;style:string|null;capture_mode:string|null;clip_text:string|null}>(),
    db.prepare("SELECT duration,daily_limit,captions,framing,control,style,transcribe,recording_days,import_clips FROM preferences WHERE owner=?").bind(owner).first(),
    // Edits saved in the dashboard that still need rendering, oldest request first.
    // signals: the source's loudness, for jump cuts and punch-in zooms.
@@ -22,6 +22,7 @@ export async function GET(request:Request){
    db.prepare("SELECT id FROM recordings WHERE owner=? ORDER BY started_at DESC LIMIT 2000").bind(owner).all<{id:string}>(),
    db.prepare("SELECT id,recording_id,kind,start,end,count FROM recording_requests WHERE owner=? AND state IN ('queued','working') ORDER BY created_at LIMIT 50").bind(owner).all<{id:string;recording_id:string;kind:string;start:number|null;end:number|null;count:number|null}>(),
   ]);
+  // streamers is in recording-priority order: the worker gives full capture slots to the first live ones.
   return Response.json({
    control:p?.control??defaults.control,duration:p?.duration??defaults.duration,dailyLimit:p?.daily_limit??defaults.dailyLimit,captions:p?!!p.captions:defaults.captions,transcribe:p?!!p.transcribe:defaults.transcribe,framing:p?.framing??defaults.framing,
    style:parse(p?.style),

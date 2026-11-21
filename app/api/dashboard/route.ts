@@ -60,6 +60,8 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("removeZernioKey"),id:z.string().min(1).max(80)}),
  // Posting options for one account (TikTok mode and privacy, YouTube visibility).
  z.object({action:z.literal("accountOptions"),id:z.string().uuid(),options:optionsSchema}),
+ // Recording priority: every streamer's id, first recorded first.
+ z.object({action:z.literal("priority"),ids:z.array(z.string().uuid()).min(1).max(500)}),
  z.object({action:z.literal("assign"),streamerId:z.string().uuid(),accounts:accountIds}),
  z.object({action:z.literal("assignAccount"),accountId:z.string().uuid(),streamers:z.array(z.string().uuid()).max(500).transform(x=>[...new Set(x)])}),
  // Edits a streamer: display name, channel URL, whether it is clipped, and (optionally) which accounts post its clips.
@@ -129,6 +131,14 @@ export async function POST(request:Request){
    if(payload.action==="remove")statements.push(db.prepare("DELETE FROM streamer_accounts WHERE streamer_id=? AND owner=?").bind(payload.id,owner),db.prepare("DELETE FROM streamers WHERE id=? AND owner=?").bind(payload.id,owner));
    else statements.push(db.prepare("UPDATE streamers SET status=? WHERE id=? AND owner=?").bind(payload.status,payload.id,owner));
    message=payload.action==="remove"?"Removed "+streamer.name+".":streamer.name+": "+(payload.status==="armed"?"enabled; waiting for connection":payload.status)+".";
+  }
+  if(payload.action==="priority"){
+   const {results:all}=await db.prepare("SELECT id,name FROM streamers WHERE owner=?").bind(owner).all<{id:string;name:string}>();
+   const ids=payload.ids,known=new Set(all.map(s=>s.id));
+   // The whole list, each streamer once: a list from before a streamer was added or removed is refused.
+   if(new Set(ids).size!==ids.length||ids.length!==all.length||ids.some(id=>!known.has(id)))return Response.json({error:"Your streamer list changed. Refresh and set the order again."},{status:409});
+   ids.forEach((id,i)=>statements.push(db.prepare("UPDATE streamers SET priority=? WHERE id=? AND owner=?").bind(i+1,id,owner)));
+   message="Recording priority saved: "+ids.slice(0,3).map(id=>all.find(s=>s.id===id)!.name).join(", ")+(ids.length>3?" and "+(ids.length-3)+" more":"")+" first.";
   }
   if(payload.action==="assign"){
    const streamer=await db.prepare("SELECT name FROM streamers WHERE id=? AND owner=?").bind(payload.streamerId,owner).first<{name:string}>();

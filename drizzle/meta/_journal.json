@@ -176,6 +176,13 @@
       "when": 1795142384107,
       "tag": "0024_streamer_clip_text",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1795223328956,
+      "tag": "0025_streamer_priority",
+      "breakpoints": true
     }
   ]
 }

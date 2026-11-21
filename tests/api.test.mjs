@@ -732,3 +732,26 @@ describe("transcription, subtitles and hooks per streamer", () => {
     await dash({ action: "remove", id });
   });
 });
+
+describe("recording priority", () => {
+  test("the saved order is the order the worker receives, and stale lists are refused", async () => {
+    const tag = Date.now().toString(36);
+    const ids = [];
+    for (const n of ["p1", "p2", "p3"]) ids.push((await dash({ action: "add", url: "https://twitch.tv/" + n + tag })).body.streamerId);
+    const all = (await dash()).body.streamers.map(s => s.id);
+    const order = [ids[2], ids[0], ...all.filter(id => id !== ids[2] && id !== ids[0])];
+    const saved = await dash({ action: "priority", ids: order });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    const sent = (await (await worker("/api/worker/config")).json()).streamers.map(s => s.id);
+    assert.deepEqual(sent, order, "the worker gets streamers in priority order");
+    const s = (await dash()).body.streamers;
+    assert.equal(s.find(x => x.id === ids[2]).priority, 1);
+    assert.equal((await dash({ action: "priority", ids: order.slice(1) })).status, 409, "a list missing a streamer is refused");
+    assert.equal((await dash({ action: "priority", ids: [...order, order[0]] })).status, 409, "duplicates are refused");
+    assert.equal((await dash({ action: "priority", ids: [...order.slice(1), randomUUID()] })).status, 409, "unknown ids are refused");
+    // A streamer added afterwards goes to the bottom.
+    const late = (await dash({ action: "add", url: "https://twitch.tv/p4" + tag })).body.streamerId;
+    assert.equal((await (await worker("/api/worker/config")).json()).streamers.at(-1).id, late);
+    for (const id of [...ids, late]) await dash({ action: "remove", id });
+  });
+});

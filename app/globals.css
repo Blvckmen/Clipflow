@@ -496,3 +496,19 @@ button.account-streamers{max-width:none;justify-self:start}
 .clip-text-fields{border:1px solid var(--border);border-radius:8px;padding:14px 16px 16px;margin:0;display:flex;flex-direction:column;gap:16px}
 .clip-text-fields legend{font-size:13px;font-weight:600;color:#d3dce7;padding:0 6px}
 .clip-text-fields .muted-field{opacity:.55}
+/* Recording priority (recording-priority.tsx) */
+.panel-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.panel-tools .secondary{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.priority-list{list-style:none;margin:16px 0 0;padding:0;display:flex;flex-direction:column;gap:7px;max-height:min(52vh,460px);overflow-y:auto}
+.priority-list li{display:flex;align-items:center;gap:10px;border:1px solid #2c3642;border-radius:8px;padding:8px 8px 8px 10px;background:#141a21;cursor:grab;user-select:none}
+.priority-list li.dragging{opacity:.5;border-style:dashed;border-color:#4b6638}
+.priority-list li:first-child{border-color:#4b6638;background:#1c2519}
+.priority-list .brand{width:24px;height:24px;font-size:15px;flex:none}
+.priority-grip{color:#5d6876;flex:none}
+.priority-rank{min-width:22px;height:22px;border-radius:11px;background:#232c36;color:#d3dce7;font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex:none}
+.priority-name{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.3}
+.priority-name strong{font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.priority-name small{font-size:11px;color:var(--muted)}
+.priority-moves{display:flex;gap:2px;flex:none}
+.priority-moves .icon-button{width:30px;height:30px}
+@media(max-width:540px){.priority-grip{display:none}.priority-list li{gap:8px;padding:7px}}

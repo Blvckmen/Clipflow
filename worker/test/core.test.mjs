@@ -98,10 +98,29 @@ test("plan respects capture slots, cooldowns and the daily limit", () => {
 });
 
 test("plan cancels captures when control or the streamer changes", () => {
-  assert.deepEqual(plan(config({ control: "stopped" }), ctx({ running: new Set([a]) })), { start: [], stop: [a] });
+  assert.deepEqual(plan(config({ control: "stopped" }), ctx({ running: new Set([a]) })), { start: [], stop: [a], bump: [] });
   assert.deepEqual(plan(null, ctx({ running: new Set([a, b]) })).stop, [a, b]);
   const paused = config({ streamers: [{ id: a, url: "https://twitch.tv/alpha", status: "paused" }, { id: b, url: "https://kick.com/beta", status: "armed" }] });
-  assert.deepEqual(plan(paused, ctx({ running: new Set([a]) })), { start: [paused.streamers[1]], stop: [a] });
+  assert.deepEqual(plan(paused, ctx({ running: new Set([a]) })), { start: [paused.streamers[1]], stop: [a], bump: [] });
+});
+
+test("plan gives full slots to higher-priority streamers first", () => {
+  const d = "44444444-4444-4444-8444-444444444444";
+  const ranked = config({ streamers: [a, b, c, d].map((id, i) => ({ id, url: "https://twitch.tv/s" + i, status: "armed" })) });
+  // Free slots go down the list in order.
+  assert.deepEqual(plan(ranked, ctx({ maxCaptures: 2 })).start.map(s => s.id), [a, b]);
+  // Full: a (ranked first) takes the slot of the lowest-ranked capture, d.
+  let p = plan(ranked, ctx({ maxCaptures: 2, running: new Set([c, d]) }));
+  assert.deepEqual(p.start.map(s => s.id), [a, b], "b outranks c too");
+  assert.deepEqual(p.bump, [d, c]);
+  p = plan(ranked, ctx({ maxCaptures: 2, running: new Set([b, d]) }));
+  assert.deepEqual([p.start.map(s => s.id), p.bump], [[a], [d]], "c ranks below b, so only d gives way");
+  // A lower-ranked streamer never takes a higher-ranked one's slot.
+  p = plan(ranked, ctx({ maxCaptures: 2, running: new Set([a, b]) }));
+  assert.deepEqual([p.start, p.bump], [[], []]);
+  // A streamer that can't start (offline, cooling down) takes nothing.
+  p = plan(ranked, ctx({ maxCaptures: 1, running: new Set([d]), isLive: id => id !== a, blockedUntil: new Map([[b, 2000]]) }));
+  assert.deepEqual([p.start.map(s => s.id), p.bump], [[c], [d]]);
 });
 
 test("retryDelay backs off to a five minute cap", () => {

@@ -701,7 +701,9 @@ async function tick() {
   // Stop disallowed recordings before the (slow) live checks rather than after them.
   for (const id of sessions.keys()) if (!allowed(config, id)) await stopSession(id, "paused, stopped or disabled");
   await probe(dueForProbe(config, live, { running: new Set(sessions.keys()), now: Date.now(), interval: liveCheckMs, limit: probesPerCycle }));
-  const { start } = plan(config, { running: new Set(sessions.keys()), blockedUntil, countToday: id => store.countToday(id), now: Date.now(), maxCaptures: maxSessions, isLive });
+  const { start, bump } = plan(config, { running: new Set(sessions.keys()), blockedUntil, countToday: id => store.countToday(id), now: Date.now(), maxCaptures: maxSessions, isLive });
+  // A higher-priority streamer went live with every slot taken: the lowest-ranked capture ends to make room.
+  for (const id of bump) await stopSession(id, "a higher-priority streamer went live");
   for (const streamer of start) await startSession(streamer);
   await importViewerClips();
   await reportStatus();

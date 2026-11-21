@@ -14,6 +14,9 @@ export const streamers = sqliteTable("streamers", {
  // This streamer's transcription, subtitles and automatic hook: JSON {transcribe,subtitles,hook}, each true, false or
  // left out to follow the workspace. Null follows the workspace for all three.
  clipText:text("clip_text"),
+ // Recording priority: when more streamers are live than the worker can record, lower numbers are recorded first
+ // (and take a slot from a lower-ranked one). Null ranks after every numbered streamer, oldest first.
+ priority:integer("priority"),
 },t=>[uniqueIndex("streamers_owner_url").on(t.owner,t.url)]);
 export const preferences=sqliteTable("preferences",{
  owner:text("owner").primaryKey(),mode:text("mode").notNull().default("automatic"),duration:integer("duration").notNull().default(45),dailyLimit:integer("daily_limit").notNull().default(5),captions:integer("captions",{mode:"boolean"}).notNull().default(true),destinations:text("destinations").notNull().default('[]'),control:text("control").notNull().default("paused"),framing:text("framing").notNull().default("blur"),
