@@ -44,7 +44,40 @@ that `/api/worker/*` answers the worker directly (it uses its own bearer token, 
 exempt from Access). Then sign in, open **Connect worker**, create a token and point the
 worker at the site (see `worker/README.md`).
 
-## Instagram publishing (optional)
+## Publishing to TikTok, Instagram and YouTube (Zernio)
+
+The simple way to publish. [Zernio](https://zernio.com) already has approved apps for each platform, so there is
+no Meta app, Google audit or TikTok review to go through.
+
+Everything is set up in the dashboard, under **Connections → Social accounts**; no code change or redeploy:
+
+1. Create a Zernio account and copy its API key (zernio.com → Settings → API keys). Paste it into **Zernio API
+   key** and save. Clipflow checks it with Zernio and stores it encrypted with `TOKEN_KEY`; it is never shown again.
+2. Press a platform (TikTok, Instagram, YouTube, Facebook, X, Threads) to connect an account with that platform's
+   own sign-in. You come back to Clipflow with the account added. Accounts already connected on zernio.com are
+   picked up when the key is saved, or with **Refresh**.
+3. The first accounts post every streamer's clips; change that per streamer under **Streamers → Posts to**.
+   **Options** on a TikTok or YouTube account sets how it posts (below). **Disconnect** removes it on Zernio too.
+
+Optionally, `ZERNIO_API_KEY=sk_...` in `.env` (uploaded by `npm run deploy`) is a site-wide key for workspaces
+that have not entered their own.
+
+Each approved clip is sent to Zernio as a signed video link (valid 24 hours) and published right away. Retries,
+the daily limit and pausing work as below. YouTube gets the caption's first line as its title and the account's
+visibility (public by default). TikTok asks that the creator has seen each post, so by default clips you approve
+yourself in review mode are published and clips approved automatically go to your TikTok drafts; a TikTok
+account's options can instead always publish or always use drafts, and set who can watch and comments. Test locally against a fake Zernio with
+`npm run build` then `npm run test:zernio`.
+
+## Local transcript-based post captions
+
+Post captions are composed from the worker's saved Whisper transcript using local code. No OpenAI or Anthropic key, model service, or per-caption API fee is required. Whisper still needs to be installed on the worker and downloads its speech model on first use.
+
+Enable **Transcribe clips** in Settings. Under Publishing preferences, **Create post captions from transcripts** chooses a spoken excerpt, credits the streamer and adds keyword hashtags. Only words inside the saved trim are used, including saved corrections. Extra hashtags accepts #tags, not natural-language AI instructions. With no usable transcript, the configured fallback caption is used.
+
+Under **Clip library > Edit > Post caption**, generate a caption from the saved transcript or type your own. Manual captions are preserved. Saving a clip edit invalidates a locally generated caption so it is regenerated for the new trim. Previously saved AI captions remain unless explicitly replaced.
+
+## Instagram publishing directly (optional, instead of Zernio)
 
 Clipflow posts approved clips as Reels to **your own** Instagram professional account. Meta's docs say an
 app that only serves accounts you own or manage needs Standard Access, so no App Review is required.
@@ -85,3 +118,9 @@ The app reads `AUTH_MODE`:
 
 Data is stored per Access user. A deployment on Cloudflare starts with an empty database;
 it does not share data with a Codex Sites deployment.
+
+## Social caption generator
+
+Choose a recorded clip or enter a transcript/description to produce three template variations. Captions are built by the app without external AI requests. Tone, length, emoji and hashtag controls are supported; outputs are excerpts and templates, not creative AI rewrites. Generation and copying do not publish a post. Missing clip transcripts produce an explanation instead of fabricated content.
+
+Drafts are temporary. Limits count Unicode code points: Short 240, Medium 700, Long 1,400, capped at 280 for X. Review Whisper transcription errors before sharing.

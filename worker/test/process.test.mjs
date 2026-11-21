@@ -30,3 +30,10 @@ test("timeouts and cancellations are named as such", async () => {
 test("a missing program says it could not start", async () => {
   await assert.rejects(command("definitely-not-a-real-program-xyz", []).done, /could not start \(ENOENT\)/);
 });
+
+test("encodes get time in proportion to the video's length, at least five minutes", async () => {
+  const { encodeTimeout } = await import("../render.mjs");
+  assert.equal(encodeTimeout(5), 300_000);
+  assert.equal(encodeTimeout(44), 880_000);
+  assert.equal(encodeTimeout(56.2), 1_140_000);
+});

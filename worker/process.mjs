@@ -13,8 +13,9 @@ export function lastLines(text,count=2,max=300) {
   const lines=String(text).split(/\r?\n/).map(l=>l.trim()).filter(l=>/[\p{L}\p{N}]/u.test(l));
   return lines.slice(-count).join(" | ").slice(-max);
 }
-export function command(binary,args,{signal,timeout=300_000,stdout="ignore",cwd}={}) {
-  const child=spawn(binary,args,{stdio:["ignore",stdout,"pipe"],windowsHide:true,cwd});
+// `env`: the child's environment (default: this process's), e.g. to pick a different Whisper model for one run.
+export function command(binary,args,{signal,timeout=300_000,stdout="ignore",cwd,env}={}) {
+  const child=spawn(binary,args,{stdio:["ignore",stdout,"pipe"],windowsHide:true,cwd,...(env&&{env})});
   const stderr=tail(child.stderr);
   const name=String(binary).split(/[\\/]/).pop();
   const done=new Promise((resolve,reject)=>{

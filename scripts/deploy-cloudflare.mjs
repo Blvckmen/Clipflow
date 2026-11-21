@@ -93,7 +93,11 @@ if (!apps.ok) fail("Cannot read Access applications (" + apps.errors + "). The t
 ok("Access applications readable");
 const instagramReady = !!(env.INSTAGRAM_APP_ID && env.INSTAGRAM_APP_SECRET);
 if (instagramReady) ok("Instagram app keys present; publishing will be enabled");
-else warn("INSTAGRAM_APP_ID / INSTAGRAM_APP_SECRET not set; deploying with Instagram publishing switched off (see DEPLOY.md).");
+else ok("No Instagram app keys; direct Instagram Login stays off (Zernio covers Instagram)");
+const zernioReady = !!env.ZERNIO_API_KEY;
+if (zernioReady) ok("Zernio API key present; posting to TikTok, Instagram and YouTube will be enabled");
+else warn("ZERNIO_API_KEY not set; deploying with publishing through Zernio switched off (see DEPLOY.md).");
+ok("Post captions are generated locally from transcripts; no AI API key needed.");
 
 if (checkOnly) { console.log("\nAll prerequisites look good. Run without --check to deploy.\n"); return; }
 
@@ -172,7 +176,7 @@ wrangler(["deploy", "--config", deployConfigPath], auth);
 console.log("\nUploading secrets…");
 const secretsFile = join(root, "dist/server/secrets.json");
 try {
-  writeFileSync(secretsFile, JSON.stringify({ TOKEN_KEY: env.TOKEN_KEY, MEDIA_KEY: env.MEDIA_KEY, ...(instagramReady && { INSTAGRAM_APP_SECRET: env.INSTAGRAM_APP_SECRET }) }));
+  writeFileSync(secretsFile, JSON.stringify({ TOKEN_KEY: env.TOKEN_KEY, MEDIA_KEY: env.MEDIA_KEY, ...(instagramReady && { INSTAGRAM_APP_SECRET: env.INSTAGRAM_APP_SECRET }), ...(zernioReady && { ZERNIO_API_KEY: env.ZERNIO_API_KEY }) }));
   wrangler(["secret", "bulk", secretsFile, "--config", deployConfigPath], auth);
 } finally { rmSync(secretsFile, { force: true }); }
 

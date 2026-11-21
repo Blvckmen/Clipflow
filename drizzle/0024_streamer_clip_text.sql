@@ -1,0 +1,1 @@
+ALTER TABLE `streamers` ADD `clip_text` text;

@@ -1,0 +1,1 @@
+ALTER TABLE `recordings` ADD `transcript_at` text;

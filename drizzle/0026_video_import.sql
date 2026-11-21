@@ -1,0 +1,1 @@
+ALTER TABLE `recordings` ADD `source_url` text;

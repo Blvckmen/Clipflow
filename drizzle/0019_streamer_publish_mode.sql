@@ -1,0 +1,1 @@
+ALTER TABLE `streamers` ADD `publish_mode` text;

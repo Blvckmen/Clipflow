@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Store, allowed, channelUrl, dueForProbe, plan, probeResult, retryDelay, validateControl } from "../core.mjs";
-import { captionStyle, frameFilter } from "../media.mjs";
+import { sourceSignals, sourceWords } from "../media.mjs";
 
 const a = "11111111-1111-4111-8111-111111111111", b = "22222222-2222-4222-8222-222222222222", c = "33333333-3333-4333-8333-333333333333";
 const config = (over = {}) => ({ control: "running", duration: 45, captions: true, dailyLimit: 2, streamers: [
@@ -41,6 +41,8 @@ test("plan only starts captures for streamers confirmed live", () => {
 test("channelUrl accepts channels and rejects non-channel pages", () => {
   assert.equal(channelUrl("https://www.twitch.tv/alpha"), "https://www.twitch.tv/alpha");
   assert.equal(channelUrl("https://youtube.com/@gamma"), "https://youtube.com/@gamma/live");
+  assert.equal(channelUrl("https://www.tiktok.com/@delta.live_1"), "https://www.tiktok.com/@delta.live_1/live");
+  for (const bad of ["https://www.tiktok.com/@a/video/123", "https://www.tiktok.com/delta", "https://www.tiktok.com/@a"]) assert.throws(() => channelUrl(bad), bad);
   for (const bad of ["http://twitch.tv/alpha", "https://twitch.tv/Following", "https://kick.com/downloads", "https://twitch.tv/a/b", "https://evil.com/alpha", "https://twitch.tv/alpha?x=1"])
     assert.throws(() => channelUrl(bad), bad);
 });
@@ -48,6 +50,8 @@ test("channelUrl accepts channels and rejects non-channel pages", () => {
 test("validateControl requires a valid daily limit", () => {
   assert.equal(validateControl(config()).dailyLimit, 2);
   assert.throws(() => validateControl(config({ dailyLimit: 0 })));
+  assert.equal(validateControl(config({ dailyLimit: 100 })).dailyLimit, 100, "up to 100 a day");
+  assert.throws(() => validateControl(config({ dailyLimit: 101 })));
   assert.throws(() => validateControl(config({ dailyLimit: undefined })));
   assert.throws(() => validateControl(config({ control: "on" })));
 });
@@ -58,20 +62,24 @@ test("validateControl defaults and checks framing", () => {
   assert.throws(() => validateControl(config({ framing: "stretch" })));
 });
 
-test("frameFilter always produces a 720x1280 graph", () => {
-  assert.match(frameFilter("crop"), /crop=720:1280/);
-  assert.match(frameFilter("fit"), /pad=720:1280/);
-  assert.match(frameFilter("blur"), /^split\[bg\]\[fg\];.*overlay/);
-  assert.equal(frameFilter(undefined), frameFilter("blur"));
+test("validateControl accepts render requests and streamer styles, and rejects malformed ones", () => {
+  const render = { id: a, rev: 2, edit: { trim: { start: 0, end: 20 } } };
+  assert.deepEqual(validateControl(config()).renders, [], "older dashboards send none");
+  assert.equal(validateControl(config({ renders: [render] })).renders[0].rev, 2);
+  assert.throws(() => validateControl(config({ renders: [{ ...render, rev: 0 }] })));
+  assert.throws(() => validateControl(config({ renders: [{ ...render, id: "x" }] })));
+  assert.throws(() => validateControl(config({ renders: "all" })));
+  assert.equal(validateControl(config({ streamers: [{ id: a, url: "https://twitch.tv/alpha", status: "armed", style: { frame: { mode: "crop" } } }] })).streamers[0].style.frame.mode, "crop");
+  assert.throws(() => validateControl(config({ streamers: [{ id: a, url: "https://twitch.tv/alpha", status: "armed", style: "loud" }] })));
 });
 
-test("captionStyle places captions under the picture only when there is room", () => {
-  assert.match(captionStyle("blur", 1920, 1080), /Alignment=8,MarginV=879$/);
-  assert.match(captionStyle("fit", 1280, 720), /Alignment=8,MarginV=879$/);
-  assert.match(captionStyle("crop", 1920, 1080), /Alignment=2,MarginV=300$/);
-  assert.match(captionStyle("blur", 1080, 1920), /Alignment=2,MarginV=300$/, "vertical source fills the frame");
-  assert.match(captionStyle("blur", 0, 0), /Alignment=2,MarginV=300$/, "unknown size falls back to the lower third");
-  assert.match(captionStyle("blur", 1920, 1080), /^PlayResX=720,PlayResY=1280,/);
+test("sourceWords keeps words inside the source and shifts them to its start", () => {
+  const segments = [{ words: [[9, 9.5, " too early"], [10.2, 10.6, " Hello"], [10.7, 11, " {big}\\ world!"], [19.5, 20.5, " too late"]] }];
+  assert.deepEqual(sourceWords(segments, 10, 20), [[0.2, 0.6, "Hello"], [0.7, 1, "big world!"]]);
+});
+
+test("sourceSignals scales loudness to the loudest second and lines chat up with it", () => {
+  assert.deepEqual(sourceSignals([0, 1, 2, 4, 8], [0, 3, 0, 9], 1, 4), { energy: [0.25, 0.5, 1], chat: [3, 0, 9] });
 });
 
 test("allowed needs global running and an armed streamer", () => {
@@ -90,10 +98,29 @@ test("plan respects capture slots, cooldowns and the daily limit", () => {
 });
 
 test("plan cancels captures when control or the streamer changes", () => {
-  assert.deepEqual(plan(config({ control: "stopped" }), ctx({ running: new Set([a]) })), { start: [], stop: [a] });
+  assert.deepEqual(plan(config({ control: "stopped" }), ctx({ running: new Set([a]) })), { start: [], stop: [a], bump: [] });
   assert.deepEqual(plan(null, ctx({ running: new Set([a, b]) })).stop, [a, b]);
   const paused = config({ streamers: [{ id: a, url: "https://twitch.tv/alpha", status: "paused" }, { id: b, url: "https://kick.com/beta", status: "armed" }] });
-  assert.deepEqual(plan(paused, ctx({ running: new Set([a]) })), { start: [paused.streamers[1]], stop: [a] });
+  assert.deepEqual(plan(paused, ctx({ running: new Set([a]) })), { start: [paused.streamers[1]], stop: [a], bump: [] });
+});
+
+test("plan gives full slots to higher-priority streamers first", () => {
+  const d = "44444444-4444-4444-8444-444444444444";
+  const ranked = config({ streamers: [a, b, c, d].map((id, i) => ({ id, url: "https://twitch.tv/s" + i, status: "armed" })) });
+  // Free slots go down the list in order.
+  assert.deepEqual(plan(ranked, ctx({ maxCaptures: 2 })).start.map(s => s.id), [a, b]);
+  // Full: a (ranked first) takes the slot of the lowest-ranked capture, d.
+  let p = plan(ranked, ctx({ maxCaptures: 2, running: new Set([c, d]) }));
+  assert.deepEqual(p.start.map(s => s.id), [a, b], "b outranks c too");
+  assert.deepEqual(p.bump, [d, c]);
+  p = plan(ranked, ctx({ maxCaptures: 2, running: new Set([b, d]) }));
+  assert.deepEqual([p.start.map(s => s.id), p.bump], [[a], [d]], "c ranks below b, so only d gives way");
+  // A lower-ranked streamer never takes a higher-ranked one's slot.
+  p = plan(ranked, ctx({ maxCaptures: 2, running: new Set([a, b]) }));
+  assert.deepEqual([p.start, p.bump], [[], []]);
+  // A streamer that can't start (offline, cooling down) takes nothing.
+  p = plan(ranked, ctx({ maxCaptures: 1, running: new Set([d]), isLive: id => id !== a, blockedUntil: new Map([[b, 2000]]) }));
+  assert.deepEqual([p.start.map(s => s.id), p.bump], [[c], [d]]);
 });
 
 test("retryDelay backs off to a five minute cap", () => {
@@ -135,4 +162,31 @@ test("Store tracks clip states and recovers interrupted captures", () => {
     assert.equal(store.old(new Date(Date.now() + 1000).toISOString()).length, 2);
     store.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("validateControl defaults transcription on and rejects other values", () => {
+  assert.equal(validateControl(config()).transcribe, true, "older dashboards omit it");
+  assert.equal(validateControl(config({ transcribe: false })).transcribe, false);
+  assert.throws(() => validateControl(config({ transcribe: "no" })));
+});
+
+test("validateControl accepts split screen and the background library", () => {
+  const c = validateControl(config({ framing: "split", backgrounds: [{ id: "11111111-1111-4111-8111-111111111111", size: 100 }] }));
+  assert.deepEqual([c.framing, c.backgrounds.length], ["split", 1]);
+  assert.deepEqual(validateControl(config()).backgrounds, [], "older dashboards send none");
+});
+
+test("transcription, subtitles and hooks: the streamer's own choice, else the workspace's", async () => {
+  const { clipTextFor } = await import("../core.mjs");
+  const ws = { transcribe: true, captions: true };
+  assert.deepEqual(clipTextFor(ws, { text: {} }), { transcribe: true, subtitles: true, hook: true });
+  assert.deepEqual(clipTextFor(ws, { text: { subtitles: false } }), { transcribe: true, subtitles: false, hook: true });
+  assert.deepEqual(clipTextFor({ transcribe: true, captions: false }, { text: { subtitles: true, hook: false } }), { transcribe: true, subtitles: true, hook: false });
+  assert.deepEqual(clipTextFor(ws, { text: { transcribe: false, subtitles: true, hook: true } }), { transcribe: false, subtitles: false, hook: false }, "no transcript, no text");
+  assert.deepEqual(clipTextFor({ transcribe: false, captions: true }, { text: { transcribe: true } }), { transcribe: true, subtitles: true, hook: true });
+  assert.deepEqual(clipTextFor(ws, undefined), { transcribe: true, subtitles: true, hook: true }, "a removed streamer follows the workspace");
+  assert.deepEqual(validateControl(config({ streamers: [{ ...config().streamers[0], text: { hook: false } }] })).streamers[0].text, { hook: false });
+  assert.deepEqual(validateControl(config()).streamers[0].text, {}, "older dashboards");
+  assert.throws(() => validateControl(config({ streamers: [{ ...config().streamers[0], text: { hook: "no" } }] })), /text settings/);
+  assert.throws(() => validateControl(config({ streamers: [{ ...config().streamers[0], text: { captions: true } }] })), /text settings/);
 });
