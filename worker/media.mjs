@@ -5,7 +5,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { command } from "./process.mjs";
 import { fileURLToPath } from "node:url";
 import { channelUrl, clipHash, probeResult } from "./core.mjs";
-import { pickWindow, snapToSentences } from "./highlights.mjs";
+import { candidateWindows, chooseMoment, pickWindow, snapToSentences } from "./highlights.mjs";
 import { defaultEdit, defaultStyle, maskWord, normalizeStyle } from "./edit.mjs";
 import { encodeTimeout, findPhonePicture, renderClip, videoInfo } from "./render.mjs";
 import { applyAutomaticHook } from "./hooks.mjs";
@@ -58,7 +58,9 @@ export function sourceSignals(energy,chat,from,to) {
 // may write the hook and post caption from the clip's transcript, else the transcript-based ones are used.
 // `findFacecam(sourcePath, signal)` (see facecam.py) finds the streamer's webcam overlay: it's kept with the source for
 // the editor, and fills in the webcam box when the clip's look uses a facecam layout and has none yet.
-export async function processWindow(raw,{settings,text=null,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false,hint="",writer=null,findFacecam=null},dir,signal) {
+// `rater(texts)` (rateMoments in writer.mjs) scores candidate moments by what was said in them, 0..10 each; with it and
+// a transcript, the clip is the candidate that's best on loudness, chat and what was said together.
+export async function processWindow(raw,{settings,text=null,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false,hint="",writer=null,rater=null,findFacecam=null},dir,signal) {
   const source=join(dir,"source.mp4"), energyFile=join(dir,"energy.json"), wordsFile=join(dir,"words.json");
   await mkdir(dir,{recursive:true});
   try {
@@ -80,8 +82,18 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
     let start,end;
     if(exact){start=Math.max(0,focusFrom);end=Math.min(total,focusTo);if(end-start<15)throw new Error("That part of the recording is too short to clip");}
     else{
-      const first=pickWindow({energy,chat,duration,from:Math.max(0,Math.floor(focusFrom)),to:Math.min(total,Math.ceil(focusTo))});
-      ({start,end}=snapToSentences(first,first+duration,segments,{minLen:Math.max(15,duration-8),maxLen:Math.min(90,duration+8),total}));
+      const range={energy,chat,duration,from:Math.max(0,Math.floor(focusFrom)),to:Math.min(total,Math.ceil(focusTo))};
+      const snap=s=>snapToSentences(s,s+duration,segments,{minLen:Math.max(15,duration-8),maxLen:Math.min(90,duration+8),total});
+      const first=pickWindow(range);
+      ({start,end}=snap(first));
+      // Several spots that are good on loudness and chat, judged on what was said in them too.
+      const candidates=rater&&segments.length&&!signal.aborted?candidateWindows(range).map(c=>({...c,...snap(c.start)})):[];
+      if(candidates.length>1){
+        const texts=candidates.map(c=>sourceWords(segments,c.start,c.end).map(w=>w[2]).join(" "));
+        const ratings=await rater(texts).catch(()=>null);
+        const pick=chooseMoment(candidates,ratings);
+        if(ratings&&pick){({start,end}=pick);console.log("Moment ratings",ratings.join(", ")+": picked",candidates.indexOf(candidates.find(c=>c.start===pick.start))+1,"of",candidates.length);}
+      }
     }
     const from=Math.max(0,start-SOURCE_PAD), to=Math.min(total,end+SOURCE_PAD);
     // Frequent keyframes keep seeking in the editor responsive.
@@ -105,7 +117,7 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
     let withAi=initialEdit;
     if(hooks&&ai?.hook&&!initialEdit.hook.text?.trim()){
       const text=initialEdit.captions.mask?ai.hook.split(" ").map(maskWord).join(" "):ai.hook;
-      const seconds=Math.min(initialEdit.trim.end-initialEdit.trim.start,Math.max(initialEdit.hook?.seconds??5,Math.ceil(text.split(/s+/).length/3)));
+      const seconds=Math.min(initialEdit.trim.end-initialEdit.trim.start,Math.max(initialEdit.hook?.seconds??5,Math.ceil(text.split(/\s+/).length/3)));
       withAi={...initialEdit,hook:{...initialEdit.hook,text,seconds}};
     }
     let edit=applyAutomaticHook(withAi,words,{enabled:hooks});

@@ -54,6 +54,9 @@ export function validateControl(c) {
     channelUrl(s.url); ids.add(s.id);
   }
   // Viewers' Twitch clips: the fewest views a clip needs to be imported, 0 for off (and for older dashboards).
+  // Who can clip with "!clip" in Twitch chat; dashboards that predate it get the default.
+  c.clipCommand ??= "mods";
+  if (!["off","mods","everyone"].includes(c.clipCommand)) throw new Error("Invalid chat command setting");
   c.importClips ??= 0;
   if (!Number.isInteger(c.importClips) || c.importClips < 0 || c.importClips > 1000) throw new Error("Invalid clip import setting");
   c.recordingDays ??= 7;

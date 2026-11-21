@@ -97,6 +97,19 @@ describe("worker token", () => {
     }
     assert.equal((await dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, destinations, framing: "stretch" } })).status, 400);
   });
+  test("who can clip with !clip is a setting the worker sees, and a !clip clip says so", async () => {
+    const { mode, duration, dailyLimit, captions, destinations, framing } = originalSettings, set = clipCommand => dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, destinations, framing, clipCommand } });
+    assert.equal((await (await worker("/api/worker/config")).json()).clipCommand, "mods", "streamer, moderators and VIPs by default");
+    assert.equal((await set("everyone")).status, 200);
+    assert.equal((await (await worker("/api/worker/config")).json()).clipCommand, "everyone");
+    assert.equal((await dash()).body.settings.clipCommand, "everyone");
+    assert.equal((await set("all")).status, 400);
+    assert.equal((await set("mods")).status, 200);
+    const { clip, response } = await reportClip(Buffer.alloc(2048, 7), { reason: "command" });
+    assert.equal(response.status, 200);
+    assert.equal((await dash()).body.clips.find(c => c.id === clip.id).reason, "command");
+    await dash({ action: "deleteClip", id: clip.id });
+  });
   test("importing viewers' Twitch clips is a setting the worker sees, and an imported clip says where it came from", async () => {
     const { mode, duration, dailyLimit, captions, destinations, framing } = originalSettings, set = importClips => dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, destinations, framing, importClips } });
     assert.equal((await set(10)).status, 200);

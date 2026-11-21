@@ -78,3 +78,49 @@ export async function writeClipText(input, { signal, timeoutMs = 150_000 } = {})
     return tidy(JSON.parse(body?.message?.content ?? "null"), input);
   } catch { return null; }
 }
+
+// ---- Picking moments by what was said ----
+// Rates candidate moments of a stream by their transcripts, 0..10 each, for how well each would work as a short
+// clip on its own. One request for all of them. Null when Ollama is off, slow or answers oddly: the moment is then
+// picked from loudness and chat alone. AI_PICKER=off turns only this off.
+export const pickerEnabled = () => writerEnabled() && (process.env.AI_PICKER ?? "on").toLowerCase() !== "off";
+
+const rateSchema = {
+  type: "object",
+  properties: { scores: { type: "array", items: { type: "integer", minimum: 0, maximum: 10 }, description: "One score per moment, in order" } },
+  required: ["scores"],
+};
+
+export function buildRatePrompt(texts, { streamer, title, chat }) {
+  return [
+    "These are " + texts.length + " candidate moments from the same live stream" + (streamer ? " by " + streamer : "") + ". Only one becomes a short vertical clip.",
+    title ? "Stream title: " + clean(title).slice(0, 150) : "",
+    chat?.length ? "What chat said around then:\n" + chat.join("\n").slice(0, 500) : "",
+    ...texts.map((t, i) => "Moment " + (i + 1) + " (automatic transcript, may contain mistakes):\n" + (clean(t).slice(0, 700) || "(no speech)")),
+    "Score each moment from 0 to 10 for how well it works as a short clip on its own: it grabs attention in the first seconds, has a payoff (a joke landing, a reaction, a reveal, a strong opinion, a story ending), and makes sense without the rest of the stream.",
+    "Score low: filler, reading out donations or settings, silence, waiting, a sentence cut off in the middle, or talk that needs context.",
+    "Return JSON: {\"scores\": [one integer per moment, in order]}.",
+  ].filter(Boolean).join("\n\n");
+}
+
+export async function rateMoments(texts, context = {}, { signal, timeoutMs = 120_000 } = {}) {
+  if (!pickerEnabled() || texts.length < 2 || texts.every(t => !clean(t))) return null;
+  const base = (process.env.OLLAMA_URL || URL_DEFAULT).replace(/\/$/, "");
+  try {
+    const response = await fetch(base + "/api/chat", {
+      method: "POST", headers: { "content-type": "application/json" },
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
+      body: JSON.stringify({
+        model: process.env.OLLAMA_MODEL || MODEL_DEFAULT, stream: false, format: rateSchema, keep_alive: "30m",
+        options: { temperature: 0.2, num_ctx: 4096, num_predict: 60 },
+        messages: [
+          { role: "system", content: "You pick the best moments of live streams for short clips. You answer with JSON." },
+          { role: "user", content: buildRatePrompt(texts, context) },
+        ],
+      }),
+    });
+    if (!response.ok) return null;
+    const scores = JSON.parse((await response.json())?.message?.content ?? "null")?.scores;
+    return Array.isArray(scores) && scores.length === texts.length && scores.every(s => Number.isFinite(s)) ? scores.map(s => Math.max(0, Math.min(10, s))) : null;
+  } catch { return null; }
+}

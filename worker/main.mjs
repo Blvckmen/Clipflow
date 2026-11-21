@@ -6,14 +6,14 @@ import { dirname, join } from "node:path";
 import { Store, allowed, channelUrl, clipTextFor, dueForProbe, plan, retryDelay, validateControl } from "./core.mjs";
 // A streamer's transcription, subtitles and automatic hook with these settings (its own choices, else the workspace's).
 const textOf = (settings, id) => clipTextFor(settings, settings.streamers.find(s => s.id === id));
-import { chatSpike, perSecond } from "./highlights.mjs";
+import { chatSpike, commandTrigger, perSecond } from "./highlights.mjs";
 import { openChat } from "./chat.mjs";
 import { PROBE_TIMEOUT_MS, probeLive, processWindow, streamlink } from "./media.mjs";
 import { normalizeEdit } from "./edit.mjs";
 import { renderClip, videoInfo } from "./render.mjs";
 import { backgroundStart, chooseBackground, localBackground } from "./backgrounds.mjs";
 import { Recorder } from "./recorder.mjs";
-import { chatSample, writeClipText, writerEnabled } from "./writer.mjs";
+import { chatSample, pickerEnabled, rateMoments, writeClipText, writerEnabled } from "./writer.mjs";
 import { command } from "./process.mjs";
 import { bucketSignals, encodePreview, extractRange, joinSegments, parts, pickMoments } from "./recordings.mjs";
 import { Twitch, clipUrl, pickClips, twitchLogin } from "./twitch.mjs";
@@ -37,7 +37,7 @@ const maxSessions = Math.max(1, Math.floor(Number(env.MAX_CAPTURES ?? 1)));
 const liveCheckMs = seconds(env.LIVE_CHECK_SECONDS, 120), probeConcurrency = 3, probesPerCycle = 15;
 const postRollMs = 20_000;
 // Why a clip was cut; the code is sent to the dashboard with the clip.
-const reasonLabel = { chat: "chat spike", audio: "loudest moment", best: "best moment of a recording", manual: "picked in a recording", viewer: "a viewer's Twitch clip" };
+const reasonLabel = { command: "!clip in chat", chat: "chat spike", audio: "loudest moment", best: "best moment of a recording", manual: "picked in a recording", viewer: "a viewer's Twitch clip" };
 // Whole-stream recordings: background work (joining, measuring, previews) runs one recording step at a time beside
 // clip processing; `recordingRetry` holds a failed step's retry time. `requestsSeen`: clip requests already taken on.
 let backgroundBusy = false, backgroundRow = null;
@@ -143,10 +143,11 @@ async function refresh() {
 async function startSession(streamer) {
   // record / both keep the whole stream in its own folder; clip keeps only the rolling buffer.
   const mode = streamer.captureMode ?? "clip", keep = mode !== "clip";
-  const recording = keep ? { id: crypto.randomUUID(), chat: [], chatSeen: 0, startMs: 0 } : null;
+  // marks: when "!clip" was typed during a record-only stream; those moments are clipped when it ends.
+  const recording = keep ? { id: crypto.randomUUID(), chat: [], chatSeen: 0, startMs: 0, marks: [] } : null;
   if (recording) recording.dir = join(dataDir, "recordings", recording.id);
   const recorder = new Recorder(channelUrl(streamer.url), keep ? join(recording.dir, "segments") : join(dataDir, "buffer", streamer.id), { bufferSeconds, streamlink, keep });
-  const session = { streamer, mode, recording, recorder, chat: null, startedMs: Date.now(), lastClipMs: Date.now(), pending: null, busy: false };
+  const session = { streamer, mode, recording, recorder, chat: null, startedMs: Date.now(), lastClipMs: Date.now(), pending: null, busy: false, commandSeen: Date.now() };
   sessions.set(streamer.id, session);
   try { await recorder.start(); }
   catch (error) { sessions.delete(streamer.id); problem("Could not start recording " + streamer.url + ": " + error.message); return; }
@@ -173,6 +174,9 @@ async function stopSession(id, reason) {
     logChat(session, true);
     const { recording } = session;
     await writeFile(join(recording.dir, "chat.json"), JSON.stringify(Array.from(recording.chat, v => v ?? 0))).catch(() => {});
+    // "!clip" moments, in seconds into the recording.
+    const marks = recording.marks.map(t => session.recorder.footageMs(t)).filter(at => at != null).map(at => Math.round((at - recording.startMs) / 1000)).filter(at => at > 0);
+    if (marks.length) await writeFile(join(recording.dir, "marks.json"), JSON.stringify(marks)).catch(() => {});
     store.setRecording(recording.id, { state: "ended", ended_at: new Date().toISOString(), reported: 0 });
     void syncRecordings();
     void runBackground();
@@ -240,7 +244,9 @@ async function processJobs() {
       const writer = ({ transcript, from, to }) => writeClipText({ transcript, streamer: who.name, platform: who.platform, title,
         chat: job.chatLines?.length ? chatSample(job.chatLines, job.rawStartMs + from * 1000, job.rawStartMs + to * 1000 + 10_000) : [] }, { signal: controller.signal });
       const result = await processWindow(job.raw, { settings: job.settings, text: textOf(job.settings, job.streamer.id), style: job.style, focusFrom: job.focusFrom, focusTo: job.focusTo, chat: job.chat, exact: !!job.exact,
-        hint: [who.name, title].filter(Boolean).join(". "), writer: writerEnabled() ? writer : null, findFacecam, background: edit => backgroundFor(edit, job.id, title ?? "") }, job.dir, controller.signal);
+        hint: [who.name, title].filter(Boolean).join(". "), writer: writerEnabled() ? writer : null,
+        // Weighs what was said when choosing the moment (not for exact picks, which are kept as they are).
+        rater: pickerEnabled() && !job.exact ? texts => rateMoments(texts, { streamer: who.name, title, chat: job.chatLines?.length ? chatSample(job.chatLines, job.rawStartMs, job.rawStartMs + 120_000, 15) : [] }, { signal: controller.signal }) : null, findFacecam, background: edit => backgroundFor(edit, job.id, title ?? "") }, job.dir, controller.signal);
       store.ready(job.id, result.sha, Math.min(90, Math.max(15, Math.round(result.end - result.start))));
       made = true;
       console.log("Clip ready", job.id, "from", job.streamer.url, "(" + reasonLabel[job.reason] + ", " + Math.round(result.end - result.start) + "s)");
@@ -276,9 +282,23 @@ async function checkSessions() {
     const limitReached = store.countToday(id) >= settings.dailyLimit;
     if (limitReached && session.mode === "clip") { blockedUntil.set(id, nextUtcMidnight()); await stopSession(id, "daily clip limit reached"); continue; }
     if (session.recorder.buffered() > 30) failures.delete(id);
+    // "!clip" in Twitch chat (Settings → Chat command): clips the moment just before it, without waiting for the
+    // gap between chat-spike clips. Commands older than 2 minutes are dropped, e.g. ones typed while at the limit.
+    const command = session.chat ? commandTrigger(session.chat.commands, { sinceMs: Math.max(session.commandSeen, now - 120_000), who: settings.clipCommand }) : null;
+    if (command && session.mode === "record") { session.commandSeen = command.atMs; session.recording.marks.push(command.atMs); console.log("!clip from", command.by, "on", name + ": marked for when the stream ends"); }
     // Record-only streams are clipped when they end, from the whole recording.
     if (session.busy || session.mode === "record" || limitReached) continue;
     const latest = session.recorder.latestMs(), preRollMs = Math.max(45, settings.duration + 15) * 1000;
+    if (command) {
+      // A clip already being cut around the same moment covers it; one for an earlier moment goes first.
+      if (session.pending && command.atMs - session.pending.atMs < 20_000) { session.commandSeen = command.atMs; session.pending.reason = "command"; }
+      else if (!session.pending) {
+        session.commandSeen = command.atMs;
+        console.log("!clip from", command.by, "on", name);
+        session.pending = { atMs: command.atMs, reason: "command" };
+        continue;
+      }
+    }
     if (session.pending) {
       if (latest >= session.pending.atMs + postRollMs) {
         const { atMs, reason } = session.pending;
@@ -295,7 +315,8 @@ async function checkSessions() {
         continue;
       }
     }
-    const lookbackS = Math.min(bufferSeconds - 20, Math.max(90, settings.duration * 2));
+    // With the AI picker, a longer look back gives it different moments to choose between, not just the loudest.
+    const lookbackS = Math.min(bufferSeconds - 20, Math.max(pickerEnabled() ? 180 : 90, settings.duration * 2));
     if (now - session.lastClipMs >= fallbackMs && session.recorder.buffered() >= lookbackS) {
       session.lastClipMs = now;
       void clipWindow(session, latest - lookbackS * 1000, latest, "audio");
@@ -463,7 +484,13 @@ async function recordingStep(row) {
   }
   if (!row.clipped) {
     if (!config) throw new Error("waiting for the dashboard settings");
-    const made = await clipBestMoments(row, config.dailyLimit, null);
+    // Moments marked with "!clip" first, then the best of the rest up to the daily limit.
+    const marks = (await readJson(join(row.dir, "marks.json"), [])).slice(0, config.dailyLimit);
+    for (const m of marks) {
+      try { await clipFromRecording(row, Math.max(0, m - config.duration), m + 5, { reason: "command", exact: false, tracker: null }); }
+      catch (error) { problem("Could not cut a !clip moment from recording " + row.id.slice(0, 8) + ": " + error.message); }
+    }
+    const made = marks.length + (marks.length < config.dailyLimit ? await clipBestMoments(row, config.dailyLimit - marks.length, null) : 0);
     store.setRecording(row.id, { clipped: 1 });
     console.log("Recording", row.id.slice(0, 8) + ":", made, "best moment(s) queued for clipping");
     return;

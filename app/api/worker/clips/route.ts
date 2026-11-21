@@ -5,7 +5,7 @@ import { normalizeEdit, normalizeWords } from "../../../../worker/edit.mjs";
 const box=z.object({x:z.number().min(0).max(1),y:z.number().min(0).max(1),w:z.number().min(0.01).max(1),h:z.number().min(0.01).max(1)});
 const sha=z.string().regex(/^[0-9a-f]{64}$/);
 // Editor material is optional so older workers keep working; their clips just can't be edited.
-const clipSchema=z.object({id:z.string().uuid(),streamerId:z.string().uuid(),createdAt:z.string().datetime(),duration:z.number().int().min(15).max(90),captions:z.boolean(),sha,size:z.number().int().min(1024).max(32*1024*1024),reason:z.enum(["chat","audio","best","manual","viewer"]).optional(),
+const clipSchema=z.object({id:z.string().uuid(),streamerId:z.string().uuid(),createdAt:z.string().datetime(),duration:z.number().int().min(15).max(90),captions:z.boolean(),sha,size:z.number().int().min(1024).max(32*1024*1024),reason:z.enum(["command","chat","audio","best","manual","viewer"]).optional(),
  edit:z.unknown().optional(),transcript:z.unknown().optional(),
  // A post caption written by the AI writer on the worker (worker/writer.mjs); without it one is made from the transcript.
  postCaption:z.string().trim().min(1).max(2200).optional(),
@@ -15,7 +15,7 @@ const clipSchema=z.object({id:z.string().uuid(),streamerId:z.string().uuid(),cre
   face:box.nullish(),
   // A phone stream's upright picture inside the black bars (fractions of the frame), for phone mode.
   content:box.nullish()}).optional()});
-const reasonText={chat:" after a chat spike",audio:" at its loudest moment",best:" from one of the best moments of a recording",manual:" from a recording, at the moment you picked",viewer:" from a clip a viewer made on Twitch"};
+const reasonText={command:" when someone typed !clip in chat",chat:" after a chat spike",audio:" at its loudest moment",best:" from one of the best moments of a recording",manual:" from a recording, at the moment you picked",viewer:" from a clip a viewer made on Twitch"};
 export async function POST(request:Request){
  try{
   const db=database(),owner=await workerOwner(request,db);

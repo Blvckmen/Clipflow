@@ -1,0 +1,1 @@
+ALTER TABLE `preferences` ADD `clip_command` text DEFAULT 'mods' NOT NULL;

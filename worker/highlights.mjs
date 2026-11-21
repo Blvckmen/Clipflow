@@ -50,3 +50,47 @@ export function snapToSentences(start, end, segments, { maxShift = 4, minLen = 1
   s = Math.max(0, s); e = Math.min(total, e);
   return { start: Math.round(s * 100) / 100, end: Math.round(e * 100) / 100 };
 }
+
+// The first "!clip" command after `sinceMs` that should make a clip, or null. "mods": the streamer, a moderator
+// or a VIP typed it. "everyone": that, or `crowd` different viewers typed it within `windowMs` (so one viewer
+// can't spam clips). "off": never. `commands` are { t, by, mod } in time order.
+export function commandTrigger(commands, { sinceMs, who = "mods", crowd = 3, windowMs = 30_000 }) {
+  if (who === "off") return null;
+  const fresh = commands.filter(c => c.t > sinceMs);
+  for (let i = 0; i < fresh.length; i++) {
+    const c = fresh[i];
+    if (c.mod) return { atMs: c.t, by: c.by };
+    if (who !== "everyone") continue;
+    const viewers = new Set(fresh.slice(0, i + 1).filter(x => x.t > c.t - windowMs).map(x => x.by));
+    if (viewers.size >= crowd) return { atMs: c.t, by: viewers.size + " viewers" };
+  }
+  return null;
+}
+
+// Up to `count` distinct candidate starts in [from, to - duration], best loudness-and-chat score first (the same
+// score as pickWindow), each at least `gap` seconds from the others. `score` is relative to the best (1).
+export function candidateWindows({ energy, chat = [], duration, from = 0, to = energy.length, lag = 4, count = 4, gap = Math.max(5, Math.round(duration / 2)) }) {
+  const e = normalised(energy), c = normalised(chat), useChat = c.some(v => v > 0);
+  const score = i => (e[i] ?? 0) * (useChat ? 0.5 : 1) + (useChat ? (c[i + lag] ?? 0) * 0.5 : 0);
+  const last = Math.max(from, Math.min(to, energy.length) - duration), all = [];
+  for (let s = from; s <= last; s++) { let total = 0; for (let i = s; i < s + duration; i++) total += score(i); all.push({ start: s, total }); }
+  all.sort((a, b) => b.total - a.total || a.start - b.start);
+  const picked = [];
+  for (const w of all) { if (picked.length >= count) break; if (picked.every(p => Math.abs(p.start - w.start) >= gap)) picked.push(w); }
+  const top = picked[0]?.total || 1;
+  return picked.map(p => ({ start: p.start, score: top > 0 ? p.total / top : 0 }));
+}
+
+// The candidate to clip: loudness and chat (`score`, 0..1) weighed against how good the language model rated what was
+// said (`ratings`, 0..10 each, null when it couldn't rate). `weight` is how much the rating counts.
+export function chooseMoment(candidates, ratings, weight = 0.6) {
+  if (!candidates.length) return null;
+  if (!Array.isArray(ratings) || ratings.length !== candidates.length) return candidates[0];
+  let best = candidates[0], bestScore = -Infinity;
+  candidates.forEach((c, i) => {
+    const r = Number.isFinite(ratings[i]) ? Math.max(0, Math.min(10, ratings[i])) / 10 : null;
+    const total = r === null ? c.score * (1 - weight) : c.score * (1 - weight) + r * weight;
+    if (total > bestScore) { bestScore = total; best = { ...c, rating: ratings[i] }; }
+  });
+  return best;
+}

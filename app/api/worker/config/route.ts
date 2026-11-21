@@ -11,7 +11,7 @@ export async function GET(request:Request){
   if(!owner)return Response.json({error:"Invalid worker token."},{status:401});
   const [s,p,r,,b,rec,req]=await Promise.all([
    db.prepare("SELECT id,url,status,style,capture_mode,clip_text FROM streamers WHERE owner=? ORDER BY priority IS NULL,priority,created_at").bind(owner).all<{id:string;url:string;status:string;style:string|null;capture_mode:string|null;clip_text:string|null}>(),
-   db.prepare("SELECT duration,daily_limit,captions,framing,control,style,transcribe,recording_days,import_clips FROM preferences WHERE owner=?").bind(owner).first(),
+   db.prepare("SELECT duration,daily_limit,captions,framing,control,style,transcribe,recording_days,import_clips,clip_command FROM preferences WHERE owner=?").bind(owner).first(),
    // Edits saved in the dashboard that still need rendering, oldest request first.
    // signals: the source's loudness, for jump cuts and punch-in zooms.
    db.prepare("SELECT id,edit,edit_rev,transcript,source_meta,signals FROM clips WHERE owner=? AND render_state='queued' AND edit IS NOT NULL ORDER BY coalesce(rendered_at,created_at) LIMIT 5").bind(owner).all<{id:string;edit:string;edit_rev:number;transcript:string|null;source_meta:string|null;signals:string|null}>(),
@@ -28,7 +28,7 @@ export async function GET(request:Request){
    control:p?.control??defaults.control,duration:p?.duration??defaults.duration,dailyLimit:p?.daily_limit??defaults.dailyLimit,captions:p?!!p.captions:defaults.captions,transcribe:p?!!p.transcribe:defaults.transcribe,framing:p?.framing??defaults.framing,
    style:parse(p?.style),
    streamers:s.results.map(x=>({id:x.id,url:x.url,status:x.status,style:parse(x.style),captureMode:x.capture_mode??"clip",text:clipText(x.clip_text)})),
-   recordingDays:(p?.recording_days as number|undefined)??defaults.recordingDays,importClips:(p?.import_clips as number|undefined)??defaults.importClips,recordings:rec.results.map(x=>x.id),
+   recordingDays:(p?.recording_days as number|undefined)??defaults.recordingDays,importClips:(p?.import_clips as number|undefined)??defaults.importClips,clipCommand:(p?.clip_command as string|undefined)??defaults.clipCommand,recordings:rec.results.map(x=>x.id),
    // Oldest first, so the worker downloads them in the order they were pasted.
    imports:rec.results.filter(x=>x.source_url&&(x.state==="queued"||x.state==="importing")).reverse().slice(0,20).map(x=>({id:x.id,streamerId:x.streamer_id,url:x.source_url})),
    clipRequests:req.results.map(x=>x.kind==="moment"?{id:x.id,recordingId:x.recording_id,kind:x.kind,start:x.start,end:x.end}:{id:x.id,recordingId:x.recording_id,kind:x.kind,count:x.count}),

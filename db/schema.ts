@@ -33,6 +33,9 @@ export const preferences=sqliteTable("preferences",{
  recordingDays:integer("recording_days").notNull().default(7),
  // Viewers' Twitch clips: the fewest views a clip needs for the worker to import it (0: off).
  importClips:integer("import_clips").notNull().default(0),
+ // Who can clip with "!clip" in Twitch chat: "mods" (the streamer, moderators and VIPs), "everyone" (also 3 viewers
+ // within 30 seconds), or "off".
+ clipCommand:text("clip_command").notNull().default("mods"),
  // No longer used: the single Zernio key setting, moved to zernio_keys by migration 0011.
  zernioKeyEnc:text("zernio_key_enc"),zernioLabel:text("zernio_label"),
 });
