@@ -7,7 +7,8 @@ export type Recording = { id: string; streamer_id: string; streamer: string | nu
 type StreamerChoice = { id: string; name: string };
 const sourceName = (r: Recording) => { const link = r.source_url ? videoLink(r.source_url) as { platform: keyof typeof PLATFORM_NAMES } | null : null; return link ? PLATFORM_NAMES[link.platform] : null; };
 export type RecordingRequest = { id: string; recording_id: string; kind: "moment" | "best"; start: number | null; end: number | null; count: number | null; state: "queued" | "working" | "done" | "failed"; error: string | null; clips: number; created_at: string };
-type Signals = { step: number; energy: number[]; chat: number[] };
+type Moment = { start: number; end: number; score: number; why: string[] };
+type Signals = { step: number; energy: number[]; chat: number[]; moments?: Moment[] };
 type Mutate = (body: unknown) => Promise<false | { message: string }>;
 
 // h:mm:ss (or m:ss) for times into a recording.
@@ -98,6 +99,34 @@ export function RecordingsView({ recordings, requests, streamers, storage, busy,
   </div>;
 }
 
+// The worker's suggested moments, best first: tick the ones worth posting and only those become clips. A moment
+// already asked for shows as such.
+function MomentPicks({ moments, recordingId, preview, requests, busy, mutate, onWatch }: {
+  moments: Moment[]; recordingId: string; preview: boolean; requests: RecordingRequest[]; busy: boolean; mutate: Mutate; onWatch: (t: number) => void;
+}) {
+  const [picked, setPicked] = useState<number[]>([]);
+  const asked = (m: Moment) => requests.some(q => q.kind === "moment" && q.start === m.start && q.end === m.end && q.state !== "failed");
+  const toggle = (s: number) => setPicked(p => p.includes(s) ? p.filter(x => x !== s) : [...p, s]);
+  const chosen = moments.filter(m => picked.includes(m.start) && !asked(m));
+  return <div className="moment-picks">
+    <div className="moment-picks-head"><div><strong>Suggested moments</strong><small>Where the audio, chat{moments.some(m => m.why.some(w => w.endsWith("on screen"))) ? " and the game's own banners" : ""} stood out. Tick the ones to clip.</small></div>
+      <button className="primary" disabled={busy || !chosen.length} onClick={async () => { if (await mutate({ action: "makeClips", recordingId, moments: chosen.map(m => ({ start: m.start, end: m.end })) })) setPicked([]); }}><Scissors size={15} />Clip {chosen.length || ""} selected</button></div>
+    <div className="moment-grid">{moments.map((m, i) => { const done = asked(m), on = done || picked.includes(m.start);
+      return <div key={m.start} className={"moment-card" + (on ? " on" : "")}>
+        <label className="moment-thumb">
+          {preview ? <video src={"/api/recordings/" + recordingId + "/preview#t=" + (m.start + Math.min(5, (m.end - m.start) / 3))} preload="metadata" muted playsInline tabIndex={-1} /> : <span className="moment-thumb-empty"><Film size={20} /></span>}
+          <input type="checkbox" checked={on} disabled={done} onChange={() => toggle(m.start)} aria-label={"Clip the moment at " + clock(m.start)} />
+          <span className="moment-rank">#{i + 1}</span>
+        </label>
+        <div className="moment-info">
+          <span className="moment-time">{clock(m.start)}–{clock(m.end)}</span>
+          <span className="moment-why">{m.why.map(w => <em key={w} className={w.endsWith("on screen") ? "screen" : undefined}>{w}</em>)}</span>
+          <span className="moment-actions"><button type="button" className="text-button" onClick={() => onWatch(m.start)}><Clock3 size={12} />Watch</button>{done && <small className="muted">Asked for</small>}</span>
+        </div>
+      </div>; })}</div>
+  </div>;
+}
+
 function RecordingPlayer({ r, requests, storage, busy, workerOnline, duration, mutate, onOpenLibrary, onDeleted }: {
   r: Recording; requests: RecordingRequest[]; storage: boolean; busy: boolean; workerOnline: boolean; duration: number;
   mutate: Mutate; onOpenLibrary: () => void; onDeleted: () => void;
@@ -138,11 +167,13 @@ function RecordingPlayer({ r, requests, storage, busy, workerOnline, duration, m
       {ready && total > 0 && <div>
         <div className="heat recording-heat" ref={strip} onPointerDown={e => seek(timeAt(e.clientX))} title="Click to jump there">
           <div className="heat-bars" aria-hidden>{(signals?.energy ?? []).map((e, i) => { const ch = (signals?.chat[i] ?? 0) / maxChat; return <span key={i} style={{ height: Math.max(4, e * 100) + "%", background: ch > 0.05 ? `color-mix(in srgb, #ff7a59 ${Math.round(ch * 100)}%, #4b5a6b)` : undefined }} />; })}</div>
+          {(signals?.moments ?? []).map(m => <i key={m.start} className="heat-moment" style={{ left: pct(m.start), width: pct(m.end - m.start) }} aria-hidden />)}
           {start != null && end != null && <div className="heat-range" style={{ left: pct(start), width: pct(Math.max(1, end - start)) }} />}
           <div className="heat-cursor" style={{ left: pct(at) }} />
         </div>
         <div className="heat-legend"><span><i className="loud" />Loudness</span>{signals?.chat.some(c => c > 0) && <span><i className="chat" />Chat activity</span>}<span className="muted">At {clock(at)} of {clock(total)}</span></div>
       </div>}
+      {ready && !!signals?.moments?.length && <MomentPicks moments={signals.moments} recordingId={r.id} preview={r.preview} requests={requests} busy={busy} mutate={mutate} onWatch={seek} />}
       {ready && <div className="moment-picker">
         <div className="moment-fields">
           <label>Start<input value={startText} placeholder="0:00" onChange={e => { setStartText(e.target.value); const v = parseClock(e.target.value); setStart(v); }} /></label>

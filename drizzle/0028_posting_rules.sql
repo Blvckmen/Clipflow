@@ -1,0 +1,1 @@
+ALTER TABLE `streamers` ADD `posting_rules` text;

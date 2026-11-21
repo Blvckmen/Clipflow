@@ -15,7 +15,8 @@ import { backgroundStart, chooseBackground, localBackground } from "./background
 import { Recorder } from "./recorder.mjs";
 import { chatSample, pickerEnabled, rateMoments, writeClipText, writerEnabled } from "./writer.mjs";
 import { command } from "./process.mjs";
-import { bucketSignals, encodePreview, extractRange, joinSegments, parts, pickMoments } from "./recordings.mjs";
+import { bucketSignals, encodePreview, extractRange, joinSegments, parts, pickMoments, scanRanges, suggestMoments } from "./recordings.mjs";
+import { screenText, screenTextAvailable } from "./screentext.mjs";
 import { Twitch, clipUrl, pickClips, twitchLogin } from "./twitch.mjs";
 import { PLATFORM_NAMES, downloadVideo, findYtDlp, videoLink, videoTitle } from "./vod.mjs";
 const run = promisify(execFile);
@@ -450,7 +451,7 @@ async function runBackground() {
   try {
     for (;;) {
       const now = Date.now();
-      const row = store.recordings().find(r => (recordingRetry.get(r.id) ?? 0) <= now && (r.state === "ended" || (r.state === "ready" && (!r.clipped || !r.previewed))));
+      const row = store.recordings().find(r => (recordingRetry.get(r.id) ?? 0) <= now && (r.state === "ended" || (r.state === "ready" && (!r.clipped || !r.previewed || !r.scanned))));
       if (!row || stopping) break;
       backgroundRow = row.id;
       try { await recordingStep(row); recordingRetry.delete(row.id); }
@@ -476,7 +477,8 @@ async function recordingStep(row) {
     await command(python, [highlightScript, file, join(row.dir, "energy.json"), "0", "1000"], { signal, timeout: Math.max(10 * 60_000, Math.ceil(info.duration) * 200) }).done;
     const { energy } = await readJson(join(row.dir, "energy.json"), { energy: [] });
     const chat = await readJson(join(row.dir, "chat.json"), []);
-    await writeFile(join(row.dir, "signals.json"), JSON.stringify(bucketSignals(energy, chat)));
+    // The heat strip, and moments to suggest in the pick list (improved once the screen has been read, below).
+    await writeFile(join(row.dir, "signals.json"), JSON.stringify({ ...bucketSignals(energy, chat), moments: suggestions(energy, chat, []) }));
     // Only "record" has its best moments picked here: "both" was clipped live, and an imported video makes the clips
     // asked for with it.
     store.setRecording(row.id, { state: "ready", duration: info.duration || energy.length, clipped: row.mode === "record" ? 0 : 1, reported: 0 });
@@ -505,7 +507,33 @@ async function recordingStep(row) {
       store.setRecording(row.id, { previewed: 1 });
       console.log("Recording", row.id.slice(0, 8) + ":", stored ? "preview uploaded" : "dashboard storage is off, so there is no preview");
     } finally { await rm(preview, { force: true }); }
+    return;
   }
+  if (!row.scanned) {
+    // Game banners on screen around the strongest moments, then the pick list again with them.
+    if (!await screenTextAvailable(python)) {
+      if (!screenTextWarned) { screenTextWarned = true; console.log("On-screen text isn't read: install RapidOCR on this PC (py -m pip install rapidocr_onnxruntime) and restart the worker."); }
+      return void store.setRecording(row.id, { scanned: 1 });
+    }
+    const { energy } = await readJson(join(row.dir, "energy.json"), { energy: [] });
+    const chat = await readJson(join(row.dir, "chat.json"), []);
+    const ranges = scanRanges({ energy, chat, duration: config?.duration ?? 45 });
+    const events = ranges.length ? await screenText(file, { python, ranges, signal, scratch: join(row.dir, "screen") }) : [];
+    await writeFile(join(row.dir, "screen.json"), JSON.stringify(events));
+    const signals = await readJson(join(row.dir, "signals.json"), null);
+    if (signals) await writeFile(join(row.dir, "signals.json"), JSON.stringify({ ...signals, moments: suggestions(energy, chat, events) }));
+    store.setRecording(row.id, { scanned: 1, reported: 0 });
+    void syncRecordings();
+    console.log("Recording", row.id.slice(0, 8) + ":", events.length ? "game text on screen: " + [...new Set(events.map(e => e.text))].join(", ") : "no game banners found on screen");
+  }
+}
+
+// The pick list's suggested moments: clip-length windows of the recording, best first (the first minute of a long
+// stream is skipped, like the automatic best moments).
+let screenTextWarned = false;
+function suggestions(energy, chat, events) {
+  const duration = config?.duration ?? 45;
+  return suggestMoments({ energy, chat, events, duration, count: 12, skip: energy.length > duration * 4 + 60 ? 60 : 0 });
 }
 
 // Uploads the preview to R2 through the dashboard in fixed-size parts. False when the dashboard has no storage.

@@ -154,6 +154,15 @@ again; deleting the recording in the dashboard cancels it.
 Twitch and Kick videos download with streamlink. YouTube needs [yt-dlp](https://github.com/yt-dlp/yt-dlp), which is
 also used for the others when installed (`py -m pip install yt-dlp`, then restart the worker).
 
+## Suggested moments and game text on screen
+
+Once a recording or imported video is saved, the worker suggests up to 12 moments for the pick list on Recordings
+(loudness and chat), and you tick the ones to clip. After its preview is uploaded, it reads the screen around the
+strongest parts for game banners (WASTED, MISSION PASSED, VICTORY ROYALE, YOU DIED…; big text only, not the HUD) and
+sends the suggestions again with them; a banner counts as much as the loudest stretch. Reading the screen uses
+[RapidOCR](https://github.com/RapidAI/RapidOCR) on the CPU (`py -m pip install rapidocr_onnxruntime`); about 15 to
+20 minutes for a stream on a busy PC, whatever its length. Without it, suggestions use loudness and chat only.
+
 ## AI writer (optional)
 
 With [Ollama](https://ollama.com) installed and a model pulled (`ollama pull qwen2.5:7b`), the worker asks it to write

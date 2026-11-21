@@ -518,6 +518,24 @@ describe("editing a streamer", () => {
     assert.equal((await edit({ name: "" })).status, 400);
     await dash({ action: "remove", id: s.id });
   });
+  test("posting rules are saved with the streamer, keeping only known fields; leaving them out keeps them", async () => {
+    const name = "rules" + Date.now().toString(36);
+    assert.equal((await dash({ action: "add", url: "https://twitch.tv/" + name })).status, 200);
+    const s = (await dash()).body.streamers.find(x => x.url === "https://twitch.tv/" + name);
+    assert.equal(s.posting_rules.credit, false, "no rules: posts stay as written");
+    const edit = body => dash({ action: "editStreamer", id: s.id, name: s.name, url: s.url, ...body });
+    assert.equal((await edit({ postingRules: { credit: true, label: "#ad", hashtags: ["#Mafiathon", "not a tag"], mentions: ["kaicenat"], minSeconds: 15, maxSeconds: 60, brief: "15-60s, #ad", junk: true } })).status, 200);
+    const rules = () => dash().then(d => d.body.streamers.find(x => x.id === s.id).posting_rules);
+    let saved = await rules();
+    assert.deepEqual([saved.credit, saved.label, saved.hashtags, saved.mentions, saved.minSeconds, saved.maxSeconds, saved.brief, "junk" in saved], [true, "#ad", ["#mafiathon"], ["@kaicenat"], 15, 60, "15-60s, #ad", false]);
+    assert.equal((await edit({ name: "Other name" })).status, 200);
+    assert.equal((await rules()).label, "#ad", "an edit without postingRules keeps them");
+    assert.equal((await edit({ postingRules: null })).status, 200);
+    saved = await rules();
+    assert.deepEqual([saved.credit, saved.label], [false, ""], "null clears them");
+    assert.equal((await edit({ postingRules: "nope" })).status, 400);
+    await dash({ action: "remove", id: s.id });
+  });
 });
 
 describe("split-screen backgrounds", () => {
@@ -701,6 +719,20 @@ describe("recordings", () => {
     assert.equal((await dash({ action: "deleteRecording", id: row.id })).status, 200);
     assert.equal((await post({ ...report, state: "ready", duration: 5400 })).status, 404);
     assert.ok(!(await dash()).body.recordings.some(x => x.id === row.id));
+  });
+  test("a recording's suggested moments are stored with it, and ticked ones become clip requests", async () => {
+    const r = rec(), moments = [{ start: 600, end: 630, score: 1, why: ["WASTED on screen", "Loud"] }, { start: 60, end: 90, score: 0.4, why: ["Lively"] }];
+    assert.equal((await post({ ...r, state: "ready", duration: 3600, signals: { step: 2, energy: [0, 1], chat: [0, 0], moments } })).status, 200);
+    assert.deepEqual((await (await fetch(base + "/api/recordings/" + r.id, { headers: { cookie } })).json()).signals.moments, moments);
+    assert.equal((await post({ ...r, state: "ready", signals: { step: 2, energy: [0], chat: [0], moments: [{ start: 0, end: 30, score: 2, why: [] }] } })).status, 400, "scores are 0-1");
+    assert.equal((await dash({ action: "makeClips", recordingId: r.id, moments: [{ start: 600, end: 610 }] })).status, 400, "15 to 90 seconds");
+    assert.equal((await dash({ action: "makeClips", recordingId: r.id, moments: [{ start: 4000, end: 4030 }] })).status, 400, "inside the recording");
+    const made = await dash({ action: "makeClips", recordingId: r.id, moments: moments.map(({ start, end }) => ({ start, end })) });
+    assert.equal(made.status, 200);
+    assert.match(made.body.message, /^Making 2 clips/);
+    const asks = (await (await worker("/api/worker/config")).json()).clipRequests.filter(q => q.recordingId === r.id);
+    assert.deepEqual(asks.map(q => [q.kind, q.start, q.end]).sort((a, b) => a[1] - b[1]), [["moment", 60, 90], ["moment", 600, 630]]);
+    assert.equal((await dash({ action: "deleteRecording", id: r.id })).status, 200);
   });
   test("recording reports are checked", async () => {
     assert.equal((await fetch(base + "/api/worker/recordings", { method: "POST", body: "{}" })).status, 401);

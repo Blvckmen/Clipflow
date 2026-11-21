@@ -9,6 +9,7 @@ import { optionsSchema, readOptions } from "../../../lib/account-options";
 import { encrypt } from "../../../lib/secure";
 import { normalizeStyle } from "../../../worker/edit.mjs";
 import { PLATFORM_NAMES, videoLink } from "../../../worker/video-link.mjs";
+import { emptyRules, readRules } from "../../../lib/posting-rules.mjs";
 import { socialCaptionsAvailable } from "../../../lib/social-caption";
 import { aiCaptionsAvailable } from "../../../lib/post-caption";
 import { removeRecordingFiles } from "../../../lib/recordings";
@@ -66,10 +67,12 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("assign"),streamerId:z.string().uuid(),accounts:accountIds}),
  z.object({action:z.literal("assignAccount"),accountId:z.string().uuid(),streamers:z.array(z.string().uuid()).max(500).transform(x=>[...new Set(x)])}),
  // Edits a streamer: display name, channel URL, whether it is clipped, and (optionally) which accounts post its clips.
- z.object({action:z.literal("editStreamer"),id:z.string().uuid(),name:z.string().trim().min(1).max(80),url:z.string().max(500),status:z.enum(["armed","paused","stopped"]).optional(),accounts:accountIds.optional(),captureMode:captureMode.optional(),publishMode:publishMode.optional(),clipText:clipTextInput.optional()}),
+ z.object({action:z.literal("editStreamer"),id:z.string().uuid(),name:z.string().trim().min(1).max(80),url:z.string().max(500),status:z.enum(["armed","paused","stopped"]).optional(),accounts:accountIds.optional(),captureMode:captureMode.optional(),publishMode:publishMode.optional(),clipText:clipTextInput.optional(),postingRules:z.record(z.string(),z.unknown()).nullable().optional()}),
  // Clips from a whole-stream recording: one moment picked in the player (seconds into it), or the best few.
  z.object({action:z.literal("makeClip"),recordingId:z.string().uuid(),start:z.number().int().min(0),end:z.number().int().min(1)}),
  z.object({action:z.literal("findMoments"),recordingId:z.string().uuid(),count:z.number().int().min(1).max(20)}),
+ // Several moments ticked in the recording's pick list, each made into a clip.
+ z.object({action:z.literal("makeClips"),recordingId:z.string().uuid(),moments:z.array(z.object({start:z.number().int().min(0),end:z.number().int().min(1)})).min(1).max(12)}),
  z.object({action:z.literal("deleteRecording"),id:z.string().uuid()}),
  // A past stream or video from a link (Twitch/Kick VOD, YouTube), downloaded by the worker PC into a recording of
  // the chosen streamer; `count` best moments (0: none) are clipped once it is in.
@@ -92,7 +95,7 @@ export async function GET(){
   const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(owner).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(owner).all(),db.prepare("SELECT c.id,c.streamer_id,c.created_at,c.duration,c.captions,c.size,c.file_key IS NOT NULL AS stored,c.review,c.reason,(c.edit IS NOT NULL OR c.file_key IS NOT NULL) AS editable,c.edit IS NULL AS legacy,c.post_caption,c.caption_source,c.source_key IS NOT NULL AS source_stored,c.render_state,c.render_error,c.rendered_at,c.edit_rev,c.thumb_rev,s.name AS streamer,(SELECT json_group_object(p.account_id,p.state) FROM posts p WHERE p.clip_id=c.id AND p.round=(SELECT MAX(q.round) FROM posts q WHERE q.clip_id=p.clip_id AND q.account_id=p.account_id)) AS targets FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.owner=? ORDER BY c.created_at DESC LIMIT 200").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at FROM worker_tokens WHERE owner=?").bind(owner).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null}>()]);
   const lastSeen=w?.last_seen??null,connected=!!lastSeen&&Date.now()-Date.parse(lastSeen)<ENGINE_FRESH_MS;
   const engine={connected,lastSeen,tokenCreated:w?.created_at??null,lastError:w?.last_error??null,lastErrorAt:w?.last_error_at??null,status:connected?"Worker connected":w?(lastSeen?"Worker offline":"Waiting for worker"):"Setup required"};
-  const streamers=s.results.map(x=>({...x,style:parse(x.style),accounts:l.results.filter(k=>k.streamer_id===x.id).map(k=>k.account_id)}));
+  const streamers=s.results.map(x=>({...x,style:parse(x.style),posting_rules:readRules(x.posting_rules),accounts:l.results.filter(k=>k.streamer_id===x.id).map(k=>k.account_id)}));
   // Stored Zernio keys never leave the server: only their labels and how many accounts each holds.
   const prefs=Object.fromEntries(Object.entries((p??{}) as Record<string,unknown>).filter(([k])=>k!=="zernio_key_enc"&&k!=="zernio_label"));
   const keys=(await listKeys(db,owner)).map(k=>({id:k.id,label:k.label,created_at:k.created_at,last_error:k.last_error,accounts:a.results.filter(x=>x.zernio_key_id===k.id).length}));
@@ -179,6 +182,8 @@ export async function POST(request:Request){
    // Transcription, subtitles and hook choices apply to clips captured from now on; nothing chosen stores null.
    const text=payload.clipText===undefined?current.clip_text:Object.keys(payload.clipText).length?JSON.stringify(payload.clipText):null;
    statements.push(db.prepare("UPDATE streamers SET name=?,url=?,platform=?,status=?,capture_mode=?,publish_mode=?,clip_text=?"+(moved?",live_status=NULL,live_checked_at=NULL,live_title=NULL":"")+" WHERE id=? AND owner=?").bind(payload.name,channel.url,channel.platform,payload.status??current.status,payload.captureMode??current.capture_mode,mode,text,payload.id,owner));
+   // Posting rules (credit line, campaign) apply to posts made from now on; only known fields are kept.
+   if(payload.postingRules!==undefined){const rules=payload.postingRules&&readRules(payload.postingRules);statements.push(db.prepare("UPDATE streamers SET posting_rules=? WHERE id=? AND owner=?").bind(rules&&JSON.stringify(rules)!==JSON.stringify(emptyRules())?JSON.stringify(rules):null,payload.id,owner));}
    if(payload.accounts){
     const linked=await ownAccounts(payload.accounts);
     if(!linked)return Response.json({error:"One of those publishing accounts is no longer connected."},{status:404});
@@ -456,6 +461,18 @@ export async function POST(request:Request){
    if(!account)return Response.json({error:"That account is not connected."},{status:404});
    statements.push(db.prepare("UPDATE accounts SET options=? WHERE id=? AND owner=?").bind(JSON.stringify({...readOptions(account.options),...payload.options}),payload.id,owner));
    message="Saved posting options for "+(VIDEO_PLATFORMS[account.platform]??account.platform)+" @"+account.username+".";
+  }
+  if(payload.action==="makeClips"){
+   const rec=await db.prepare("SELECT r.state,r.duration,s.name FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.id=? AND r.owner=?").bind(payload.recordingId,owner).first<{state:string;duration:number|null;name:string|null}>();
+   if(!rec)return Response.json({error:"That recording is no longer in your workspace."},{status:404});
+   if(rec.state==="failed")return Response.json({error:"This recording failed, so it can't be clipped."},{status:409});
+   const bad=payload.moments.find(m=>m.end-m.start<15||m.end-m.start>90||(!!rec.duration&&m.start>=rec.duration));
+   if(bad)return Response.json({error:"Each moment must be 15 to 90 seconds inside the recording."},{status:400});
+   const open=await db.prepare("SELECT count(*) AS n FROM recording_requests WHERE owner=? AND state IN ('queued','working')").bind(owner).first<{n:number}>();
+   if((open?.n??0)+payload.moments.length>40)return Response.json({error:"Lots of clips are already waiting to be made. Try again once some are done."},{status:429});
+   for(const m of payload.moments)statements.push(db.prepare("INSERT INTO recording_requests (id,owner,recording_id,kind,start,end,state,created_at,updated_at) VALUES (?,?,?,'moment',?,?,'queued',?,?)").bind(crypto.randomUUID(),owner,payload.recordingId,m.start,m.end,iso,iso));
+   const n=payload.moments.length;
+   message="Making "+n+" clip"+(n===1?"":"s")+" from the moments picked in "+(rec.name?rec.name+"'s":"the")+" recording. They appear in the clip library as the worker PC makes them.";
   }
   if(payload.action==="makeClip"||payload.action==="findMoments"){
    const rec=await db.prepare("SELECT r.state,r.duration,s.name FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.id=? AND r.owner=?").bind(payload.recordingId,owner).first<{state:string;duration:number|null;name:string|null}>();

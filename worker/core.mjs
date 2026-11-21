@@ -133,8 +133,10 @@ export class Store {
     this.db.exec("CREATE TABLE IF NOT EXISTS recordings (id TEXT PRIMARY KEY, streamer TEXT NOT NULL, dir TEXT NOT NULL, mode TEXT NOT NULL, state TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, duration REAL, title TEXT, error TEXT, reported INTEGER NOT NULL DEFAULT 0, previewed INTEGER NOT NULL DEFAULT 0, clipped INTEGER NOT NULL DEFAULT 0)");
     // A recording cut short by a worker restart is joined from whatever was written.
     this.db.exec("UPDATE recordings SET state='ended', ended_at=coalesce(ended_at, started_at) WHERE state='recording'");
+    // scanned: its screen has been read for game banners. Recordings from before this was added are left as they are.
+    if (!this.db.prepare("PRAGMA table_info(recordings)").all().some(c => c.name === "scanned")) this.db.exec("ALTER TABLE recordings ADD COLUMN scanned INTEGER NOT NULL DEFAULT 1");
   }
-  addRecording(id,streamer,dir,mode) { this.db.prepare("INSERT INTO recordings(id,streamer,dir,mode,state,started_at) VALUES (?,?,?,?,'recording',?)").run(id,streamer,dir,mode,new Date().toISOString()); }
+  addRecording(id,streamer,dir,mode) { this.db.prepare("INSERT INTO recordings(id,streamer,dir,mode,state,started_at,scanned) VALUES (?,?,?,?,'recording',?,0)").run(id,streamer,dir,mode,new Date().toISOString()); }
   recording(id) { return this.db.prepare("SELECT * FROM recordings WHERE id=?").get(id)??null; }
   recordings() { return this.db.prepare("SELECT * FROM recordings ORDER BY started_at").all(); }
   setRecording(id,fields) { const keys=Object.keys(fields); this.db.prepare("UPDATE recordings SET "+keys.map(k=>k+"=?").join(",")+" WHERE id=?").run(...keys.map(k=>fields[k]),id); }

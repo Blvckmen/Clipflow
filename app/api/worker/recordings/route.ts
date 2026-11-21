@@ -8,7 +8,9 @@ const id=z.string().uuid(),iso=z.string().datetime();
 const bodySchema=z.discriminatedUnion("op",[
  z.object({op:z.literal("recording"),id,streamerId:id,startedAt:iso,endedAt:iso.nullish(),title:z.string().max(200).nullish(),
   state:z.enum(["recording","importing","processing","ready","failed"]),imported:z.boolean().optional(),duration:z.number().int().min(0).max(7*86400).nullish(),size:z.number().int().min(0).nullish(),
-  signals:z.object({step:z.number().int().min(1).max(3600),energy:z.array(z.number().min(0).max(1)).max(2100),chat:z.array(z.number().int().min(0)).max(2100)}).nullish(),
+  // moments: the pick list's suggestions (seconds into the recording, best first, and what stood out).
+  signals:z.object({step:z.number().int().min(1).max(3600),energy:z.array(z.number().min(0).max(1)).max(2100),chat:z.array(z.number().int().min(0)).max(2100),
+   moments:z.array(z.object({start:z.number().int().min(0),end:z.number().int().min(1),score:z.number().min(0).max(1),why:z.array(z.string().max(60)).max(4)})).max(20).optional()}).nullish(),
   error:z.string().max(300).nullish()}),
  z.object({op:z.literal("request"),id,state:z.enum(["working","done","failed"]),clips:z.number().int().min(0).max(50).optional(),error:z.string().max(300).optional()}),
 ]);

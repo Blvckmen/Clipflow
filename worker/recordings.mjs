@@ -40,6 +40,52 @@ export function pickMoments({ energy, chat = [], duration, count, gap = 30, lag 
   return chosen.sort((a, b) => a - b);
 }
 
+// Moments of a recording to suggest in the dashboard's pick list: [{ start, end, score (0-1), why: [reasons] }], best
+// first. Scored like pickMoments, plus game banners read on screen (`events`: [{ t, text }] from screentext.py),
+// which also make candidates of their own: most of the clip before the banner (the play), the rest after (the
+// reaction). `why` says what stood out, in words for the card.
+export function suggestMoments({ energy, chat = [], duration, count = 12, events = [], gap = 15, lag = 4, skip = 0 }) {
+  const n = energy.length;
+  if (n < duration || count < 1) return [];
+  const peak = Math.max(0, ...energy), chatPeak = Math.max(0, ...chat), useChat = chatPeak > 0;
+  const score = i => (peak ? (energy[i] ?? 0) / peak : 0) * (useChat ? 0.5 : 1) + (useChat ? ((chat[i + lag] ?? 0) / chatPeak) * 0.5 : 0);
+  const sum = (values, from, to) => { let t = 0; for (let i = from; i < to; i++) t += values[i] ?? 0; return t; };
+  const prefix = new Float64Array(n + 1);
+  for (let i = 0; i < n; i++) prefix[i + 1] = prefix[i] + score(i);
+  const last = n - duration, first = Math.min(skip, last), clamp = s => Math.max(first, Math.min(last, Math.round(s)));
+  const banners = s => events.filter(e => e.t >= s && e.t < s + duration);
+  // A banner is the game saying something happened: worth as much as a whole window at full loudness and chat.
+  const total = s => (prefix[s + duration] - prefix[s]) / duration + Math.min(2, banners(s).length);
+  // Among equally good windows, the one placed for a banner wins: every window holding it scores the same.
+  const placed = new Set(events.map(e => clamp(e.t - duration * 0.6)));
+  const ranked = [];
+  for (let s = first; s <= last; s++) ranked.push({ s, v: total(s) });
+  ranked.sort((a, b) => b.v - a.v || (placed.has(b.s) ? 1 : 0) - (placed.has(a.s) ? 1 : 0) || a.s - b.s);
+  const chosen = [];
+  for (const { s, v } of ranked) {
+    if (chosen.length >= count) break;
+    if (chosen.every(c => Math.abs(c.s - s) >= duration + gap)) chosen.push({ s, v });
+  }
+  const best = chosen[0]?.v || 1, meanEnergy = sum(energy, 0, n) / n || 1, meanChat = sum(chat, 0, n) / n;
+  return chosen.map(({ s, v }) => {
+    const why = [...new Set(banners(s).map(e => e.text + " on screen"))];
+    const busier = useChat && meanChat > 0 ? sum(chat, s + lag, s + duration + lag) / duration / meanChat : 0;
+    if (busier >= 2) why.push("Chat " + Math.round(busier) + "× busier");
+    const louder = sum(energy, s, s + duration) / duration / meanEnergy;
+    if (louder >= 1.4 || !why.length) why.push(louder >= 1.4 ? "Loud" : "Lively");
+    return { start: s, end: s + duration, score: Math.round((v / best) * 100) / 100, why: why.slice(0, 4) };
+  });
+}
+
+// Where to read the screen for game banners: around the `count` strongest loudness-and-chat windows, padded so a
+// banner just before or after one is caught, merged where they overlap. [[from, to]] seconds.
+export function scanRanges({ energy, chat = [], duration, count = 24, pad = 15 }) {
+  const ranges = pickMoments({ energy, chat, duration, count, gap: 0 }).map(s => [Math.max(0, s - pad), Math.min(energy.length, s + duration + pad)]);
+  const merged = [];
+  for (const r of ranges) { const prev = merged.at(-1); if (prev && r[0] <= prev[1]) prev[1] = Math.max(prev[1], r[1]); else merged.push([...r]); }
+  return merged;
+}
+
 // Segment files in recording order: from ffmpeg's segment lists (list.csv, then list-001.csv... for each time the
 // recorder resumed), or by name when a list is missing (a crash before ffmpeg wrote it).
 export async function segmentFiles(dir) {

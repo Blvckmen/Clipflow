@@ -13,6 +13,7 @@ import { syncAnalytics } from "./analytics";
 import { expireRecordings } from "./recordings";
 import { readOptions, tiktokSettings, wantsDraft } from "./account-options";
 import { planNext, tiktokBusy, TIKTOK_DAILY } from "./posting-plan.mjs";
+import { applyRules, lengthProblem, readRules } from "./posting-rules.mjs";
 import { keyConnection, siteConnection, zernioApiUrl, type Connection } from "./zernio-keys";
 
 type Env = Cloudflare.Env;
@@ -51,6 +52,12 @@ export { zernioApiUrl };
 export function zernioConfig(env: Env): zernio.ZernioConfig | null {
   const site = siteConnection(env);
   return site && { apiKey: site.apiKey, apiUrl: site.apiUrl };
+}
+
+// "https://www.twitch.tv/kaicenat" -> "twitch.tv/kaicenat", for credit lines.
+export function channelLabel(url: string | null) {
+  if (!url) return "";
+  try { const u = new URL(url); return u.hostname.replace(/^www\./, "") + u.pathname.replace(/\/$/, ""); } catch { return ""; }
 }
 
 export function renderCaption(template: string, values: { streamer: string; platform: string }) {
@@ -244,7 +251,7 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   // 2. Otherwise start the oldest queued post, within the daily limit.
   const queued = await db.prepare("SELECT id,clip_id,state,container_id,attempts,updated_at,draft,queued_by_hand FROM posts WHERE account_id=? AND state='queued' AND next_attempt_at<=? ORDER BY created_at LIMIT 1").bind(account.id, iso).first<PostRow>();
   if (!queued) return;
-  const clip = await db.prepare("SELECT c.review,c.reviewed_at,c.file_key,c.render_state,s.name,s.platform FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(queued.clip_id, account.owner).first<{ review: string; reviewed_at: string | null; file_key: string | null; render_state: string | null; name: string | null; platform: string | null }>();
+  const clip = await db.prepare("SELECT c.review,c.reviewed_at,c.file_key,c.render_state,c.duration,s.name,s.platform,s.url,s.posting_rules FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(queued.clip_id, account.owner).first<{ review: string; reviewed_at: string | null; file_key: string | null; render_state: string | null; duration: number | null; name: string | null; platform: string | null; url: string | null; posting_rules: string | null }>();
   if (!clip || clip.review !== "approved" || !clip.file_key) {
     // Rejected or deleted after it was queued: drop it rather than post it.
     await db.prepare("DELETE FROM posts WHERE id=?").bind(queued.id).run();
@@ -252,6 +259,12 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   }
   // Edited after it was queued: post the new version once the worker has rendered it.
   if (clip.render_state === "queued") return;
+  // A clip the streamer's campaign won't accept (too short or long) waits for the owner, unless they queued it by hand.
+  const rules = readRules(clip.posting_rules), tooLong = queued.queued_by_hand ? null : lengthProblem(rules, clip.duration ?? NaN);
+  if (tooLong) {
+    await db.prepare("UPDATE posts SET state='review',error=?,updated_at=? WHERE id=?").bind(heldNote(tooLong), iso, queued.id).run();
+    return;
+  }
   // What the last day looks like for this account, for the planner (lib/posting-plan.mjs): direct posts and drafts
   // sent, when the last one went, and when the oldest of each leaves the 24-hour window.
   const day = await db.prepare(`SELECT sum(draft=0 AND state='published') AS direct, sum(draft=1) AS drafts,
@@ -280,7 +293,9 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
     const link = env.PUBLIC_URL!.replace(/\/$/, "") + await signedMediaPath(queued.clip_id, now + adapter.linkTtlMs, env.MEDIA_KEY!);
     const info = { reviewed: !!clip.reviewed_at, streamer: clip.name ?? "a streamer", platform: clip.platform ?? "stream", draft };
     // The clip's own caption (written by Claude or typed by the owner), else the workspace template.
-    const caption = await captionForPost(env, queued.clip_id).catch(() => null) ?? renderCaption(account.caption_template || defaultCaption, info);
+    // Then the streamer's posting rules: a campaign's label and tags, and the credit line.
+    const written = await captionForPost(env, queued.clip_id).catch(() => null) ?? renderCaption(account.caption_template || defaultCaption, info);
+    const caption = applyRules(written, rules, { streamer: info.streamer, platform: info.platform, channel: channelLabel(clip.url) });
     await apply(queued, await adapter.start(queued, link, caption, info));
   } catch (error) { await handle(queued, error); }
 }
