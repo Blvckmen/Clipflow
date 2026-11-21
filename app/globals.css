@@ -54,6 +54,7 @@
 .clip-line{display:flex;align-items:center;justify-content:space-between;gap:6px}
 .clip-line strong{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .clip-info small{font-size:11px;line-height:1.45}
+.clip-info .clip-target{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .clip-actions{display:flex;align-items:center;gap:2px;margin-top:4px}
 .clip-actions .secondary{padding:5px 10px;font-size:12px;margin-right:auto}
 .clip-actions .icon-button{padding:5px}
