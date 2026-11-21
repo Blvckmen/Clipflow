@@ -829,3 +829,27 @@ describe("recording priority", () => {
     for (const id of [...ids, late]) await dash({ action: "remove", id });
   });
 });
+
+describe("copying a clip", () => {
+  test("a copy has its own file, waits for review, and survives the original being deleted", async () => {
+    const bytes = Buffer.alloc(3072, 5);
+    const { clip, response } = await reportClip(bytes, { reason: "chat" });
+    assert.equal(response.status, 200);
+    assert.equal((await upload(clip.id, bytes)).status, 200);
+    await dash({ action: "reviewClip", id: clip.id, review: "approved" });
+    const made = await dash({ action: "duplicateClip", id: clip.id });
+    assert.equal(made.status, 200, JSON.stringify(made.body));
+    const copyId = made.body.clipId;
+    assert.ok(copyId && copyId !== clip.id);
+    const copy = (await dash()).body.clips.find(c => c.id === copyId);
+    assert.equal(copy.review, "pending", "a copy never posts on its own");
+    assert.equal(copy.reason, "chat");
+    assert.equal(copy.stored, true);
+    await dash({ action: "deleteClip", id: clip.id });
+    const file = await fetch(base + "/api/clips/" + copyId + "/file", { headers: { cookie } });
+    assert.equal(file.status, 200);
+    assert.deepEqual(Buffer.from(await file.arrayBuffer()), bytes, "its own copy of the video");
+    assert.equal((await dash({ action: "duplicateClip", id: randomUUID() })).status, 404);
+    await dash({ action: "deleteClip", id: copyId });
+  });
+});

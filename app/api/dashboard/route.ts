@@ -1,5 +1,5 @@
 import { currentUser, signInPath } from "../../auth";
-import { bucket, database } from "../../../db/raw";
+import { bucket, database, clipKey, sourceKey } from "../../../db/raw";
 import { defaultCaption, defaults, parseStreamer, settingsSchema } from "../../../lib/clipflow";
 import { instagramConfig } from "../../../lib/publisher";
 import { connectionFor, connections, hashKey, listKeys, siteConnection, zernioApiUrl } from "../../../lib/zernio-keys";
@@ -33,6 +33,8 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("control"),control:z.enum(["running","paused","stopped"])}),
  z.object({action:z.literal("token")}),
  z.object({action:z.literal("deleteClip"),id:z.string().uuid()}),
+ // A second clip from the same footage (to give it another hook or look and post it to other accounts).
+ z.object({action:z.literal("duplicateClip"),id:z.string().uuid()}),
  z.object({action:z.literal("reviewClip"),id:z.string().uuid(),review:z.enum(["approved","rejected","pending"])}),
  // `platform` is the pre-multi-account form: it disconnects that platform's only account.
  z.object({action:z.literal("disconnect"),id:z.string().uuid().optional(),platform:z.enum(["instagram"]).optional()}),
@@ -120,7 +122,7 @@ export async function POST(request:Request){
    const {results}=await db.prepare("SELECT id,username FROM accounts WHERE owner=? AND id IN ("+ids.map(()=>"?").join(",")+")").bind(owner,...ids).all<{id:string;username:string}>();
    return results.length===ids.length?results:null;
   };
-  let streamerId:string|undefined;
+  let streamerId:string|undefined,clipId:string|undefined;
   if(payload.action==="add"){
    let channel;try{channel=parseStreamer(payload.url);}catch(error){return Response.json({error:(error as Error).message},{status:400});}
    const linked=await ownAccounts(payload.accounts??[]);
@@ -242,6 +244,20 @@ export async function POST(request:Request){
    await dropUnsent([payload.id]);
    statements.push(db.prepare("DELETE FROM clips WHERE id=? AND owner=?").bind(payload.id,owner));
    message="Deleted a clip"+(clip.name?" from "+clip.name:"")+".";
+  }
+  if(payload.action==="duplicateClip"){
+   const clip=await db.prepare("SELECT c.id,c.file_key,c.source_key,s.name FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(payload.id,owner).first<{id:string;file_key:string|null;source_key:string|null;name:string|null}>();
+   if(!clip)return Response.json({error:"Clip not found."},{status:404});
+   const b=bucket();
+   if(!b||!clip.file_key)return Response.json({error:"Only clips stored here can be copied."},{status:409});
+   clipId=crypto.randomUUID();
+   // The copy has its own files, so deleting either clip leaves the other playable and editable.
+   const copy=async(from:string,to:string)=>{const o=await b.get(from);if(!o)return false;await b.put(to,await o.arrayBuffer(),{httpMetadata:o.httpMetadata});return true;};
+   const file=clipKey(clipId),source=clip.source_key&&await copy(clip.source_key,sourceKey(clipId))?sourceKey(clipId):null;
+   if(!await copy(clip.file_key,file))return Response.json({error:"That clip's video is missing, so it can't be copied."},{status:409});
+   // Same edit, transcript, chat and caption; it starts waiting for review so it never posts on its own.
+   statements.push(db.prepare("INSERT INTO clips (id,owner,streamer_id,created_at,duration,captions,sha,size,review,reason,file_key,source_key,source_sha,source_size,transcript,signals,source_meta,edit,edit_rev,rendered_at,post_caption,caption_source) SELECT ?,owner,streamer_id,?,duration,captions,sha,size,'pending',reason,?,?,CASE WHEN ? IS NULL THEN NULL ELSE source_sha END,CASE WHEN ? IS NULL THEN NULL ELSE source_size END,transcript,signals,source_meta,edit,edit_rev,rendered_at,post_caption,caption_source FROM clips WHERE id=? AND owner=?").bind(clipId,iso,file,source,source,source,clip.id,owner));
+   message="Copied a clip"+(clip.name?" from "+clip.name:"")+". The copy waits for review: change its hook or look, then post it.";
   }
   if(payload.action==="reviewClip"){
    const clip=await db.prepare("SELECT s.name FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(payload.id,owner).first<{name:string|null}>();
@@ -525,7 +541,7 @@ export async function POST(request:Request){
    message="Created a new worker token. Any previous token was revoked.";
   }
   statements.push(db.prepare("INSERT INTO events (id,owner,message,created_at) VALUES (?,?,?,?)").bind(crypto.randomUUID(),owner,message,iso));
-  await db.batch(statements);return Response.json({ok:true,message,token,streamerId},{headers:{"Cache-Control":"private, no-store"}});
+  await db.batch(statements);return Response.json({ok:true,message,token,streamerId,clipId},{headers:{"Cache-Control":"private, no-store"}});
  }catch(error){
   if(String(error).includes("UNIQUE constraint"))return Response.json({error:"This streamer is already in your workspace."},{status:409});
   console.error("Dashboard save failed",error);return Response.json({error:"Changes weren't saved. Please try again."},{status:503});

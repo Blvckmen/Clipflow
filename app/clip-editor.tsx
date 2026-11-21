@@ -2,7 +2,7 @@
 // The clip editor. The preview is drawn on a canvas from the same layout and caption code (worker/edit.mjs) the
 // worker renders with, so what you see is what gets posted. Saving stores the edit; the worker re-renders it.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, Scissors, Sparkles, Undo2 } from "lucide-react";
+import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, Scissors, Sparkles, Undo2, Copy } from "lucide-react";
 import { ANIMATIONS, ASPECTS, ASPECT_LABELS, KEYWORD_SCALE, CHAT_SIZE, DEFAULT_CHAT, chatWindows, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, HOOK_LINES, MAX_CLIP, MIN_CLIP, PRESETS, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks, timeline, zoomAt } from "../worker/edit.mjs";
 
 import { applyAutomaticHook } from "../worker/hooks.mjs";
@@ -88,8 +88,19 @@ function drawText(ctx: CanvasRenderingContext2D, parts: { t: string; color: stri
 
 const pop = (since: number) => 0.82 + 0.18 * clamp(since / 0.11, 0, 1);
 
-export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: string; onClose: () => void; onSaved: (message: string) => void }) {
+// `onCopied`: a copy of this clip was made (Make a copy); the workspace opens it.
+export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { clipId: string; onClose: () => void; onSaved: (message: string) => void; onCopied?: (id: string, message: string) => void }) {
   const [bundle, setBundle] = useState<Bundle | null>(null), [error, setError] = useState(""), [saving, setSaving] = useState(false);
+  const [copying, setCopying] = useState(false);
+  const makeCopy = async () => {
+    setCopying(true); setError("");
+    try {
+      const response = await fetch("/api/dashboard", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "duplicateClip", id: clipId }) });
+      const body = (await response.json().catch(() => ({}))) as { clipId?: string; message?: string; error?: string };
+      if (!response.ok || !body.clipId) throw new Error(body.error || "Couldn't copy the clip. Please retry.");
+      onCopied?.(body.clipId, body.message ?? "Copied the clip.");
+    } catch (e) { setError((e as Error).message); } finally { setCopying(false); }
+  };
   const [edit, setEditState] = useState<Edit | null>(null), [past, setPast] = useState<Edit[]>([]), [future, setFuture] = useState<Edit[]>([]);
   const [tab, setTab] = useState<Tab>("captions"), [playing, setPlaying] = useState(false), [time, setTime] = useState(0), [safe, setSafe] = useState(true), [saveStyle, setSaveStyle] = useState(false), [selected, setSelected] = useState<number | null>(null);
   const video = useRef<HTMLVideoElement>(null), canvas = useRef<HTMLCanvasElement>(null), strip = useRef<HTMLDivElement>(null);
@@ -342,6 +353,7 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
         <button className="icon-button" aria-label="Undo" title="Undo (Ctrl+Z)" disabled={!past.length} onClick={undo}><Undo2 size={17} /></button>
         <button className="icon-button" aria-label="Redo" title="Redo (Ctrl+Shift+Z)" disabled={!future.length} onClick={redo}><Redo2 size={17} /></button>
         <button className="icon-button" aria-label="Discard changes" title="Discard changes" disabled={!past.length} onClick={() => { setPast(p => [...p, edit]); setEditState(bundle.edit); }}><RotateCcw size={16} /></button>
+        {onCopied && <button className="secondary" disabled={saving || copying || past.length > 0} title={past.length ? "Save or discard your changes first: the copy starts from the saved clip" : "A second clip from the same footage, to give another hook or look and post to other accounts"} onClick={() => void makeCopy()}>{copying ? <Loader2 className="spin" size={16} /> : <Copy size={16} />}Make a copy</button>}
         <label className="editor-check" title={"New clips from " + (bundle.streamer ?? "this streamer") + " start with this framing, look and caption style"}><input type="checkbox" checked={saveStyle} onChange={e => setSaveStyle(e.target.checked)} />Use this look for {bundle.streamer ?? "this streamer"}&apos;s new clips</label>
         <button className="primary" disabled={saving} onClick={() => void save()}>{saving ? <Loader2 className="spin" size={16} /> : <Check size={16} />}Save &amp; render</button>
       </div>
