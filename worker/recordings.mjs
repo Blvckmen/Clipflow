@@ -40,11 +40,16 @@ export function pickMoments({ energy, chat = [], duration, count, gap = 30, lag 
   return chosen.sort((a, b) => a - b);
 }
 
-// Segment files in recording order: from ffmpeg's segment list, or by name when the list is missing (a crash
-// before ffmpeg wrote it).
+// Segment files in recording order: from ffmpeg's segment lists (list.csv, then list-001.csv... for each time the
+// recorder resumed), or by name when a list is missing (a crash before ffmpeg wrote it).
 export async function segmentFiles(dir) {
-  const listed = (await readFile(join(dir, "list.csv"), "utf8").catch(() => "")).split(/\r?\n/).map(row => row.split(",")[0]).filter(f => /^seg\d{6}\.m2t$/.test(f));
-  const present = new Set((await readdir(dir).catch(() => [])).filter(f => /^seg\d{6}\.m2t$/.test(f)));
+  const entries = await readdir(dir).catch(() => []);
+  const lists = entries.filter(f => /^list-\d{3}\.csv$/.test(f)).sort();
+  if (entries.includes("list.csv")) lists.unshift("list.csv");
+  const listed = [];
+  for (const list of lists)
+    listed.push(...(await readFile(join(dir, list), "utf8").catch(() => "")).split(/\r?\n/).map(row => row.split(",")[0]).filter(f => /^seg\d{6}\.m2t$/.test(f)));
+  const present = new Set(entries.filter(f => /^seg\d{6}\.m2t$/.test(f)));
   const ordered = listed.filter(f => present.has(f));
   for (const f of [...present].sort()) if (!ordered.includes(f)) ordered.push(f);
   return ordered;

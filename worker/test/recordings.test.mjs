@@ -86,6 +86,17 @@ test("segmentFiles follows ffmpeg's list, then adds unlisted segments by name", 
   } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 });
 
+test("segmentFiles reads the lists of resumed legs after the first one", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "clipflow-seg-"));
+  try {
+    for (let i = 0; i < 6; i++) writeFileSync(join(dir, "seg00000" + i + ".m2t"), "x");
+    writeFileSync(join(dir, "list.csv"), "seg000000.m2t,0,6\nseg000001.m2t,6,12\n");
+    writeFileSync(join(dir, "list-002.csv"), "seg000004.m2t,0,6\n");
+    writeFileSync(join(dir, "list-001.csv"), "seg000002.m2t,0,6\nseg000003.m2t,6,12\n");
+    assert.deepEqual(await segmentFiles(dir), ["seg000000.m2t", "seg000001.m2t", "seg000002.m2t", "seg000003.m2t", "seg000004.m2t", "seg000005.m2t"]);
+  } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+});
+
 test("Store keeps recordings and finishes ones cut short by a restart", () => {
   const dir = mkdtempSync(join(tmpdir(), "clipflow-rec-"));
   try {

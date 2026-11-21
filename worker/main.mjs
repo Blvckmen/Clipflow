@@ -169,7 +169,7 @@ async function stopSession(id, reason) {
   await session.recorder.stop();
   if (session.recording) {
     // Chat per second over the recording, for its heat strip and best-moment picks.
-    logChat(session);
+    logChat(session, true);
     const { recording } = session;
     await writeFile(join(recording.dir, "chat.json"), JSON.stringify(Array.from(recording.chat, v => v ?? 0))).catch(() => {});
     store.setRecording(recording.id, { state: "ended", ended_at: new Date().toISOString(), reported: 0 });
@@ -181,16 +181,21 @@ async function stopSession(id, reason) {
 }
 
 // Adds chat messages seen since the last call to the recording's per-second counts (the chat client itself only
-// keeps the last few minutes).
-function logChat(session) {
+// keeps the last few minutes). Counts are placed on the footage's clock, so a resume's gap doesn't shift the chat
+// after it. Until the end, only messages up to the latest recorded segment are taken: a gap is known once
+// footage after it arrives.
+function logChat(session, final = false) {
   const r = session.recording;
   if (!r || !session.chat) return;
+  const until = final ? Infinity : session.recorder.latestMs();
   for (const t of session.chat.times) {
     if (t <= r.chatSeen) continue;
-    const i = Math.floor((t - r.startMs) / 1000);
+    if (t > until) break;
+    r.chatSeen = t;
+    const at = session.recorder.footageMs(t);
+    const i = at == null ? -1 : Math.floor((at - r.startMs) / 1000);
     if (i >= 0) r.chat[i] = (r.chat[i] ?? 0) + 1;
   }
-  r.chatSeen = session.chat.times.at(-1) ?? r.chatSeen;
 }
 
 // Copies the buffered window out immediately (the buffer moves on), then queues the slow processing.
