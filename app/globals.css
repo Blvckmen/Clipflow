@@ -540,3 +540,4 @@ button.account-streamers{max-width:none;justify-self:start}
 .priority-moves .icon-button{width:30px;height:30px}
 @media(max-width:540px){.priority-grip{display:none}.priority-list li{gap:8px;padding:7px}}
 .hours-window{display:flex;align-items:center;gap:8px;margin-top:8px;color:var(--muted);font-size:13px}.hours-window select{flex:1}
+.alerts-panel{margin-top:18px}.alerts-status{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0;color:var(--muted);font-size:14px}.alerts-status .tag{display:inline-flex;align-items:center;gap:4px}.alerts-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.alerts-actions button{display:inline-flex;align-items:center;gap:6px}

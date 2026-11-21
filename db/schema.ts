@@ -39,6 +39,9 @@ export const preferences=sqliteTable("preferences",{
  // Who can clip with "!clip" in Twitch chat: "mods" (the streamer, moderators and VIPs), "everyone" (also 3 viewers
  // within 30 seconds), or "off".
  clipCommand:text("clip_command").notNull().default("mods"),
+ // Discord alerts (lib/alerts.ts): the webhook link, encrypted with TOKEN_KEY; when the last review alert went out; and
+ // why the last one failed (null when it worked).
+ discordWebhookEnc:text("discord_webhook_enc"),alertAt:text("alert_at"),alertError:text("alert_error"),
  // No longer used: the single Zernio key setting, moved to zernio_keys by migration 0011.
  zernioKeyEnc:text("zernio_key_enc"),zernioLabel:text("zernio_label"),
 });

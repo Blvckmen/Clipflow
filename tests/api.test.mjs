@@ -853,3 +853,15 @@ describe("copying a clip", () => {
     await dash({ action: "deleteClip", id: copyId });
   });
 });
+
+describe("Discord alerts", () => {
+  test("a webhook must be a Discord link, testing needs one, and it never comes back to the browser", async () => {
+    assert.equal((await dash({ action: "discord", op: "connect", url: "https://example.com/hook" })).status, 400);
+    assert.equal((await dash({ action: "discord", op: "connect", url: "https://discord.com/api/webhooks/123/short" })).status, 400, "a token too short to be real");
+    assert.equal((await dash({ action: "discord", op: "remove" })).status, 200);
+    assert.equal((await dash({ action: "discord", op: "test" })).status, 409, "nothing connected");
+    const { settings } = (await dash()).body;
+    assert.equal(settings.discordAlerts, false);
+    assert.equal("discord_webhook_enc" in settings, false, "the stored webhook is never sent to the browser");
+  });
+});

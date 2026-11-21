@@ -6,7 +6,7 @@ import { connectionFor, connections, hashKey, listKeys, siteConnection, zernioAp
 import { deleteAccount, deletePost, verifyKey, VIDEO_PLATFORMS, ZernioError } from "../../../lib/zernio";
 import { syncZernioAccounts } from "../../../lib/zernio-sync";
 import { optionsSchema, readOptions } from "../../../lib/account-options";
-import { encrypt } from "../../../lib/secure";
+import { decrypt, encrypt } from "../../../lib/secure";
 import { normalizeStyle } from "../../../worker/edit.mjs";
 import { PLATFORM_NAMES, videoLink } from "../../../worker/video-link.mjs";
 import { emptyRules, readRules } from "../../../lib/posting-rules.mjs";
@@ -15,6 +15,7 @@ import { aiCaptionsAvailable } from "../../../lib/post-caption";
 import { removeRecordingFiles } from "../../../lib/recordings";
 import { thumbOf } from "../../../lib/thumbs";
 import { env } from "cloudflare:workers";
+import { isDiscordWebhook, sendDiscord } from "../../../lib/alerts";
 import { hashToken, newToken } from "../../../lib/worker-auth";
 import { z } from "zod";
 const accountIds=z.array(z.string().uuid()).max(50).transform(x=>[...new Set(x)]);
@@ -33,6 +34,8 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("control"),control:z.enum(["running","paused","stopped"])}),
  z.object({action:z.literal("token")}),
  z.object({action:z.literal("deleteClip"),id:z.string().uuid()}),
+ // Discord alerts: connect a webhook (sends a test message first), send a test, or remove it.
+ z.object({action:z.literal("discord"),op:z.enum(["connect","test","remove"]),url:z.string().trim().max(300).optional()}),
  // A second clip from the same footage (to give it another hook or look and post it to other accounts).
  z.object({action:z.literal("duplicateClip"),id:z.string().uuid()}),
  z.object({action:z.literal("reviewClip"),id:z.string().uuid(),review:z.enum(["approved","rejected","pending"])}),
@@ -99,10 +102,10 @@ export async function GET(){
   const engine={connected,lastSeen,tokenCreated:w?.created_at??null,lastError:w?.last_error??null,lastErrorAt:w?.last_error_at??null,status:connected?"Worker connected":w?(lastSeen?"Worker offline":"Waiting for worker"):"Setup required"};
   const streamers=s.results.map(x=>({...x,style:parse(x.style),posting_rules:readRules(x.posting_rules),accounts:l.results.filter(k=>k.streamer_id===x.id).map(k=>k.account_id)}));
   // Stored Zernio keys never leave the server: only their labels and how many accounts each holds.
-  const prefs=Object.fromEntries(Object.entries((p??{}) as Record<string,unknown>).filter(([k])=>k!=="zernio_key_enc"&&k!=="zernio_label"));
+  const prefs=Object.fromEntries(Object.entries((p??{}) as Record<string,unknown>).filter(([k])=>k!=="zernio_key_enc"&&k!=="zernio_label"&&k!=="discord_webhook_enc"));
   const keys=(await listKeys(db,owner)).map(k=>({id:k.id,label:k.label,created_at:k.created_at,last_error:k.last_error,accounts:a.results.filter(x=>x.zernio_key_id===k.id).length}));
   const site=!keys.length&&!!siteConnection(env);
-  const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,importClips:Number(p.import_clips??0),clipCommand:p.clip_command??defaults.clipCommand,style:parse(p.style)}:{...defaults,style:null};
+  const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,importClips:Number(p.import_clips??0),clipCommand:p.clip_command??defaults.clipCommand,discordAlerts:!!p.discord_webhook_enc,alertError:p.alert_error??null,style:parse(p.style)}:{...defaults,style:null};
   return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(x=>({...x,targets:parse(x.targets)??{},captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored})),storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,duration,content_type,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,
    // Whole-stream recordings (their heat strips load with GET /api/recordings/<id>) and clips asked for from them.
    recordings:(await db.prepare("SELECT r.id,r.streamer_id,s.name AS streamer,r.title,r.started_at,r.ended_at,r.duration,r.size,r.state,r.error,r.preview_key IS NOT NULL AS preview,r.upload_id IS NOT NULL AS uploading,r.expires_at,r.source_url FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.owner=? ORDER BY r.started_at DESC LIMIT 100").bind(owner).all<Record<string,unknown>>()).results.map(x=>({...x,preview:!!x.preview,uploading:!!x.uploading})),
@@ -244,6 +247,19 @@ export async function POST(request:Request){
    await dropUnsent([payload.id]);
    statements.push(db.prepare("DELETE FROM clips WHERE id=? AND owner=?").bind(payload.id,owner));
    message="Deleted a clip"+(clip.name?" from "+clip.name:"")+".";
+  }
+  if(payload.action==="discord"){
+   if(payload.op==="remove"){statements.push(db.prepare("UPDATE preferences SET discord_webhook_enc=NULL,alert_error=NULL WHERE owner=?").bind(owner));message="Discord alerts are off.";}
+   else{
+    if(!env.TOKEN_KEY)return Response.json({error:"This site can't store the webhook yet (TOKEN_KEY is missing; see DEPLOY.md)."},{status:409});
+    let url=payload.url??"";
+    if(payload.op==="test"){const row=await db.prepare("SELECT discord_webhook_enc FROM preferences WHERE owner=?").bind(owner).first<{discord_webhook_enc:string|null}>();if(!row?.discord_webhook_enc)return Response.json({error:"Connect a Discord webhook first."},{status:409});url=await decrypt(row.discord_webhook_enc,env.TOKEN_KEY);}
+    else if(!isDiscordWebhook(url))return Response.json({error:"Paste a Discord webhook link: in your server, Server Settings, Integrations, Webhooks, New Webhook, Copy Webhook URL."},{status:400});
+    const problem=await sendDiscord(url,payload.op==="test"?"\u{1F44B} Test from Clipflow: review alerts reach this channel.":"\u{2705} Clipflow will post here when clips are waiting for your review.");
+    if(problem)return Response.json({error:problem},{status:502});
+    if(payload.op==="connect")statements.push(db.prepare("INSERT INTO preferences (owner,discord_webhook_enc) VALUES (?,?) ON CONFLICT(owner) DO UPDATE SET discord_webhook_enc=excluded.discord_webhook_enc,alert_error=NULL").bind(owner,await encrypt(url.trim(),env.TOKEN_KEY)));
+    message=payload.op==="test"?"Sent a test message to your Discord.":"Discord alerts are on. A test message was sent to the channel.";
+   }
   }
   if(payload.action==="duplicateClip"){
    const clip=await db.prepare("SELECT c.id,c.file_key,c.source_key,s.name FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(payload.id,owner).first<{id:string;file_key:string|null;source_key:string|null;name:string|null}>();
