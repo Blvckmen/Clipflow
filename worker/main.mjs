@@ -451,7 +451,10 @@ async function runBackground() {
   try {
     for (;;) {
       const now = Date.now();
-      const row = store.recordings().find(r => (recordingRetry.get(r.id) ?? 0) <= now && (r.state === "ended" || (r.state === "ready" && (!r.clipped || !r.previewed || !r.scanned))));
+      const due = r => (recordingRetry.get(r.id) ?? 0) <= now;
+      // Transcribing for search comes last: after every other recording's steps, and only while no clip is being made.
+      const row = store.recordings().find(r => due(r) && (r.state === "ended" || (r.state === "ready" && (!r.clipped || !r.previewed || !r.scanned))))
+        ?? (!processing && !jobs.length ? store.recordings().find(r => due(r) && r.state === "ready" && !r.transcribed) : undefined);
       if (!row || stopping) break;
       backgroundRow = row.id;
       try { await recordingStep(row); recordingRetry.delete(row.id); }
@@ -481,7 +484,7 @@ async function recordingStep(row) {
     await writeFile(join(row.dir, "signals.json"), JSON.stringify({ ...bucketSignals(energy, chat), moments: suggestions(energy, chat, []) }));
     // Only "record" has its best moments picked here: "both" was clipped live, and an imported video makes the clips
     // asked for with it.
-    store.setRecording(row.id, { state: "ready", duration: info.duration || energy.length, clipped: row.mode === "record" ? 0 : 1, reported: 0 });
+    store.setRecording(row.id, { state: "ready", duration: info.duration || energy.length, clipped: row.mode === "record" ? 0 : 1, transcribed: 0, reported: 0 });
     void syncRecordings();
     console.log("Recording", row.id.slice(0, 8), "saved:", Math.round((info.duration || energy.length) / 60), "minutes");
     return;
@@ -525,7 +528,41 @@ async function recordingStep(row) {
     store.setRecording(row.id, { scanned: 1, reported: 0 });
     void syncRecordings();
     console.log("Recording", row.id.slice(0, 8) + ":", events.length ? "game text on screen: " + [...new Set(events.map(e => e.text))].join(", ") : "no game banners found on screen");
+    return;
   }
+  if (!row.transcribed) await transcribePiece(row, file, signal);
+}
+
+// ---- Searching recordings by what was said ----
+// The whole recording is transcribed in TRANSCRIPT_PIECE-second pieces, one per background pass (so other work and
+// a worker restart don't lose much), into transcript.json { upto, lines: [[start, end, text]] }; then it is uploaded
+// for the Recordings page's search. WHISPER_SEARCH_MODEL (default "base") is faster than the clips' "small" model:
+// search needs the words, not perfect punctuation.
+const TRANSCRIPT_PIECE = 600, captionsScript = fileURLToPath(new URL("./captions.py", import.meta.url));
+async function transcribePiece(row, file, signal) {
+  const out = join(row.dir, "transcript.json"), done = await readJson(out, { upto: 0, lines: [] }), total = row.duration ?? 0;
+  if (done.upto < total - 1) {
+    const from = done.upto, piece = join(row.dir, "piece.wav"), words = join(row.dir, "piece.json");
+    try {
+      await command("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-ss", String(from), "-t", String(TRANSCRIPT_PIECE), "-i", file, "-vn", "-ac", "1", "-ar", "16000", piece], { signal, timeout: 5 * 60_000 }).done;
+      const hint = [config?.streamers.find(s => s.id === row.streamer) && streamerInfo(config.streamers.find(s => s.id === row.streamer).url).name, row.title].filter(Boolean).join(". ");
+      await command(python, [captionsScript, "words", piece, words, String(hint).slice(0, 200)], { signal, timeout: 60 * 60_000, env: { ...process.env, WHISPER_MODEL: process.env.WHISPER_SEARCH_MODEL || "base" } }).done;
+      const { segments } = await readJson(words, { segments: [] });
+      for (const seg of segments ?? []) {
+        const text = (seg.words ?? []).map(w => String(w[2]).trim()).join(" ").replace(/\s+/g, " ").trim();
+        if (text) done.lines.push([Math.round((from + seg.start) * 10) / 10, Math.round((from + seg.end) * 10) / 10, text.slice(0, 1000)]);
+      }
+    } finally { await rm(piece, { force: true }); await rm(words, { force: true }); }
+    done.upto = Math.min(total, from + TRANSCRIPT_PIECE);
+    await writeFile(out, JSON.stringify(done));
+    console.log("Recording", row.id.slice(0, 8) + ": transcribed", Math.round(done.upto / 60), "of", Math.round(total / 60), "minutes for search");
+    return;
+  }
+  const response = await api("/api/worker/recordings/" + row.id + "/transcript", { method: "PUT", body: JSON.stringify({ lines: done.lines }), timeout: 120_000 });
+  // 404: the recording was deleted in the dashboard; 501: no storage there. Either way, nothing more to do.
+  if (!response.ok && response.status !== 404 && response.status !== 501) throw new Error("transcript upload HTTP " + response.status);
+  store.setRecording(row.id, { transcribed: 1 });
+  console.log("Recording", row.id.slice(0, 8) + ":", response.ok ? "transcript uploaded (" + done.lines.length + " lines): it can be searched now" : "transcript not stored (HTTP " + response.status + ")");
 }
 
 // The pick list's suggested moments: clip-length windows of the recording, best first (the first minute of a long

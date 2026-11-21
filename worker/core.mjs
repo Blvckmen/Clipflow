@@ -135,6 +135,9 @@ export class Store {
     this.db.exec("UPDATE recordings SET state='ended', ended_at=coalesce(ended_at, started_at) WHERE state='recording'");
     // scanned: its screen has been read for game banners. Recordings from before this was added are left as they are.
     if (!this.db.prepare("PRAGMA table_info(recordings)").all().some(c => c.name === "scanned")) this.db.exec("ALTER TABLE recordings ADD COLUMN scanned INTEGER NOT NULL DEFAULT 1");
+    // transcribed: the whole recording has been transcribed for search (set to 0 when it becomes ready). Recordings
+    // from before this was added aren't transcribed afterwards: a long one would keep the PC busy for hours.
+    if (!this.db.prepare("PRAGMA table_info(recordings)").all().some(c => c.name === "transcribed")) this.db.exec("ALTER TABLE recordings ADD COLUMN transcribed INTEGER NOT NULL DEFAULT 1");
   }
   addRecording(id,streamer,dir,mode) { this.db.prepare("INSERT INTO recordings(id,streamer,dir,mode,state,started_at,scanned) VALUES (?,?,?,?,'recording',?,0)").run(id,streamer,dir,mode,new Date().toISOString()); }
   recording(id) { return this.db.prepare("SELECT * FROM recordings WHERE id=?").get(id)??null; }

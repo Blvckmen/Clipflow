@@ -143,6 +143,9 @@ export const recordings=sqliteTable("recordings",{
  // Heat strip: {step (seconds per bar), energy: [0-1], chat: [counts]}.
  signals:text("signals"),
  previewKey:text("preview_key"),previewSize:integer("preview_size"),
+ // When the worker finished transcribing the whole recording (for searching what was said); the transcript itself is
+ // in R2 at transcripts/<id>.json. Null: not transcribed (yet).
+ transcriptAt:text("transcript_at"),
  // R2 multipart upload in progress: its id and the parts received so far (JSON [{partNumber, etag}]).
  uploadId:text("upload_id"),uploadParts:text("upload_parts"),
  expiresAt:text("expires_at").notNull(),createdAt:text("created_at").notNull(),

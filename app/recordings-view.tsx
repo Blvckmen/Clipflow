@@ -1,9 +1,9 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Clock3, Download, Film, Link2, Loader2, Radio, Scissors, Sparkles, Trash2 } from "lucide-react";
+import { Clock3, Download, Film, Link2, Loader2, Radio, Scissors, Search, Sparkles, Trash2 } from "lucide-react";
 import { PLATFORM_NAMES, videoLink } from "../worker/video-link.mjs";
 // "queued" and "importing": a video pasted below, waiting for the worker PC and then downloading.
-export type Recording = { id: string; streamer_id: string; streamer: string | null; title: string | null; started_at: string; ended_at: string | null; duration: number | null; size: number | null; state: "queued" | "importing" | "recording" | "processing" | "ready" | "failed"; error: string | null; preview: boolean; uploading: boolean; expires_at: string; source_url?: string | null };
+export type Recording = { id: string; streamer_id: string; streamer: string | null; title: string | null; started_at: string; ended_at: string | null; duration: number | null; size: number | null; state: "queued" | "importing" | "recording" | "processing" | "ready" | "failed"; error: string | null; preview: boolean; uploading: boolean; expires_at: string; source_url?: string | null; transcript?: boolean };
 type StreamerChoice = { id: string; name: string };
 const sourceName = (r: Recording) => { const link = r.source_url ? videoLink(r.source_url) as { platform: keyof typeof PLATFORM_NAMES } | null : null; return link ? PLATFORM_NAMES[link.platform] : null; };
 export type RecordingRequest = { id: string; recording_id: string; kind: "moment" | "best"; start: number | null; end: number | null; count: number | null; state: "queued" | "working" | "done" | "failed"; error: string | null; clips: number; created_at: string };
@@ -127,6 +127,35 @@ function MomentPicks({ moments, recordingId, preview, requests, busy, mutate, on
   </div>;
 }
 
+// Searching what was said: the worker's transcript of the whole recording ([start, end, text] lines), loaded the first
+// time someone searches. Each match can be watched, or clipped from a few seconds before it.
+type Line = [number, number, string];
+function TranscriptSearch({ recordingId, total, duration, busy, mutate, onWatch }: { recordingId: string; total: number; duration: number; busy: boolean; mutate: Mutate; onWatch: (t: number) => void }) {
+  const [lines, setLines] = useState<Line[] | null>(null), [query, setQuery] = useState(""), [error, setError] = useState(""), [loading, setLoading] = useState(false);
+  const load = () => {
+    if (lines || loading) return;
+    setLoading(true);
+    fetch("/api/recordings/" + recordingId + "/transcript").then(async res => { const json = await res.json().catch(() => null) as { lines?: Line[]; error?: string } | null; if (!res.ok || !json?.lines) throw new Error(json?.error ?? "Couldn't load the transcript."); setLines(json.lines); })
+      .catch(e => setError((e as Error).message)).finally(() => setLoading(false));
+  };
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  // A line matches when it has every word typed (in any order); results in time order, at most 50.
+  const hits = lines && words.length ? lines.filter(l => { const t = l[2].toLowerCase(); return words.every(w => t.includes(w)); }).slice(0, 50) : [];
+  const mark = (text: string) => { if (!words.length) return text; const re = new RegExp("(" + words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")", "ig"); return text.split(re).map((part, i) => i % 2 ? <mark key={i}>{part}</mark> : part); };
+  const clipAt = async (t: number) => { const start = Math.max(0, Math.round(t) - 5), end = Math.min(total || start + duration, start + duration); if (end - start >= 15) await mutate({ action: "makeClip", recordingId, start, end }); };
+  return <div className="transcript-search">
+    <label className="search-field"><Search size={15} /><input type="search" placeholder="Search what was said, e.g. raid, giveaway, that's insane" value={query} onFocus={load} onChange={e => { setQuery(e.target.value); load(); }} aria-label="Search what was said in this recording" /></label>
+    {loading && <small className="muted"><Loader2 size={12} className="spin" /> Loading the transcript…</small>}
+    {error && <div className="error" role="alert">{error}</div>}
+    {lines && words.length > 0 && <small className="muted">{hits.length ? hits.length + (hits.length === 50 ? "+" : "") + " place" + (hits.length === 1 ? "" : "s") + " where that was said" : "Not found. The transcript is automatic, so try another spelling or fewer words."}</small>}
+    {hits.length > 0 && <div className="transcript-hits">{hits.map(l => <div key={l[0]} className="transcript-hit">
+      <span className="moment-time">{clock(l[0])}</span>
+      <span className="transcript-text">{mark(l[2])}</span>
+      <span className="row-actions"><button type="button" className="text-button" onClick={() => onWatch(Math.max(0, l[0] - 3))}><Clock3 size={12} />Watch</button><button type="button" className="secondary" disabled={busy} title={"A " + duration + "s clip starting 5 seconds before this"} onClick={() => void clipAt(l[0])}><Scissors size={13} />Clip this</button></span>
+    </div>)}</div>}
+  </div>;
+}
+
 function RecordingPlayer({ r, requests, storage, busy, workerOnline, duration, mutate, onOpenLibrary, onDeleted }: {
   r: Recording; requests: RecordingRequest[]; storage: boolean; busy: boolean; workerOnline: boolean; duration: number;
   mutate: Mutate; onOpenLibrary: () => void; onDeleted: () => void;
@@ -174,6 +203,7 @@ function RecordingPlayer({ r, requests, storage, busy, workerOnline, duration, m
         <div className="heat-legend"><span><i className="loud" />Loudness</span>{signals?.chat.some(c => c > 0) && <span><i className="chat" />Chat activity</span>}<span className="muted">At {clock(at)} of {clock(total)}</span></div>
       </div>}
       {ready && !!signals?.moments?.length && <MomentPicks moments={signals.moments} recordingId={r.id} preview={r.preview} requests={requests} busy={busy} mutate={mutate} onWatch={seek} />}
+      {ready && (r.transcript ? <TranscriptSearch recordingId={r.id} total={total} duration={duration} busy={busy} mutate={mutate} onWatch={seek} /> : <div className="subtle-note"><Search size={14} /> Searching what was said becomes available once the worker PC has transcribed this recording. It does that when it has nothing else to do, so a long stream can take a few hours.</div>)}
       {ready && <div className="moment-picker">
         <div className="moment-fields">
           <label>Start<input value={startText} placeholder="0:00" onChange={e => { setStartText(e.target.value); const v = parseClock(e.target.value); setStart(v); }} /></label>

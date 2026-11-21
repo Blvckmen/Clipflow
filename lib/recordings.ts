@@ -1,10 +1,10 @@
-import { bucket, previewKey } from "../db/raw";
+import { bucket, previewKey, transcriptKey } from "../db/raw";
 // A recording's stored preview (or its unfinished upload). The full-quality file is on the worker PC, which
 // deletes it once the recording is gone from the dashboard.
 export async function removeRecordingFiles(id: string, rec: { preview_key: string | null; upload_id: string | null }, store = bucket()) {
   if (!store) return;
   if (rec.upload_id) await store.resumeMultipartUpload(previewKey(id), rec.upload_id).abort().catch(() => {});
-  await store.delete(rec.preview_key ?? previewKey(id));
+  await store.delete([rec.preview_key ?? previewKey(id), transcriptKey(id)]);
 }
 
 // Deletes recordings past their workspace's retention period. Runs from the once-a-minute cron, a few at a time.

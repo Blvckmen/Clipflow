@@ -642,6 +642,24 @@ describe("recordings", () => {
     assert.ok(Array.isArray(config.recordings) && Array.isArray(config.clipRequests));
     assert.equal((await dash({ action: "editStreamer", id: streamer.id, name: s.name, url: s.url, captureMode: "archive" })).status, 400);
   });
+  test("a recording's transcript is uploaded by the worker and searchable by its owner only", async () => {
+    const r = rec();
+    assert.equal((await post({ ...r, state: "ready", endedAt: new Date().toISOString(), duration: 600 })).status, 200);
+    const path = "/api/worker/recordings/" + r.id + "/transcript", get = () => fetch(base + "/api/recordings/" + r.id + "/transcript", { headers: { cookie } });
+    assert.equal((await get()).status, 404, "not transcribed yet");
+    assert.equal((await dash()).body.recordings.find(x => x.id === r.id).transcript, false);
+    assert.equal((await worker(path, { method: "PUT", body: JSON.stringify({ lines: [[1, 2, 3]] }) })).status, 400);
+    assert.equal((await worker("/api/worker/recordings/" + randomUUID() + "/transcript", { method: "PUT", body: JSON.stringify({ lines: [] }) })).status, 404);
+    assert.equal((await fetch(base + path, { method: "PUT", body: "{}" })).status, 401);
+    const put = await worker(path, { method: "PUT", body: JSON.stringify({ lines: [[12.34, 15, "  that was   insane "], [20, 22, ""], [300, 304, "who won the raid"]] }) });
+    assert.equal(put.status, 200);
+    assert.equal((await put.json()).lines, 2, "empty lines are dropped");
+    assert.deepEqual(await (await get()).json(), { lines: [[12.3, 15, "that was insane"], [300, 304, "who won the raid"]] });
+    assert.equal((await dash()).body.recordings.find(x => x.id === r.id).transcript, true);
+    assert.equal((await fetch(base + "/api/recordings/" + r.id + "/transcript")).status, 401, "signed-in owners only");
+    assert.equal((await dash({ action: "deleteRecording", id: r.id })).status, 200);
+    assert.equal((await get()).status, 404);
+  });
   test("a recording is reported, clipped on request, previewed and deleted", async () => {
     const r = rec();
     assert.equal((await post(r)).status, 200);
