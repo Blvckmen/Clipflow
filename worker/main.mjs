@@ -358,17 +358,17 @@ async function importClip(streamer, clip, settings) {
 // time, into a recording folder and then handled like a recorded stream: saved, measured, previewed and clipped
 // as asked. A download cut short by the worker stopping starts again when it is back; one deleted in the dashboard
 // meanwhile is cancelled.
-let importing = null;  // { id, controller } of the download running now
+let videoDownload = null;  // { id, controller } of the download running now
 function takeImports(list) {
-  if (importing && config?.recordings && !config.recordings.includes(importing.id)) importing.controller.abort();
-  if (importing || stopping) return;
+  if (videoDownload && config?.recordings && !config.recordings.includes(videoDownload.id)) videoDownload.controller.abort();
+  if (videoDownload || stopping) return;
   const next = (list ?? []).find(v => { const row = store.recording(v.id); return !row || row.state === "importing"; });
   if (next) void importVideo(next);
 }
 async function importVideo(item) {
   const link = videoLink(item.url), dir = join(dataDir, "recordings", item.id), controller = new AbortController();
   const signal = AbortSignal.any([controller.signal, backgroundController.signal]);
-  importing = { id: item.id, controller };
+  videoDownload = { id: item.id, controller };
   if (!store.recording(item.id)) store.addRecording(item.id, item.streamerId, dir, "import");
   store.setRecording(item.id, { state: "importing", reported: 0 });
   try {
@@ -394,7 +394,7 @@ async function importVideo(item) {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
     problem("Importing " + link.url + " failed: " + error.message);
   } finally {
-    importing = null;
+    videoDownload = null;
     if (!stopping) { void syncRecordings(); void runBackground(); }
   }
 }
@@ -585,7 +585,7 @@ async function pruneRecordings() {
   if (!config) return;
   const cutoff = Date.now() - config.recordingDays * 86_400_000;
   for (const row of store.recordings()) {
-    if (row.state === "recording" || row.id === backgroundRow || row.id === importing?.id) continue;
+    if (row.state === "recording" || row.id === backgroundRow || row.id === videoDownload?.id) continue;
     const expired = Date.parse(row.started_at) < cutoff, deleted = config.recordings !== null && row.reported && !config.recordings.includes(row.id);
     if (!expired && !deleted) continue;
     // A file still open (a clip being cut from it) can't be removed on Windows; try again next cycle.
