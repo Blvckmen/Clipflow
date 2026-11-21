@@ -4,7 +4,8 @@
 // per-account posting options. Nothing here needs a code change or a redeploy.
 import { useState, type ReactNode } from "react";
 import { Check, ExternalLink, KeyRound, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
-import { gapChoices, tiktokModes, tiktokPrivacy, whenFullChoices, youtubeVisibility, type AccountOptions } from "../lib/account-options";
+import { gapChoices, tiktokModes, tiktokPrivacy, whenFullChoices, youtubeVisibility, type AccountOptions, hoursChoices } from "../lib/account-options";
+import { MIN_MEASURED } from "../lib/posting-plan.mjs";
 
 export type ZernioKey = { id: string; label: string; created_at: string; last_error: string | null; accounts: number };
 export type Publishing = { zernio: boolean; zernioSource: "workspace" | "site" | null; zernioKeys: ZernioKey[]; canSaveKey: boolean };
@@ -69,6 +70,10 @@ export function ZernioPanel({ publishing, accounts, busy, mutate, brand, row }: 
   </section>;
 }
 
+const HOURS = Array.from({ length: 24 }, (_, h) => h), hourName = (h: number) => (h % 12 || 12) + (h < 12 ? " am" : " pm");
+// The owner's time zone, for posting hours.
+const browserZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; } };
+
 // The options dialog's body for one account.
 export function AccountOptionsForm({ account, busy, workspaceLimit, onSave }: { account: ZernioAccount; busy: boolean; workspaceLimit: number; onSave: (options: Partial<AccountOptions>) => void }) {
   const [draft, setDraft] = useState<AccountOptions>(account.options);
@@ -88,10 +93,13 @@ export function AccountOptionsForm({ account, busy, workspaceLimit, onSave }: { 
       <small>Posts (drafts included) this account sends in any 24 hours. Leave empty to use the workspace limit from Settings.{account.platform === "tiktok" ? " TikTok itself takes about 15 videos a day from apps, drafts included; for more, download clips and post them in the TikTok app." : ""}</small></label>
     <label>Spacing<select value={draft.gapMinutes} onChange={e => set("gapMinutes", Number(e.target.value))}>{Object.entries(gapChoices).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
       <small>Spread posts through the day; a burst of posts usually reaches fewer people.</small></label>
+    <label>When to post<select value={draft.hours} onChange={e => setDraft({ ...draft, hours: e.target.value as AccountOptions["hours"], timeZone: browserZone() })}>{Object.entries(hoursChoices).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+      {draft.hours === "window" && <span className="hours-window"><select aria-label="From" value={draft.hoursFrom} onChange={e => set("hoursFrom", Number(e.target.value))}>{HOURS.map(h => <option key={h} value={h}>{hourName(h)}</option>)}</select> to <select aria-label="To" value={draft.hoursTo} onChange={e => set("hoursTo", Number(e.target.value))}>{HOURS.map(h => <option key={h} value={h}>{hourName(h)}</option>)}</select></span>}
+      <small>{draft.hours === "best" ? "Posts go out in the 6 hours of the day when this account's earlier posts got the most views, once " + MIN_MEASURED + " have been measured (until then, 5pm to 11pm). Your time: " + draft.timeZone + "." : draft.hours === "window" ? "Posts wait for this window in your time (" + draft.timeZone + "). Clips you queue by hand still post straight away." : "Posts go out as soon as there's room. Clips you queue by hand always do."}</small></label>
     <label>When the daily limit is reached<select value={draft.whenFull} onChange={e => set("whenFull", e.target.value as keyof typeof whenFullChoices)}>{Object.entries(whenFullChoices).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
       <small>{draft.whenFull === "review" ? "Clips that arrive after the limit wait under Publishing for you to queue or skip each one. They still post to this streamer's other accounts." : "Clips that arrive after the limit wait in the queue and post as soon as the 24-hour window has room, oldest first."}</small></label>
   </>;
-  return <form className="form-body" onSubmit={e => { e.preventDefault(); onSave(draft); }}>{fields}{pacing}<button className="primary" type="submit" disabled={busy}>{busy ? <Loader2 size={15} className="spin" /> : <Check size={15} />}Save options</button></form>;
+  return <form className="form-body" onSubmit={e => { e.preventDefault(); onSave(draft.hours === "any" ? draft : { ...draft, timeZone: browserZone() }); }}>{fields}{pacing}<button className="primary" type="submit" disabled={busy}>{busy ? <Loader2 size={15} className="spin" /> : <Check size={15} />}Save options</button></form>;
 }
 
 // Every connected account has options now (daily limit and spacing at least).

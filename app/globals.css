@@ -539,3 +539,4 @@ button.account-streamers{max-width:none;justify-self:start}
 .priority-moves{display:flex;gap:2px;flex:none}
 .priority-moves .icon-button{width:30px;height:30px}
 @media(max-width:540px){.priority-grip{display:none}.priority-list li{gap:8px;padding:7px}}
+.hours-window{display:flex;align-items:center;gap:8px;margin-top:8px;color:var(--muted);font-size:13px}.hours-window select{flex:1}

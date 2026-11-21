@@ -47,3 +47,36 @@ test("TikTok's 'not now' refusals are recognised", () => {
   assert.equal(tiktokBusy("spam_risk_too_many_posts"), "posts");
   assert.equal(tiktokBusy("Video rejected by platform"), null);
 });
+
+test("posting hours: windows wrap past midnight and the clock follows the time zone", async () => {
+  const { windowHours, localClock, nextOpenAt, hoursLabel } = await import("../lib/posting-plan.mjs");
+  assert.deepEqual(windowHours(17, 23), [17, 18, 19, 20, 21, 22]);
+  assert.deepEqual(windowHours(22, 2), [22, 23, 0, 1]);
+  assert.equal(windowHours(9, 9).length, 24, "same start and end: all day");
+  const noonUtc = Date.UTC(2026, 10, 21, 12, 30, 0);
+  assert.equal(localClock(noonUtc, "UTC").hour, 12);
+  assert.equal(localClock(noonUtc, "America/New_York").hour, 7);
+  assert.equal(localClock(noonUtc, "Asia/Kolkata").hour, 18, "half-hour zones too (18:00)");
+  assert.equal(localClock(noonUtc, "Not/AZone").hour, 12, "an unknown zone reads as UTC");
+  assert.equal(nextOpenAt(noonUtc, [12, 13], "UTC"), null, "inside the window");
+  assert.equal(nextOpenAt(noonUtc, [17, 18], "UTC"), Date.UTC(2026, 10, 21, 17, 0, 0));
+  assert.equal(nextOpenAt(noonUtc, [9], "UTC"), Date.UTC(2026, 10, 22, 9, 0, 0), "tomorrow morning");
+  assert.equal(nextOpenAt(noonUtc, [19], "Asia/Kolkata"), Date.UTC(2026, 10, 21, 13, 30, 0), "19:00 in Kolkata is 13:30 UTC");
+  assert.equal(nextOpenAt(noonUtc, [], "UTC"), null);
+  assert.equal(hoursLabel([17, 18, 19, 20, 21, 22]), "5pm-11pm");
+  assert.equal(hoursLabel([22, 23, 0, 1, 9]), "9am-10am, 10pm-2am");
+});
+
+test("bestHours learns from this account's views, and uses evenings until it can", async () => {
+  const { bestHours, DEFAULT_BEST_HOURS, MIN_MEASURED } = await import("../lib/posting-plan.mjs");
+  const at = h => Date.UTC(2026, 10, 1 + (h % 7), h, 10);
+  assert.deepEqual(bestHours([{ at: at(9), views: 100 }], "UTC"), { hours: DEFAULT_BEST_HOURS, learned: false });
+  // Morning posts do far better than evening ones.
+  const posts = [];
+  for (let i = 0; i < MIN_MEASURED; i++) posts.push({ at: at(8 + (i % 3)), views: 5000 }, { at: at(20 + (i % 2)), views: 50 });
+  const { hours, learned } = bestHours(posts, "UTC", 3);
+  assert.equal(learned, true);
+  assert.deepEqual(hours, [8, 9, 10]);
+  // The same posts seen from New York (UTC-5) are early-morning posts there.
+  assert.deepEqual(bestHours(posts, "America/New_York", 3).hours, [3, 4, 5]);
+});

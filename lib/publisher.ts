@@ -12,7 +12,7 @@ import { captionForPost, fillCaptions } from "./post-caption";
 import { syncAnalytics } from "./analytics";
 import { expireRecordings } from "./recordings";
 import { readOptions, tiktokSettings, wantsDraft } from "./account-options";
-import { planNext, tiktokBusy, TIKTOK_DAILY } from "./posting-plan.mjs";
+import { planNext, tiktokBusy, TIKTOK_DAILY, bestHours, hoursLabel, nextOpenAt, windowHours } from "./posting-plan.mjs";
 import { applyRules, lengthProblem, readRules } from "./posting-rules.mjs";
 import { keyConnection, siteConnection, zernioApiUrl, type Connection } from "./zernio-keys";
 
@@ -280,6 +280,16 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   if (plan.action === "hold") {
     await db.prepare("UPDATE posts SET state='review',error=?,updated_at=? WHERE id=?").bind(heldNote(plan.reason ?? "the daily limit was reached"), iso, queued.id).run();
     return;
+  }
+  // Posting hours: outside this account's best hours (or its set window) the post waits for the next of them.
+  if ((plan.action === "post" || plan.action === "draft") && !queued.queued_by_hand && options.hours !== "any") {
+    const hours = options.hours === "window" ? windowHours(options.hoursFrom, options.hoursTo) : bestHours((await db.prepare("SELECT published_at,views FROM posts WHERE account_id=? AND state='published' AND views IS NOT NULL AND published_at>=? ORDER BY published_at DESC LIMIT 300")
+      .bind(account.id, new Date(now - 90 * 24 * 3600_000).toISOString()).all<{ published_at: string; views: number }>()).results.map(p => ({ at: Date.parse(p.published_at), views: p.views })), options.timeZone).hours;
+    const opens = nextOpenAt(now, hours, options.timeZone);
+    if (opens !== null) {
+      await db.prepare("UPDATE posts SET next_attempt_at=?,error=? WHERE id=?").bind(new Date(opens).toISOString(), "Waiting for " + (options.hours === "window" ? "this account's posting hours" : "this account's best hours") + " (" + hoursLabel(hours) + ", " + options.timeZone + ").", queued.id).run();
+      return;
+    }
   }
   if (plan.action === "wait") {
     // Not this post's fault: look again when there is room (or in 15 minutes), and say why in the queue.
