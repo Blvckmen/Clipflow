@@ -4,7 +4,7 @@
 // An edit describes how to turn a clip's *source* (the captured moment plus a few seconds either side, unframed)
 // into the published clip: 720x1280 (9:16) unless frame.aspect picks another shape (see ASPECTS). Times are seconds from the start of the source.
 //   { v, trim:{start,end}, frame:{mode,zoom,x,y,background}, look:{brightness,contrast,saturation},
-//     captions:{on,preset,font,size,color,highlight,outline,outlineColor,box,boxColor,uppercase,animation,words,y,mask},
+//     captions:{on,preset,font,size,color,highlight,outline,outlineColor,box,boxColor,uppercase,animation,words,y,mask,keywords,keywordColor},
 //     hook:{text,seconds,color,bg}, progress:{on,color}, words?:[[start,end,text],...] }
 // A *style* is the reusable part of an edit (everything except trim, hook text and words; it includes how long the
 // hook stays up). Hook seconds at or past the clip's length keep the hook up for the whole clip. Each streamer can have
@@ -37,6 +37,8 @@ export const CORNERS = ["tl", "tr", "bl", "br"];
 export const DEFAULT_FACECAM = { box: null, share: 0.35, corner: "tr", size: 0.36 };
 export const ANIMATIONS = ["none", "pop", "karaoke", "word"];
 export const MIN_CLIP = 5, MAX_CLIP = 90;
+// How much bigger a caption keyword is drawn (see keywordScore).
+export const KEYWORD_SCALE = 1.15;
 // How long a hook title stays up unless the look says otherwise; up to the whole clip.
 export const DEFAULT_HOOK_SECONDS = 5;
 export const DEFAULT_SPLIT = { share: 0.5, top: "stream", divider: null, volume: 0 };
@@ -47,14 +49,15 @@ export const SPLIT_TOPS = ["stream", "background"];
 export const CUT_LEVELS = ["off", "gentle", "tight"];
 export const DEFAULT_PACE = { cuts: "off", zooms: false };
 
-// Caption looks. Picking a preset copies its values; every value can then be changed on its own.
+// Caption looks. Picking a preset copies its values; every value can then be changed on its own. keywordColor is the
+// colour that makes a line's most important word stand out (captions.keywords, see keywordScore).
 export const PRESETS = {
-  clean: { label: "Clean", font: "Arial", size: 54, color: "#ffffff", highlight: "#ffffff", outline: 4, outlineColor: "#000000", box: false, boxColor: "#000000", uppercase: false, animation: "none", words: 4 },
-  bold: { label: "Bold pop", font: "Impact", size: 74, color: "#ffffff", highlight: "#ffe14d", outline: 6, outlineColor: "#000000", box: false, boxColor: "#000000", uppercase: true, animation: "pop", words: 3 },
-  karaoke: { label: "Karaoke", font: "Arial", size: 60, color: "#ffffff", highlight: "#bcfa76", outline: 5, outlineColor: "#000000", box: false, boxColor: "#000000", uppercase: false, animation: "karaoke", words: 4 },
-  boxed: { label: "Boxed", font: "Verdana", size: 46, color: "#111111", highlight: "#e0245e", outline: 0, outlineColor: "#000000", box: true, boxColor: "#ffffff", uppercase: false, animation: "karaoke", words: 5 },
-  neon: { label: "Neon", font: "Trebuchet MS", size: 62, color: "#7df9ff", highlight: "#ff4fd8", outline: 3, outlineColor: "#1a0033", box: false, boxColor: "#000000", uppercase: true, animation: "karaoke", words: 3 },
-  single: { label: "One word", font: "Impact", size: 96, color: "#ffffff", highlight: "#ffffff", outline: 7, outlineColor: "#000000", box: false, boxColor: "#000000", uppercase: true, animation: "word", words: 1 },
+  clean: { label: "Clean", font: "Arial", size: 54, color: "#ffffff", highlight: "#ffffff", outline: 4, outlineColor: "#000000", box: false, boxColor: "#000000", uppercase: false, animation: "none", words: 4, keywordColor: "#ffe14d" },
+  bold: { label: "Bold pop", font: "Impact", size: 74, color: "#ffffff", highlight: "#ffe14d", outline: 6, outlineColor: "#000000", box: false, boxColor: "#000000", uppercase: true, animation: "pop", words: 3, keywordColor: "#ffe14d" },
+  karaoke: { label: "Karaoke", font: "Arial", size: 60, color: "#ffffff", highlight: "#bcfa76", outline: 5, outlineColor: "#000000", box: false, boxColor: "#000000", uppercase: false, animation: "karaoke", words: 4, keywordColor: "#ffe14d" },
+  boxed: { label: "Boxed", font: "Verdana", size: 46, color: "#111111", highlight: "#e0245e", outline: 0, outlineColor: "#000000", box: true, boxColor: "#ffffff", uppercase: false, animation: "karaoke", words: 5, keywordColor: "#1d4ed8" },
+  neon: { label: "Neon", font: "Trebuchet MS", size: 62, color: "#7df9ff", highlight: "#ff4fd8", outline: 3, outlineColor: "#1a0033", box: false, boxColor: "#000000", uppercase: true, animation: "karaoke", words: 3, keywordColor: "#fff35c" },
+  single: { label: "One word", font: "Impact", size: 96, color: "#ffffff", highlight: "#ffffff", outline: 7, outlineColor: "#000000", box: false, boxColor: "#000000", uppercase: true, animation: "word", words: 1, keywordColor: "#ffe14d" },
 };
 
 export function defaultStyle({ framing = "blur", captions = true } = {}) {
@@ -64,7 +67,7 @@ export function defaultStyle({ framing = "blur", captions = true } = {}) {
     frame: { mode: FRAMINGS.includes(framing) ? framing : "blur", aspect: "9:16", zoom: 1, x: 0, y: 0, content: null, background: null, pool: [], split: { ...DEFAULT_SPLIT }, facecam: { ...DEFAULT_FACECAM } },
     look: { brightness: 1, contrast: 1, saturation: 1 },
     // Split screen puts captions on the seam between the two videos.
-    captions: { on: !!captions, preset: "bold", ...preset, y: framing === "split" ? 0.5 : framing === "cam" ? DEFAULT_FACECAM.share : 0.72, mask: false },
+    captions: { on: !!captions, preset: "bold", ...preset, keywords: true, y: framing === "split" ? 0.5 : framing === "cam" ? DEFAULT_FACECAM.share : 0.72, mask: false },
     hook: { color: "#111111", bg: "#ffffff", seconds: DEFAULT_HOOK_SECONDS },
     progress: { on: false, color: "#bcfa76" },
     pace: { ...DEFAULT_PACE },
@@ -113,6 +116,8 @@ export function normalizeStyle(input, base = defaultStyle()) {
       font: pick(c.font, FONTS, "Font"), size: int(c.size, 24, 140, "Caption size"), color: color(c.color, "Caption colour"), highlight: color(c.highlight, "Highlight colour"),
       outline: int(c.outline, 0, 12, "Outline"), outlineColor: color(c.outlineColor, "Outline colour"), box: bool(c.box, "Caption box"), boxColor: color(c.boxColor, "Box colour"),
       uppercase: bool(c.uppercase, "Uppercase"), animation: pick(c.animation, ANIMATIONS, "Animation"), words: int(c.words, 1, 8, "Words per line"), y: num(c.y, 0.08, 0.95, "Caption position"), mask: bool(c.mask, "Profanity filter"),
+      // Looks saved before keyword highlighting get it on, in their preset's colour.
+      keywords: bool(c.keywords ?? true, "Keyword highlight"), keywordColor: color(s.captions?.keywordColor ?? PRESETS[c.preset]?.keywordColor ?? c.keywordColor ?? "#ffe14d", "Keyword colour"),
     },
     hook: { color: color(h.color, "Hook text colour"), bg: color(h.bg, "Hook background"), seconds: num(h.seconds ?? DEFAULT_HOOK_SECONDS, 1, MAX_CLIP, "Hook length") },
     progress: { on: bool(p.on, "Progress bar"), color: color(p.color, "Progress bar colour") },
@@ -224,6 +229,29 @@ export function maskWord(word) {
   return word.replace(/[\p{L}\p{N}]/gu, ch => { if (!seen) { seen = true; return ch; } return "*"; });
 }
 
+// ---- Keywords: the word in a caption line that matters most, drawn in captions.keywordColor and a little bigger ----
+const STOP = new Set("a an the and or but so if then than that this these those there here it its it's is am are was were be been being do does did done have has had having i me my mine you your yours he him his she her hers we us our they them their what which who whom whose when where why how all any both each few more most other some such no nor not only own same too very can will just don't should now to of in on at by for with about against between into through during before after above below from up down out off over under again further once also yeah yes ok okay oh uh um like gonna wanna gotta really actually got get go going went know think mean said say says thing things".split(" "));
+const EMPHATIC = new Set("insane crazy never always wait stop huge massive biggest best worst ever impossible unbelievable incredible literally dead died kill killed win won winning lose lost losing first last million billion thousand hundred free broke rich money secret shocked crying screaming insanely perfect legendary clutch ace banned destroyed".split(" "));
+// How strongly a word should stand out (0: never). first: it starts the caption line, where a capital means nothing.
+export function keywordScore(raw, first = false) {
+  const word = String(raw).replace(/^[^\p{L}\p{N}$£€]+|[^\p{L}\p{N}%!?]+$/gu, ""), bare = word.toLowerCase().replace(/[!?]+$/, "");
+  if (!bare) return 0;
+  if (/\d/.test(bare) || /^[$£€]/.test(bare)) return 5;  // numbers and amounts matter most
+  if (STOP.has(bare) || bare.length < 3) return 0;
+  let score = 1 + (bare.length >= 6 ? 1 : 0);
+  if (EMPHATIC.has(bare)) score += 3;
+  const letters = word.replace(/[^\p{L}]/gu, "");
+  if (letters.length >= 2 && letters === letters.toUpperCase() && letters !== letters.toLowerCase()) score += 2;  // shouted
+  else if (!first && /^\p{Lu}/u.test(word)) score += 1;  // a name, mid-sentence
+  if (/!$/.test(word)) score += 1;
+  return score;
+}
+// Which words of a caption line stand out: the top-scoring one (two on lines of 5+ words), if it scores at least 3.
+export function keywordsOf(texts) {
+  const scored = texts.map((t, i) => ({ i, s: keywordScore(t, i === 0) })).filter(x => x.s >= 3).sort((a, b) => b.s - a.s || a.i - b.i);
+  return new Set(scored.slice(0, texts.length >= 5 ? 2 : 1).map(x => x.i));
+}
+
 // Groups transcript words inside the trim into caption cues, with times relative to the trimmed clip.
 // Breaks on the words-per-line setting, long lines, pauses, long cues and sentence ends.
 export function cues(words, edit) {
@@ -237,7 +265,8 @@ export function cues(words, edit) {
     if (c.uppercase) t = t.toUpperCase();
     const s = Math.max(0, ws - start), e = Math.min(end - start, we - start);
     if (cur.length && (cur.length >= perLine || cur.map(w => w.t).join(" ").length + 1 + t.length > maxChars || s - cur.at(-1).e > 0.6 || e - cur[0].s > 2.5)) flush();
-    cur.push({ s, e, t });
+    // Keywords are judged on `raw` (before ALL CAPS): shouting only counts when it was really said in capitals.
+    cur.push({ s, e, t, raw });
     if (/[.?!]$/.test(t)) flush();
   }
   flush();
@@ -245,7 +274,9 @@ export function cues(words, edit) {
     const next = out[i + 1];
     let e = Math.max(ws.at(-1).e, ws[0].s + 0.4);
     if (next) e = Math.min(e, next[0].s);
-    return { start: ws[0].s, end: e, words: ws };
+    // k: this word is the line's keyword (captions.keywords on).
+    const keys = c.keywords ? keywordsOf(ws.map(w => w.raw)) : new Set();
+    return { start: ws[0].s, end: e, words: ws.map(({ raw: _raw, ...w }, j) => ({ ...w, k: keys.has(j) })) };
   });
 }
 
@@ -351,20 +382,23 @@ export function buildAss(edit, words, tl = plain(edit)) {
   ];
   const pos = "{\\an5\\pos(" + W / 2 + "," + y + ")}";
   const hl = "{\\c" + assColor(c.highlight) + "}", base = "{\\c" + assColor(c.color) + "}";
+  // A keyword: its own colour (the karaoke highlight while it's spoken) and KEYWORD_SCALE bigger.
+  const big = "\\fscx" + Math.round(KEYWORD_SCALE * 100) + "\\fscy" + Math.round(KEYWORD_SCALE * 100);
+  const kw = (x, now = false) => x.k ? "{\\c" + assColor(now ? c.highlight : c.keywordColor) + big + "}" + esc(x.t) + "{\\c" + assColor(c.color) + "\\fscx100\\fscy100}" : now ? hl + esc(x.t) + base : esc(x.t);
   if (c.on) for (const cue of cues(words, edit)) {
     if (c.animation === "word") {
       cue.words.forEach((w, i) => {
         const end = i + 1 < cue.words.length ? cue.words[i + 1].s : cue.end;
-        lines.push(`Dialogue: 0,${stamp(w.s)},${stamp(Math.max(end, w.s + 0.15))},Cap,,0,0,0,,${pos}${POP}${esc(w.t)}`);
+        lines.push(`Dialogue: 0,${stamp(w.s)},${stamp(Math.max(end, w.s + 0.15))},Cap,,0,0,0,,${pos}${POP}${kw(w)}`);
       });
     } else if (c.animation === "karaoke") {
       cue.words.forEach((w, i) => {
         const from = i === 0 ? cue.start : w.s, to = i + 1 < cue.words.length ? cue.words[i + 1].s : cue.end;
-        const body = cue.words.map((x, j) => j === i ? hl + esc(x.t) + base : esc(x.t)).join(" ");
+        const body = cue.words.map((x, j) => kw(x, j === i)).join(" ");
         lines.push(`Dialogue: 0,${stamp(from)},${stamp(to)},Cap,,0,0,0,,${pos}${i === 0 ? POP : ""}${body}`);
       });
     } else {
-      const body = cue.words.map(w => esc(w.t)).join(" ");
+      const body = cue.words.map(w => kw(w)).join(" ");
       lines.push(`Dialogue: 0,${stamp(cue.start)},${stamp(cue.end)},Cap,,0,0,0,,${pos}${c.animation === "pop" ? POP : ""}${body}`);
     }
   }

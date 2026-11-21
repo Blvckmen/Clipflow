@@ -3,7 +3,7 @@
 // worker renders with, so what you see is what gets posted. Saving stores the edit; the worker re-renders it.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, Scissors, Sparkles, Undo2 } from "lucide-react";
-import { ANIMATIONS, ASPECTS, ASPECT_LABELS, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, HOOK_LINES, MAX_CLIP, MIN_CLIP, PRESETS, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks, timeline, zoomAt } from "../worker/edit.mjs";
+import { ANIMATIONS, ASPECTS, ASPECT_LABELS, KEYWORD_SCALE, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, HOOK_LINES, MAX_CLIP, MIN_CLIP, PRESETS, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks, timeline, zoomAt } from "../worker/edit.mjs";
 
 import { applyAutomaticHook } from "../worker/hooks.mjs";
 
@@ -12,7 +12,7 @@ type CamBox = { x: number; y: number; w: number; h: number };
 type Facecam = { box: CamBox | null; share: number; corner: "tl" | "tr" | "bl" | "br"; size: number };
 type Aspect = keyof typeof ASPECTS;
 type Frame = { mode: "blur" | "crop" | "fit" | "split" | "cam" | "pip" | "phone"; aspect?: Aspect; content?: CamBox | null; zoom: number; x: number; y: number; background?: string | null; split?: Split; facecam?: Facecam };
-type Captions = { on: boolean; preset: string; font: string; size: number; color: string; highlight: string; outline: number; outlineColor: string; box: boolean; boxColor: string; uppercase: boolean; animation: string; words: number; y: number; mask: boolean };
+type Captions = { on: boolean; preset: string; font: string; size: number; color: string; highlight: string; outline: number; outlineColor: string; box: boolean; boxColor: string; uppercase: boolean; animation: string; words: number; y: number; mask: boolean; keywords: boolean; keywordColor: string };
 type Word = [number, number, string];
 export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { text: string; seconds: number; color: string; bg: string }; progress: { on: boolean; color: string }; pace?: Pace; words?: Word[] };
 type Pace = { cuts: "off" | "gentle" | "tight"; zooms: boolean };
@@ -23,15 +23,15 @@ const animationLabels: Record<string, string> = { none: "Static", pop: "Pop in",
 const fmt = (t: number) => Math.floor(t / 60) + ":" + (t % 60).toFixed(1).padStart(4, "0");
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 
-// Breaks words into lines no wider than `max` with the current font.
-function wrap(ctx: CanvasRenderingContext2D, words: string[], max: number) {
+// Breaks words into lines no wider than `max` with the current font (or `measure`, for words drawn bigger).
+function wrap(ctx: CanvasRenderingContext2D, words: string[], max: number, measure = (w: string, _i: number) => ctx.measureText(w).width) {
   const lines: number[][] = [];
   let line: number[] = [], width = 0;
   const space = ctx.measureText(" ").width;
   words.forEach((w, i) => {
     // A line break typed in the hook starts a new line.
     if (w === "\n") { if (line.length) lines.push(line); line = []; width = 0; return; }
-    const ww = ctx.measureText(w).width;
+    const ww = measure(w, i);
     if (line.length && width + space + ww > max) { lines.push(line); line = []; width = 0; }
     width += (line.length ? space : 0) + ww; line.push(i);
   });
@@ -41,21 +41,26 @@ function wrap(ctx: CanvasRenderingContext2D, words: string[], max: number) {
 
 // `margin` matches the subtitle style's left/right margins in buildAss (captions 40, hook 60), so lines wrap at
 // the same width as in the render.
-function drawText(ctx: CanvasRenderingContext2D, parts: { t: string; color: string }[], c: { font: string; size: number; outline: number; outlineColor: string; box: boolean; boxColor: string }, cx: number, y: number, anchor: "middle" | "top", scale = 1, margin = 40) {
+// A part with `big` (a caption keyword) is drawn KEYWORD_SCALE bigger, like its \fscx/\fscy in the render.
+function drawText(ctx: CanvasRenderingContext2D, parts: { t: string; color: string; big?: boolean }[], c: { font: string; size: number; outline: number; outlineColor: string; box: boolean; boxColor: string }, cx: number, y: number, anchor: "middle" | "top", scale = 1, margin = 40) {
   ctx.save();
-  ctx.font = `bold ${c.size}px "${c.font}", "DejaVu Sans", Arial, sans-serif`;
+  const font = (big?: boolean) => `bold ${big ? Math.round(c.size * KEYWORD_SCALE) : c.size}px "${c.font}", "DejaVu Sans", Arial, sans-serif`;
+  ctx.font = font();
   ctx.textBaseline = "middle"; ctx.lineJoin = "round";
-  const lines = wrap(ctx, parts.map(p => p.t), cx * 2 - 2 * margin), lh = c.size * 1.18, space = ctx.measureText(" ").width;
+  const measure = (t: string, i: number) => { if (!parts[i]?.big) return ctx.measureText(t).width; ctx.font = font(true); const w = ctx.measureText(t).width; ctx.font = font(); return w; };
+  const lines = wrap(ctx, parts.map(p => p.t), cx * 2 - 2 * margin, measure), lh = c.size * 1.18, space = ctx.measureText(" ").width;
   const top = anchor === "middle" ? y - (lines.length * lh) / 2 : y;
   ctx.translate(cx, top + (lines.length * lh) / 2); ctx.scale(scale, scale); ctx.translate(-cx, -(top + (lines.length * lh) / 2));
   lines.forEach((line, li) => {
-    const widths = line.map(i => ctx.measureText(parts[i].t).width), total = widths.reduce((a, b) => a + b, 0) + space * (line.length - 1);
+    const widths = line.map(i => measure(parts[i].t, i)), total = widths.reduce((a, b) => a + b, 0) + space * (line.length - 1);
     const ly = top + li * lh + lh / 2;
     let x = cx - total / 2;
     if (c.box) { const pad = Math.max(8, Math.round(c.size * 0.22)); ctx.fillStyle = c.boxColor; ctx.fillRect(x - pad, ly - lh / 2 - pad / 2 + 4, total + pad * 2, lh + pad - 8); }
     line.forEach((i, k) => {
+      ctx.font = font(parts[i].big);
       if (!c.box && c.outline > 0) { ctx.lineWidth = c.outline * 2; ctx.strokeStyle = c.outlineColor; ctx.strokeText(parts[i].t, x, ly); }
       ctx.fillStyle = parts[i].color; ctx.textAlign = "left"; ctx.fillText(parts[i].t, x, ly);
+      ctx.font = font();
       x += widths[k] + space;
     });
   });
@@ -185,8 +190,9 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
       if (hit) {
         const { cue, word } = hit, w = cue.words[word];
         const y = c.y * H;
-        if (c.animation === "word") drawText(ctx, [{ t: w.t, color: c.color }], c, W / 2, y, "middle", pop(rel - w.s));
-        else drawText(ctx, cue.words.map((x: { t: string }, i: number) => ({ t: x.t, color: c.animation === "karaoke" && i === word ? c.highlight : c.color })), c, W / 2, y, "middle", c.animation === "pop" || c.animation === "karaoke" ? pop(rel - cue.start) : 1);
+        // A keyword (w.k) stands out in the keyword colour, or the highlight while it's spoken, and bigger.
+        if (c.animation === "word") drawText(ctx, [{ t: w.t, color: w.k ? c.keywordColor : c.color, big: w.k }], c, W / 2, y, "middle", pop(rel - w.s));
+        else drawText(ctx, cue.words.map((x: { t: string; k?: boolean }, i: number) => ({ t: x.t, big: x.k, color: c.animation === "karaoke" && i === word ? c.highlight : x.k ? c.keywordColor : c.color })), c, W / 2, y, "middle", c.animation === "pop" || c.animation === "karaoke" ? pop(rel - cue.start) : 1);
       }
       // Word by word (wrapped like the render), with the hook's own line breaks.
       if (e.hook.text && out < e.hook.seconds) drawText(ctx, e.hook.text.split("\n").flatMap((l, i) => [...(i ? [{ t: "\n", color: e.hook.color }] : []), ...l.split(" ").filter(Boolean).map(t => ({ t, color: e.hook.color }))]), { font: c.font, size: 52, outline: 0, outlineColor: "#000000", box: true, boxColor: e.hook.bg }, W / 2, 150, "top", pop(out), 60);
@@ -372,12 +378,14 @@ export default function ClipEditor({ clipId, onClose, onSaved }: { clipId: strin
               <label>Outline <span>{c.outline}px</span><input type="range" min={0} max={12} value={c.outline} disabled={c.box} onChange={e => setCaption({ outline: Number(e.target.value) })} /></label>
               <label className="color">Text<input type="color" value={c.color} onChange={e => setCaption({ color: e.target.value })} /></label>
               <label className="color">Highlight<input type="color" value={c.highlight} onChange={e => setCaption({ highlight: e.target.value })} /></label>
+              <label className="color" title="The colour of each line's most important word">Key words<input type="color" value={c.keywordColor} disabled={!c.keywords} onChange={e => setCaption({ keywordColor: e.target.value })} /></label>
               <label className="color">Outline<input type="color" value={c.outlineColor} onChange={e => setCaption({ outlineColor: e.target.value })} /></label>
               <label className="color">Box<input type="color" value={c.boxColor} onChange={e => setCaption({ boxColor: e.target.value })} /></label>
             </div>
             <div className="toggles">
               <label><input type="checkbox" checked={c.box} onChange={e => setCaption({ box: e.target.checked })} />Background box</label>
               <label><input type="checkbox" checked={c.uppercase} onChange={e => setCaption({ uppercase: e.target.checked })} />ALL CAPS</label>
+              <label title="Each line's most important word (a strong word, a number, a name, or one that was shouted) in its own colour and a little bigger"><input type="checkbox" checked={c.keywords} onChange={e => setCaption({ keywords: e.target.checked })} />Highlight key words</label>
               <label title="Replaces swear words with asterisks, e.g. f***, which keeps clips safer for brand-friendly accounts"><input type="checkbox" checked={c.mask} onChange={e => setCaption({ mask: e.target.checked })} />Bleep swear words in captions</label>
             </div>
           </>}

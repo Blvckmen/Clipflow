@@ -75,9 +75,13 @@ test("buildAss writes styles and one dialogue per cue, or per word for karaoke a
   assert.match(plain, /PlayResX: 720\nPlayResY: 1280/);
   assert.match(plain, /Style: Cap,Impact,74,&H00FFFFFF,/);
   assert.equal(plain.match(/^Dialogue: 0,/gm).length, 3);
-  const karaoke = buildAss(edit({ captions: { ...edit().captions, animation: "karaoke", highlight: "#ff0000" } }), words);
+  const karaoke = buildAss(edit({ captions: { ...edit().captions, animation: "karaoke", highlight: "#ff0000", keywords: false } }), words);
   assert.equal(karaoke.match(/^Dialogue: 0,/gm).length, 7, "one line per spoken word");
   assert.match(karaoke, /\{\\c&H000000FF\}INSANE\.\{\\c&H00FFFFFF\}/, "the spoken word takes the highlight colour");
+  // Keywords on: "insane" stands out in the keyword colour and bigger, and in the highlight colour while it's spoken.
+  const keyed = buildAss(edit({ captions: { ...edit().captions, animation: "karaoke", highlight: "#ff0000", keywords: true, keywordColor: "#00ff00" } }), words);
+  assert.match(keyed, /\{\\c&H0000FF00\\fscx115\\fscy115\}INSANE\.\{\\c&H00FFFFFF\\fscx100\\fscy100\}/);
+  assert.match(keyed, /\{\\c&H000000FF\\fscx115\\fscy115\}INSANE\./);
   const boxed = buildAss(edit({ captions: { ...PRESETS.boxed, on: true, preset: "boxed", y: 0.5, mask: false } }), words);
   assert.match(boxed, /Style: Cap,Verdana,46,.*,0,0,3,10,0,5,/, "box uses border style 3");
   assert.match(boxed, /\\pos\(360,640\)/);
@@ -225,4 +229,35 @@ test("a hook keeps its line breaks (up to 3 lines) and renders them as new lines
   assert.equal(edit.hook.text, "He did NOT\nsee that\ncoming", "empty lines dropped, spaces tidied, 3 lines at most");
   assert.match(buildAss(edit, []), /He did NOT\\Nsee that\\Ncoming/);
   assert.equal(normalizeEdit({ ...edit, hook: { ...edit.hook, text: "one line {\\b1}" } }, { duration: 60 }).hook.text, "one line b1", "override codes are stripped");
+});
+
+test("keywordScore and keywordsOf pick the word that matters in a caption line", async () => {
+  const { keywordScore, keywordsOf } = await import("../edit.mjs");
+  assert.equal(keywordScore("the"), 0);
+  assert.equal(keywordScore("um"), 0);
+  assert.ok(keywordScore("insane!") >= 5, "emphatic, with an exclamation");
+  assert.equal(keywordScore("$500"), 5);
+  assert.equal(keywordScore("10k"), 5);
+  assert.equal(keywordScore("WHAT"), 0, "a shouted stop word still isn't a keyword");
+  assert.ok(keywordScore("NOOO") >= 3, "shouting counts");
+  assert.equal(keywordScore("Speed", true), 1, "a capital at the start of a line means nothing");
+  assert.equal(keywordScore("Speed", false), 2, "mid-line it's probably a name");
+  assert.deepEqual([...keywordsOf(["that", "was", "actually", "insane"])], [3]);
+  assert.deepEqual([...keywordsOf(["i", "think", "so"])], [], "nothing important");
+  assert.deepEqual([...keywordsOf(["he", "got", "$500", "in", "one", "insane", "round"])].sort(), [2, 5], "two on a long line");
+});
+
+test("cues mark keywords only when captions.keywords is on, judged before ALL CAPS", async () => {
+  const { cues, normalizeStyle, defaultStyle } = await import("../edit.mjs");
+  const ws = [[0, 0.3, "that"], [0.3, 0.6, "was"], [0.6, 1, "insane"]];
+  const style = defaultStyle();
+  const on = cues(ws, { ...style, trim: { start: 0, end: 5 }, captions: { ...style.captions, words: 4 } });
+  assert.deepEqual(on[0].words.map(w => w.k), [false, false, true]);
+  assert.equal(on[0].words[2].t, "INSANE", "the bold preset is ALL CAPS");
+  const off = cues(ws, { ...style, trim: { start: 0, end: 5 }, captions: { ...style.captions, words: 4, keywords: false } });
+  assert.ok(off[0].words.every(w => !w.k));
+  // Looks saved before keywords existed get them, in their preset's colour.
+  const old = { ...style, captions: { ...style.captions } }; delete old.captions.keywords; delete old.captions.keywordColor;
+  assert.equal(normalizeStyle(old).captions.keywords, true);
+  assert.equal(normalizeStyle({ ...old, captions: { ...old.captions, preset: "boxed" } }).captions.keywordColor, "#1d4ed8");
 });
