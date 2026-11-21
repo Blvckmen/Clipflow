@@ -188,7 +188,7 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   // Only clips flagged since the last run (queue_check, set by triggers when a clip arrives, is approved, uploaded or
   // re-rendered) are looked at, through a partial index, so this every-minute step reads a handful of rows.
   await db.prepare(`INSERT OR IGNORE INTO posts (id,owner,clip_id,platform,account_id,state,error,next_attempt_at,created_at,updated_at)
-    SELECT lower(hex(randomblob(16))),c.owner,c.id,?,?,?,?,?,?,? FROM clips c
+    SELECT lower(hex(randomblob(16))),c.owner,c.id,?,?,?,?,?,?,? FROM clips c INDEXED BY clips_queue_check
     JOIN streamer_accounts sa ON sa.streamer_id=c.streamer_id AND sa.account_id=?
     WHERE c.queue_check IS NOT NULL AND c.owner=? AND c.review='approved' AND c.file_key IS NOT NULL AND coalesce(c.render_state,'')!='queued'
     AND coalesce(c.reviewed_at,c.created_at)>=max(?,sa.created_at)

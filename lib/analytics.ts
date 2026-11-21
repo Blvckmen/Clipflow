@@ -5,7 +5,9 @@ import { listAnalytics, ZernioError, type ZernioMetrics } from "./zernio";
 import { keyConnection, listKeys, siteConnection, type Connection } from "./zernio-keys";
 
 type Env = Cloudflare.Env;
-const EVERY_MS = 60 * 60_000, NO_ACCESS_RETRY_MS = 24 * 3600_000, MAX_PAGES = 5;
+// SCAN_MS: how often the cron looks for workspaces to sync at all (each connection still syncs hourly); looking every
+// minute read more D1 rows than everything else together.
+const EVERY_MS = 60 * 60_000, SCAN_MS = 10 * 60_000, NO_ACCESS_RETRY_MS = 24 * 3600_000, MAX_PAGES = 5;
 const count = (n: unknown) => (typeof n === "number" && Number.isFinite(n) && n >= 0 ? Math.round(n) : null);
 
 // Every key a workspace's published posts went out with: its own keys, plus the site's shared key while any of its
@@ -19,6 +21,9 @@ async function readers(env: Env, db: D1Database, owner: string): Promise<Connect
 
 export async function syncAnalytics(env: Env, now = Date.now()) {
   const db = env.DB!;
+  const scanned = await db.prepare("SELECT at FROM sync_state WHERE key='analytics:scan'").first<{ at: string }>();
+  if (scanned && now - Date.parse(scanned.at) < SCAN_MS && now >= Date.parse(scanned.at)) return;
+  await db.prepare("INSERT INTO sync_state (key,at,note) VALUES ('analytics:scan',?,NULL) ON CONFLICT(key) DO UPDATE SET at=excluded.at").bind(new Date(now).toISOString()).run();
   // Only workspaces that have something published through Zernio.
   const { results: owners } = await db.prepare("SELECT DISTINCT a.owner FROM accounts a WHERE a.provider='zernio' AND EXISTS (SELECT 1 FROM posts p WHERE p.owner=a.owner AND p.state='published')").all<{ owner: string }>();
   for (const { owner } of owners) {
@@ -37,9 +42,10 @@ export async function syncAnalytics(env: Env, now = Date.now()) {
             const entries = post.platforms?.length ? post.platforms : [{ platform: post.platform ?? "", platformPostId: undefined, analytics: post.analytics }];
             for (const entry of entries) {
               const m: ZernioMetrics = entry.analytics ?? {};
-              // Match Clipflow's post by the platform's post id, or by the Zernio post it was sent as.
+              // Match Clipflow's post by the platform's post id, or by the Zernio post it was sent as. The unary + keeps
+              // SQLite on the media/container indexes rather than walking all the owner's published posts.
               updates.push(db.prepare(`UPDATE posts SET views=?,likes=?,comments=?,shares=?,saves=?,metrics_at=?
-                WHERE id IN (SELECT id FROM posts WHERE media_id=? UNION ALL SELECT id FROM posts WHERE container_id=?) AND owner=? AND state='published' AND platform=?`)
+                WHERE id IN (SELECT id FROM posts WHERE media_id=? UNION ALL SELECT id FROM posts WHERE container_id=?) AND +owner=? AND +state='published' AND +platform=?`)
                 .bind(count(m.views), count(m.likes), count(m.comments), count(m.shares), count(m.saves), iso, entry.platformPostId ?? "", post.latePostId ?? post._id, owner, entry.platform));
             }
           }
