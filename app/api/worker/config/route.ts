@@ -18,8 +18,9 @@ export async function GET(request:Request){
    db.prepare("UPDATE worker_tokens SET last_seen=? WHERE owner=?").bind(new Date().toISOString(),owner).run(),
    // Split-screen background videos the worker may download (GET /api/worker/backgrounds/<id>).
    db.prepare("SELECT id,name,size,duration,content_type FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all<{id:string;name:string;size:number;duration:number|null;content_type:string}>(),
-   // Recordings the dashboard still has (the worker deletes its copies of the rest) and clips asked for from them.
-   db.prepare("SELECT id FROM recordings WHERE owner=? ORDER BY started_at DESC LIMIT 2000").bind(owner).all<{id:string}>(),
+   // Recordings the dashboard still has (the worker deletes its copies of the rest), videos waiting to be imported
+   // (read in the same pass), and clips asked for from them.
+   db.prepare("SELECT id,streamer_id,state,source_url FROM recordings WHERE owner=? ORDER BY started_at DESC LIMIT 2000").bind(owner).all<{id:string;streamer_id:string;state:string;source_url:string|null}>(),
    db.prepare("SELECT id,recording_id,kind,start,end,count FROM recording_requests WHERE owner=? AND state IN ('queued','working') ORDER BY created_at LIMIT 50").bind(owner).all<{id:string;recording_id:string;kind:string;start:number|null;end:number|null;count:number|null}>(),
   ]);
   // streamers is in recording-priority order: the worker gives full capture slots to the first live ones.
@@ -28,6 +29,8 @@ export async function GET(request:Request){
    style:parse(p?.style),
    streamers:s.results.map(x=>({id:x.id,url:x.url,status:x.status,style:parse(x.style),captureMode:x.capture_mode??"clip",text:clipText(x.clip_text)})),
    recordingDays:(p?.recording_days as number|undefined)??defaults.recordingDays,importClips:(p?.import_clips as number|undefined)??defaults.importClips,recordings:rec.results.map(x=>x.id),
+   // Oldest first, so the worker downloads them in the order they were pasted.
+   imports:rec.results.filter(x=>x.source_url&&(x.state==="queued"||x.state==="importing")).reverse().slice(0,20).map(x=>({id:x.id,streamerId:x.streamer_id,url:x.source_url})),
    clipRequests:req.results.map(x=>x.kind==="moment"?{id:x.id,recordingId:x.recording_id,kind:x.kind,start:x.start,end:x.end}:{id:x.id,recordingId:x.recording_id,kind:x.kind,count:x.count}),
    // kind: a looping video, or a still image (rendered for the clip's whole length).
    backgrounds:b.results.map(({content_type,...x})=>({...x,kind:content_type.startsWith("image/")?"image":"video",type:content_type})),

@@ -128,6 +128,9 @@ export const recordings=sqliteTable("recordings",{
  id:text("id").primaryKey(),owner:text("owner").notNull(),streamerId:text("streamer_id").notNull(),title:text("title"),
  startedAt:text("started_at").notNull(),endedAt:text("ended_at"),duration:integer("duration"),size:integer("size"),
  state:text("state").notNull().default("recording"),error:text("error"),
+ // A video imported from a link (Twitch/Kick VOD, YouTube): the link, rebuilt by worker/video-link.mjs. Such a
+ // recording starts "queued" (waiting for the worker PC), then "importing" while it downloads.
+ sourceUrl:text("source_url"),
  // Heat strip: {step (seconds per bar), energy: [0-1], chat: [counts]}.
  signals:text("signals"),
  previewKey:text("preview_key"),previewSize:integer("preview_size"),

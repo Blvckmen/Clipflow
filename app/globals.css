@@ -236,6 +236,11 @@ th.num{text-align:right}
 .moment-fields label{font-size:13px}.form-body .moment-fields input{margin-top:6px}
 .moment-actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap}.moment-actions .primary{margin-left:auto}
 .best-moments{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid #33472a;background:#182016;border-radius:8px;padding:14px 16px}
+.import-video{display:flex;flex-direction:column;gap:8px;padding:14px 16px;border-bottom:1px solid var(--border);text-align:left;width:100%;max-width:560px}
+.empty .import-video{border:1px solid var(--border);border-radius:8px;margin:14px auto 0}
+.import-video .field-label{display:flex;align-items:center;gap:6px}
+.import-video input{width:100%;min-width:0}
+.import-video-row{display:flex;gap:8px;flex-wrap:wrap}.import-video-row select{flex:1 1 140px;min-width:0}.import-video-row button{flex:0 0 auto}
 .best-moments>svg{color:var(--lime);flex-shrink:0}.best-moments>div{flex:1;min-width:200px}.best-moments strong{font-size:14px;font-weight:600;display:block}.best-moments small{margin-top:2px}
 .request-list{display:flex;flex-direction:column;margin-top:8px}
 .request-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:9px 0;border-top:1px solid var(--border);font-size:13px}

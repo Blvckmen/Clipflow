@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { validBackgrounds } from "./backgrounds.mjs";
+import { videoLink } from "./video-link.mjs";
 
 export function channelUrl(value) {
   const u = new URL(value);
@@ -68,6 +69,11 @@ export function validateControl(c) {
     if (r.kind === "moment" && !(Number.isInteger(r.start) && Number.isInteger(r.end) && r.start >= 0 && r.end - r.start >= 15 && r.end - r.start <= 90)) throw new Error("Invalid clip request range");
     if (r.kind === "best" && !(Number.isInteger(r.count) && r.count >= 1 && r.count <= 20)) throw new Error("Invalid clip request count");
   }
+  // Videos pasted on the Recordings page, waiting to be downloaded ({ id, streamerId, url }). Each link is rebuilt by
+  // videoLink() and must come back the same; dashboards that predate imports omit the list.
+  c.imports ??= [];
+  if (!Array.isArray(c.imports) || c.imports.length > 20) throw new Error("Invalid imports");
+  for (const v of c.imports) if (!/^[0-9a-f-]{36}$/i.test(v?.id) || !/^[0-9a-f-]{36}$/i.test(v.streamerId) || videoLink(v.url)?.url !== v.url) throw new Error("Invalid import");
   // Re-renders requested from the editor. Dashboards that predate the editor omit them.
   c.renders ??= [];
   if (!Array.isArray(c.renders) || c.renders.length > 20) throw new Error("Invalid renders");

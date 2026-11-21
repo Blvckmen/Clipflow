@@ -17,6 +17,7 @@ import { chatSample, writeClipText, writerEnabled } from "./writer.mjs";
 import { command } from "./process.mjs";
 import { bucketSignals, encodePreview, extractRange, joinSegments, parts, pickMoments } from "./recordings.mjs";
 import { Twitch, clipUrl, pickClips, twitchLogin } from "./twitch.mjs";
+import { PLATFORM_NAMES, downloadVideo, findYtDlp, videoLink, videoTitle } from "./vod.mjs";
 const run = promisify(execFile);
 
 const env = process.env;
@@ -352,6 +353,52 @@ async function importClip(streamer, clip, settings) {
   }
 }
 
+// ---- Imported videos ----
+// A Twitch or Kick VOD or a YouTube video pasted on the Recordings page (config.imports) is downloaded, one at a
+// time, into a recording folder and then handled like a recorded stream: saved, measured, previewed and clipped
+// as asked. A download cut short by the worker stopping starts again when it is back; one deleted in the dashboard
+// meanwhile is cancelled.
+let importing = null;  // { id, controller } of the download running now
+function takeImports(list) {
+  if (importing && config?.recordings && !config.recordings.includes(importing.id)) importing.controller.abort();
+  if (importing || stopping) return;
+  const next = (list ?? []).find(v => { const row = store.recording(v.id); return !row || row.state === "importing"; });
+  if (next) void importVideo(next);
+}
+async function importVideo(item) {
+  const link = videoLink(item.url), dir = join(dataDir, "recordings", item.id), controller = new AbortController();
+  const signal = AbortSignal.any([controller.signal, backgroundController.signal]);
+  importing = { id: item.id, controller };
+  if (!store.recording(item.id)) store.addRecording(item.id, item.streamerId, dir, "import");
+  store.setRecording(item.id, { state: "importing", reported: 0 });
+  try {
+    await rm(dir, { recursive: true, force: true });
+    await mkdir(dir, { recursive: true });
+    void syncRecordings();
+    const ytdlp = await findYtDlp(env, python);
+    const title = await videoTitle(link, { ytdlp, streamlink, signal });
+    if (title) store.setRecording(item.id, { title, reported: 0 });
+    console.log("Importing", PLATFORM_NAMES[link.platform], "video", link.url, "with", ytdlp ? "yt-dlp" : "streamlink");
+    await downloadVideo(link, dir, join(dir, "recording.mp4"), { ytdlp, streamlink, signal });
+    store.setRecording(item.id, { state: "ended", ended_at: new Date().toISOString(), reported: 0 });
+    console.log("Imported", link.url);
+  } catch (error) {
+    if (stopping) return;  // started again next time
+    if (controller.signal.aborted) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+      store.removeRecording(item.id);
+      console.log("Import of", link.url, "cancelled (deleted in the dashboard)");
+      return;
+    }
+    store.setRecording(item.id, { state: "failed", error: ("Couldn't download the video: " + error.message).slice(0, 300), reported: 0 });
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+    problem("Importing " + link.url + " failed: " + error.message);
+  } finally {
+    importing = null;
+    if (!stopping) { void syncRecordings(); void runBackground(); }
+  }
+}
+
 // ---- Whole-stream recordings ----
 const recordingFile = row => join(row.dir, "recording.mp4");
 const readJson = async (path, fallback) => { try { return JSON.parse(await readFile(path, "utf8")); } catch { return fallback; } };
@@ -364,7 +411,7 @@ async function syncRecordings() {
     const size = row.state === "ready" ? (await stat(recordingFile(row)).catch(() => null))?.size ?? null : null;
     try {
       const response = await api("/api/worker/recordings", { method: "POST", body: JSON.stringify({ op: "recording", id: row.id, streamerId: row.streamer, startedAt: row.started_at, endedAt: row.ended_at, title: row.title ?? null,
-        state: row.state === "ended" ? "processing" : row.state, duration: row.duration == null ? null : Math.round(row.duration), size, signals, error: row.error ?? null }) });
+        state: row.state === "ended" ? "processing" : row.state, imported: row.mode === "import", duration: row.duration == null ? null : Math.round(row.duration), size, signals, error: row.error ?? null }) });
       // 404: the streamer was removed; nothing more to tell the dashboard about this recording.
       if (response.ok || response.status === 404) store.setRecording(row.id, { reported: 1 });
       else throw new Error("HTTP " + response.status);
@@ -407,8 +454,9 @@ async function recordingStep(row) {
     const { energy } = await readJson(join(row.dir, "energy.json"), { energy: [] });
     const chat = await readJson(join(row.dir, "chat.json"), []);
     await writeFile(join(row.dir, "signals.json"), JSON.stringify(bucketSignals(energy, chat)));
-    // "both" was clipped live, so nothing is picked afterwards.
-    store.setRecording(row.id, { state: "ready", duration: info.duration || energy.length, clipped: row.mode === "both" ? 1 : 0, reported: 0 });
+    // Only "record" has its best moments picked here: "both" was clipped live, and an imported video makes the clips
+    // asked for with it.
+    store.setRecording(row.id, { state: "ready", duration: info.duration || energy.length, clipped: row.mode === "record" ? 0 : 1, reported: 0 });
     void syncRecordings();
     console.log("Recording", row.id.slice(0, 8), "saved:", Math.round((info.duration || energy.length) / 60), "minutes");
     return;
@@ -537,7 +585,7 @@ async function pruneRecordings() {
   if (!config) return;
   const cutoff = Date.now() - config.recordingDays * 86_400_000;
   for (const row of store.recordings()) {
-    if (row.state === "recording" || row.id === backgroundRow) continue;
+    if (row.state === "recording" || row.id === backgroundRow || row.id === importing?.id) continue;
     const expired = Date.parse(row.started_at) < cutoff, deleted = config.recordings !== null && row.reported && !config.recordings.includes(row.id);
     if (!expired && !deleted) continue;
     // A file still open (a clip being cut from it) can't be removed on Windows; try again next cycle.
@@ -706,6 +754,7 @@ async function tick() {
   for (const id of bump) await stopSession(id, "a higher-priority streamer went live");
   for (const streamer of start) await startSession(streamer);
   await importViewerClips();
+  if (config) takeImports(config.imports);
   await reportStatus();
   await report();
   await syncRecordings();

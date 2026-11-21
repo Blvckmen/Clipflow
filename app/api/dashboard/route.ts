@@ -8,6 +8,7 @@ import { syncZernioAccounts } from "../../../lib/zernio-sync";
 import { optionsSchema, readOptions } from "../../../lib/account-options";
 import { encrypt } from "../../../lib/secure";
 import { normalizeStyle } from "../../../worker/edit.mjs";
+import { PLATFORM_NAMES, videoLink } from "../../../worker/video-link.mjs";
 import { socialCaptionsAvailable } from "../../../lib/social-caption";
 import { aiCaptionsAvailable } from "../../../lib/post-caption";
 import { removeRecordingFiles } from "../../../lib/recordings";
@@ -70,6 +71,9 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("makeClip"),recordingId:z.string().uuid(),start:z.number().int().min(0),end:z.number().int().min(1)}),
  z.object({action:z.literal("findMoments"),recordingId:z.string().uuid(),count:z.number().int().min(1).max(20)}),
  z.object({action:z.literal("deleteRecording"),id:z.string().uuid()}),
+ // A past stream or video from a link (Twitch/Kick VOD, YouTube), downloaded by the worker PC into a recording of
+ // the chosen streamer; `count` best moments (0: none) are clipped once it is in.
+ z.object({action:z.literal("importVideo"),url:z.string().trim().max(500),streamerId:z.string().uuid(),count:z.number().int().min(0).max(20)}),
  // A streamer's own clip look, or the workspace's (no streamerId). A null style goes back to the default.
  z.object({action:z.literal("style"),streamerId:z.string().uuid().optional(),style:z.unknown().nullable()}),
 ]);
@@ -96,7 +100,7 @@ export async function GET(){
   const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,importClips:Number(p.import_clips??0),style:parse(p.style)}:{...defaults,style:null};
   return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(x=>({...x,targets:parse(x.targets)??{},captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored})),storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,duration,content_type,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,
    // Whole-stream recordings (their heat strips load with GET /api/recordings/<id>) and clips asked for from them.
-   recordings:(await db.prepare("SELECT r.id,r.streamer_id,s.name AS streamer,r.title,r.started_at,r.ended_at,r.duration,r.size,r.state,r.error,r.preview_key IS NOT NULL AS preview,r.upload_id IS NOT NULL AS uploading,r.expires_at FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.owner=? ORDER BY r.started_at DESC LIMIT 100").bind(owner).all<Record<string,unknown>>()).results.map(x=>({...x,preview:!!x.preview,uploading:!!x.uploading})),
+   recordings:(await db.prepare("SELECT r.id,r.streamer_id,s.name AS streamer,r.title,r.started_at,r.ended_at,r.duration,r.size,r.state,r.error,r.preview_key IS NOT NULL AS preview,r.upload_id IS NOT NULL AS uploading,r.expires_at,r.source_url FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.owner=? ORDER BY r.started_at DESC LIMIT 100").bind(owner).all<Record<string,unknown>>()).results.map(x=>({...x,preview:!!x.preview,uploading:!!x.uploading})),
    recordingRequests:(await db.prepare("SELECT id,recording_id,kind,start,end,count,state,error,clips,created_at,updated_at FROM recording_requests WHERE owner=? ORDER BY created_at DESC LIMIT 200").bind(owner).all()).results,
   },{headers:{"Cache-Control":"private, no-store"}});
  }catch(error){console.error("Dashboard load failed",error);return Response.json({error:"We couldn't load your workspace. Please retry."},{status:503});}
@@ -469,6 +473,23 @@ export async function POST(request:Request){
     statements.push(db.prepare("INSERT INTO recording_requests (id,owner,recording_id,kind,count,state,created_at,updated_at) VALUES (?,?,?,'best',?,'queued',?,?)").bind(crypto.randomUUID(),owner,payload.recordingId,payload.count,iso,iso));
     message="Finding the "+payload.count+" best moment"+(payload.count===1?"":"s")+" in "+(rec.name?rec.name+"'s":"the")+" recording"+later+". The clips appear in the clip library as the worker PC makes them.";
    }
+  }
+  if(payload.action==="importVideo"){
+   const link=videoLink(payload.url) as {platform:"twitch"|"kick"|"youtube";url:string}|null;
+   if(!link)return Response.json({error:"Paste a link to a Twitch or Kick past broadcast (…/videos/…) or a YouTube video."},{status:400});
+   const streamer=await db.prepare("SELECT name FROM streamers WHERE id=? AND owner=?").bind(payload.streamerId,owner).first<{name:string}>();
+   if(!streamer)return Response.json({error:"Choose one of your streamers for the clips' look and accounts."},{status:404});
+   const [dup,waiting,p]=await Promise.all([
+    db.prepare("SELECT 1 FROM recordings WHERE owner=? AND source_url=? AND state!='failed' LIMIT 1").bind(owner,link.url).first(),
+    db.prepare("SELECT count(*) AS n FROM recordings WHERE owner=? AND state IN ('queued','importing')").bind(owner).first<{n:number}>(),
+    db.prepare("SELECT recording_days FROM preferences WHERE owner=?").bind(owner).first<{recording_days:number}>(),
+   ]);
+   if(dup)return Response.json({error:"That video is already under Recordings."},{status:409});
+   if((waiting?.n??0)>=5)return Response.json({error:"Five videos are already waiting to download. Try again once one is in."},{status:429});
+   const id=crypto.randomUUID(),expires=new Date(Date.now()+(p?.recording_days??defaults.recordingDays)*86_400_000).toISOString();
+   statements.push(db.prepare("INSERT INTO recordings (id,owner,streamer_id,title,started_at,state,source_url,expires_at,created_at) VALUES (?,?,?,NULL,?,'queued',?,?,?)").bind(id,owner,payload.streamerId,iso,link.url,expires,iso));
+   if(payload.count)statements.push(db.prepare("INSERT INTO recording_requests (id,owner,recording_id,kind,count,state,created_at,updated_at) VALUES (?,?,?,'best',?,'queued',?,?)").bind(crypto.randomUUID(),owner,id,payload.count,iso,iso));
+   message="Importing a "+PLATFORM_NAMES[link.platform]+" video as "+streamer.name+"'s. The worker PC downloads it"+(payload.count?" and makes its "+payload.count+" best moment"+(payload.count===1?"":"s")+" into clips":"; then pick clips from it under Recordings")+".";
   }
   if(payload.action==="deleteRecording"){
    const rec=await db.prepare("SELECT r.state,r.preview_key,r.upload_id,s.name FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.id=? AND r.owner=?").bind(payload.id,owner).first<{state:string;preview_key:string|null;upload_id:string|null;name:string|null}>();

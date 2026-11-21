@@ -116,6 +116,7 @@ logs to `worker\data\worker.log`.
 | `TWITCH_CLIENT_ID` | none | Your Twitch app's Client ID, for importing viewers' Twitch clips (see below) |
 | `TWITCH_CLIENT_SECRET` | none | That app's Client Secret. Keep it in `.env` on this PC; it never goes to the dashboard |
 | `IMPORT_MINUTES` | `30` | How often viewers' Twitch clips are looked for |
+| `YTDLP` | `yt-dlp`, then `python -m yt_dlp` | yt-dlp, for imported videos (needed for YouTube; see below) |
 
 Only capture channels you have permission to record and repost.
 
@@ -141,6 +142,17 @@ It uses Twitch's official API with your own Twitch app (free, about 5 minutes to
    ```
 
 No one signs in to Twitch: the worker uses an app access token, which can only read public information like clips.
+
+## Imported videos
+
+Recordings → "Import a past stream or video" takes a Twitch past broadcast (`twitch.tv/videos/…`), a Kick past
+broadcast (`kick.com/<channel>/videos/…`) or a YouTube video link. The worker downloads it (one at a time, at up to
+720p) into a recording folder, then treats it like a recorded stream: loudness, heat strip, preview, and the clips
+asked for (the best moments chosen when importing, or any picked later). A download stopped by a restart starts
+again; deleting the recording in the dashboard cancels it.
+
+Twitch and Kick videos download with streamlink. YouTube needs [yt-dlp](https://github.com/yt-dlp/yt-dlp), which is
+also used for the others when installed (`py -m pip install yt-dlp`, then restart the worker).
 
 ## AI writer (optional)
 

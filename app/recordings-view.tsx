@@ -1,7 +1,11 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Clock3, Film, Loader2, Radio, Scissors, Sparkles, Trash2 } from "lucide-react";
-export type Recording = { id: string; streamer_id: string; streamer: string | null; title: string | null; started_at: string; ended_at: string | null; duration: number | null; size: number | null; state: "recording" | "processing" | "ready" | "failed"; error: string | null; preview: boolean; uploading: boolean; expires_at: string };
+import { Clock3, Download, Film, Link2, Loader2, Radio, Scissors, Sparkles, Trash2 } from "lucide-react";
+import { PLATFORM_NAMES, videoLink } from "../worker/video-link.mjs";
+// "queued" and "importing": a video pasted below, waiting for the worker PC and then downloading.
+export type Recording = { id: string; streamer_id: string; streamer: string | null; title: string | null; started_at: string; ended_at: string | null; duration: number | null; size: number | null; state: "queued" | "importing" | "recording" | "processing" | "ready" | "failed"; error: string | null; preview: boolean; uploading: boolean; expires_at: string; source_url?: string | null };
+type StreamerChoice = { id: string; name: string };
+const sourceName = (r: Recording) => { const link = r.source_url ? videoLink(r.source_url) as { platform: keyof typeof PLATFORM_NAMES } | null : null; return link ? PLATFORM_NAMES[link.platform] : null; };
 export type RecordingRequest = { id: string; recording_id: string; kind: "moment" | "best"; start: number | null; end: number | null; count: number | null; state: "queued" | "working" | "done" | "failed"; error: string | null; clips: number; created_at: string };
 type Signals = { step: number; energy: number[]; chat: number[] };
 type Mutate = (body: unknown) => Promise<false | { message: string }>;
@@ -20,6 +24,8 @@ const length = (seconds: number | null) => seconds == null ? "" : seconds >= 360
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
 function StateTag({ r }: { r: Recording }) {
+  if (r.state === "queued") return <span className="tag amber">Waiting for the worker PC</span>;
+  if (r.state === "importing") return <span className="tag amber"><Loader2 size={11} className="spin" />&nbsp;Downloading</span>;
   if (r.state === "recording") return <span className="tag lime"><Radio size={11} />&nbsp;Recording now</span>;
   if (r.state === "processing") return <span className="tag amber">Saving on the worker PC</span>;
   if (r.state === "failed") return <span className="tag" title={r.error ?? ""}>Failed</span>;
@@ -30,21 +36,51 @@ function StateTag({ r }: { r: Recording }) {
 const requestLabel = (q: RecordingRequest) => q.kind === "moment" ? "Clip " + clock(q.start ?? 0) + "–" + clock(q.end ?? 0) : "Best " + q.count + " moment" + (q.count === 1 ? "" : "s");
 const requestState = (q: RecordingRequest) => q.state === "queued" ? "Waiting for the worker PC" : q.state === "working" ? "Making clips" : q.state === "done" ? q.clips + " clip" + (q.clips === 1 ? "" : "s") + " in the library" : "Failed" + (q.error ? ": " + q.error : "");
 
-export function RecordingsView({ recordings, requests, storage, busy, workerOnline, duration, mutate, onRefresh, onOpenLibrary }: {
-  recordings: Recording[]; requests: RecordingRequest[]; storage: boolean; busy: boolean; workerOnline: boolean; duration: number;
+// Paste a past broadcast or video; the worker PC downloads it as a recording of the chosen streamer (whose look and
+// accounts its clips get), optionally clipping its best moments straight away.
+function ImportVideo({ streamers, busy, duration, mutate, onImported }: { streamers: StreamerChoice[]; busy: boolean; duration: number; mutate: Mutate; onImported: () => void }) {
+  const [url, setUrl] = useState(""), [streamerId, setStreamerId] = useState(""), [count, setCount] = useState(5);
+  const link = videoLink(url) as { platform: keyof typeof PLATFORM_NAMES; url: string } | null;
+  // A Kick link names its channel: pick that streamer when there is one.
+  const guess = link?.platform === "kick" ? streamers.find(s => s.name.toLowerCase() === new URL(link.url).pathname.split("/")[1]) : undefined;
+  const chosen = streamerId || guess?.id || streamers[0]?.id || "";
+  if (!streamers.length) return <div className="import-video"><small className="muted">Add a streamer first: imported videos are clipped in a streamer's look and posted to their accounts.</small></div>;
+  return <form className="import-video" onSubmit={async e => {
+    e.preventDefault();
+    if (!link || !chosen) return;
+    if (await mutate({ action: "importVideo", url: link.url, streamerId: chosen, count })) { setUrl(""); onImported(); }
+  }}>
+    <label className="field-label" htmlFor="import-url"><Link2 size={13} /> Import a past stream or video</label>
+    <input id="import-url" type="url" inputMode="url" placeholder="twitch.tv/videos/…, kick.com/…/videos/… or a YouTube link" value={url} onChange={e => setUrl(e.target.value)} aria-invalid={!!url.trim() && !link} />
+    {url.trim() && !link && <small className="engine-error">Use a Twitch or Kick past broadcast link (…/videos/…) or a YouTube video link.</small>}
+    <div className="import-video-row">
+      <select aria-label="Whose clips" value={chosen} onChange={e => setStreamerId(e.target.value)}>{streamers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
+      <select aria-label="Clips to make" value={count} onChange={e => setCount(Number(e.target.value))}>
+        <option value={0}>Just import</option>{[3, 5, 8, 10].map(n => <option key={n} value={n}>Best {n} moments</option>)}
+      </select>
+      <button className="primary" disabled={busy || !link || !chosen}><Download size={15} />Import</button>
+    </div>
+    <small className="muted">{link ? PLATFORM_NAMES[link.platform] + " video · " : ""}Downloaded on your worker PC, then kept like a recording{count ? "; its " + count + " best moments become " + duration + "s clips" : ""}.</small>
+  </form>;
+}
+
+export function RecordingsView({ recordings, requests, streamers, storage, busy, workerOnline, duration, mutate, onRefresh, onOpenLibrary }: {
+  recordings: Recording[]; requests: RecordingRequest[]; streamers: StreamerChoice[]; storage: boolean; busy: boolean; workerOnline: boolean; duration: number;
   mutate: Mutate; onRefresh: () => void; onOpenLibrary: () => void;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const open = recordings.find(r => r.id === openId) ?? null;
-  // While anything is being recorded, saved or clipped, look again every half minute.
-  const active = recordings.some(r => r.state === "recording" || r.state === "processing" || (r.state === "ready" && !r.preview)) || requests.some(q => q.state === "queued" || q.state === "working");
+  // While anything is being imported, recorded, saved or clipped, look again every minute.
+  const active = recordings.some(r => r.state === "queued" || r.state === "importing" || r.state === "recording" || r.state === "processing" || (r.state === "ready" && !r.preview)) || requests.some(q => q.state === "queued" || q.state === "working");
   // Only while the tab is in view: a phone or a background tab left open shouldn't keep reading the database.
   useEffect(() => { if (!active) return; const timer = setInterval(() => { if (document.visibilityState === "visible") onRefresh(); }, 60_000); return () => clearInterval(timer); }, [active, onRefresh]);
+  const importer = <ImportVideo streamers={streamers} busy={busy} duration={duration} mutate={mutate} onImported={onRefresh} />;
   if (!recordings.length) return <section className="panel"><div className="empty tall"><div className="empty-icon"><Film size={30} /></div><h3>No recordings yet</h3>
-    <p>Set a streamer to <strong>Record the whole stream</strong> (or clip live and record) under Streamers → Edit. Their next stream is saved on your worker PC, and you can pick clips from it here.</p></div></section>;
+    <p>Set a streamer to <strong>Record the whole stream</strong> (or clip live and record) under Streamers → Edit. Their next stream is saved on your worker PC, and you can pick clips from it here. Or import a stream that already happened:</p>{importer}</div></section>;
   return <div className="recordings-layout">
     <section className="panel recording-list" aria-label="Recordings">
-      <div className="panel-heading"><div><h2>Recordings <span className="count">{recordings.length}</span></h2><p>Whole streams kept on your worker PC</p></div></div>
+      <div className="panel-heading"><div><h2>Recordings <span className="count">{recordings.length}</span></h2><p>Whole streams and imported videos kept on your worker PC</p></div></div>
+      {importer}
       {recordings.map(r => { const mine = requests.filter(q => q.recording_id === r.id), made = mine.reduce((a, q) => a + q.clips, 0);
         return <button key={r.id} className={"recording-row" + (r.id === open?.id ? " active" : "")} onClick={() => {
           setOpenId(r.id);
@@ -52,7 +88,7 @@ export function RecordingsView({ recordings, requests, storage, busy, workerOnli
           if (window.matchMedia("(max-width: 900px)").matches) requestAnimationFrame(() => document.querySelector(".recording-player")?.scrollIntoView({ behavior: "smooth", block: "start" }));
         }}>
           <div className="recording-row-top"><strong>{r.streamer ?? "Removed streamer"}</strong><StateTag r={r} /></div>
-          <small>{when(r.started_at)}{r.duration ? " · " + length(r.duration) : ""}{made ? " · " + made + " clip" + (made === 1 ? "" : "s") + " made" : ""}</small>
+          <small>{sourceName(r) ? "Imported from " + sourceName(r) + " " : ""}{when(r.started_at)}{r.duration ? " · " + length(r.duration) : ""}{made ? " · " + made + " clip" + (made === 1 ? "" : "s") + " made" : ""}</small>
           {r.title && <small className="recording-title">{r.title}</small>}
         </button>; })}
       <div className="panel-foot"><span className="small-dot" />Kept until the dates shown, then deleted from the worker PC and here. Change it in Settings.</div>
@@ -87,11 +123,12 @@ function RecordingPlayer({ r, requests, storage, busy, workerOnline, duration, m
   const maxChat = Math.max(1, ...(signals?.chat ?? [0]));
   const ready = r.state === "ready";
   return <section className="panel recording-player">
-    <div className="panel-heading"><div><h2>{r.streamer ?? "Removed streamer"} · {when(r.started_at)}</h2><p>{r.title ? r.title + " · " : ""}{total ? length(total) : "Still recording"}{r.size ? " · " + (r.size / 1e9).toFixed(1) + " GB on the worker PC" : ""} · kept until {new Date(r.expires_at).toLocaleDateString()}</p></div>
+    <div className="panel-heading"><div><h2>{r.streamer ?? "Removed streamer"} · {when(r.started_at)}</h2><p>{sourceName(r) ? "Imported from " + sourceName(r) + " · " : ""}{r.title ? r.title + " · " : ""}{total ? length(total) : r.state === "queued" || r.state === "importing" ? "Not downloaded yet" : "Still recording"}{r.size ? " · " + (r.size / 1e9).toFixed(1) + " GB on the worker PC" : ""} · kept until {new Date(r.expires_at).toLocaleDateString()}</p></div>
       {r.state !== "recording" && (confirmDelete
         ? <div className="row-actions"><button className="secondary" onClick={() => setConfirmDelete(false)}>Keep</button><button className="danger" disabled={busy} onClick={async () => { if (await mutate({ action: "deleteRecording", id: r.id })) onDeleted(); }}><Trash2 size={14} />Delete recording</button></div>
         : <button className="icon-button" aria-label="Delete recording" title="Delete recording" onClick={() => setConfirmDelete(true)}><Trash2 size={16} /></button>)}</div>
     <div className="form-body">
+      {(r.state === "queued" || r.state === "importing") && <div className="subtle-note">{r.state === "importing" && <Loader2 size={14} className="spin" />} {r.state === "queued" ? "Waiting for your worker PC to start downloading this " + (sourceName(r) ?? "") + " video" + (workerOnline ? " (it checks every minute)." : ". It is offline right now; the download starts when it is back.") : "Your worker PC is downloading this video. A long stream can take a while; then it is saved like a recording and the clips you asked for are made."}{r.source_url && <> <a href={r.source_url} target="_blank" rel="noreferrer">Open the original</a></>}</div>}
       {r.state === "recording" && <div className="subtle-note">This stream is being recorded right now. Once it ends, the worker PC saves it{storage ? " and uploads a small preview here so you can watch it" : ""}.</div>}
       {r.state === "processing" && <div className="subtle-note"><Loader2 size={14} className="spin" /> The worker PC is saving this recording. The heat strip and preview appear in a few minutes.</div>}
       {r.state === "failed" && <div className="error" role="status">This recording failed{r.error ? ": " + r.error : "."}</div>}

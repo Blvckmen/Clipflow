@@ -660,6 +660,35 @@ describe("recordings", () => {
     assert.equal((await fetch(base + "/api/recordings/" + r.id + "/preview", { headers: { cookie } })).status, 404);
     assert.ok(!(await (await worker("/api/worker/config")).json()).recordings.includes(r.id));
   });
+  test("a video imported from a link waits for the worker, downloads, and clips its best moments", async () => {
+    const vid = String(Date.now()).slice(-10);
+    assert.equal((await dash({ action: "importVideo", url: "https://www.twitch.tv/kaicenat", streamerId: streamer.id, count: 3 })).status, 400, "a channel isn't a video");
+    assert.equal((await dash({ action: "importVideo", url: "https://www.twitch.tv/videos/" + vid, streamerId: randomUUID(), count: 3 })).status, 404);
+    const res = await dash({ action: "importVideo", url: "https://m.twitch.tv/videos/" + vid + "?t=1h", streamerId: streamer.id, count: 3 });
+    assert.equal(res.status, 200);
+    assert.match(res.body.message, /Twitch video/);
+    assert.equal((await dash({ action: "importVideo", url: "https://www.twitch.tv/videos/" + vid, streamerId: streamer.id, count: 0 })).status, 409, "the same video twice");
+    const row = (await dash()).body.recordings.find(x => x.source_url === "https://www.twitch.tv/videos/" + vid);
+    assert.deepEqual([row.state, row.streamer_id, row.duration], ["queued", streamer.id, null]);
+    let config = await (await worker("/api/worker/config")).json();
+    assert.deepEqual(config.imports.find(v => v.id === row.id), { id: row.id, streamerId: streamer.id, url: "https://www.twitch.tv/videos/" + vid });
+    assert.ok(config.recordings.includes(row.id));
+    assert.deepEqual(config.clipRequests.filter(q => q.recordingId === row.id).map(q => [q.kind, q.count]), [["best", 3]], "its best moments are asked for straight away");
+    // The worker reports the download, then the saved recording; it is no longer sent as an import.
+    const report = { op: "recording", id: row.id, streamerId: streamer.id, startedAt: row.started_at, imported: true };
+    assert.equal((await post({ ...report, state: "importing", title: "Day 3" })).status, 200);
+    config = await (await worker("/api/worker/config")).json();
+    assert.ok(config.imports.some(v => v.id === row.id), "still sent while downloading, so a restarted worker resumes it");
+    assert.equal((await post({ ...report, state: "ready", title: "Day 3", duration: 5400, size: 3e9 })).status, 200);
+    const ready = (await dash()).body.recordings.find(x => x.id === row.id);
+    assert.deepEqual([ready.state, ready.title, ready.duration], ["ready", "Day 3", 5400]);
+    assert.ok(!(await (await worker("/api/worker/config")).json()).imports.some(v => v.id === row.id));
+    assert.ok((await dash()).body.events.some(e => /^Imported a 90-minute video of /.test(e.message)));
+    // Deleted in the dashboard: later reports from the worker don't bring it back.
+    assert.equal((await dash({ action: "deleteRecording", id: row.id })).status, 200);
+    assert.equal((await post({ ...report, state: "ready", duration: 5400 })).status, 404);
+    assert.ok(!(await dash()).body.recordings.some(x => x.id === row.id));
+  });
   test("recording reports are checked", async () => {
     assert.equal((await fetch(base + "/api/worker/recordings", { method: "POST", body: "{}" })).status, 401);
     assert.equal((await post({ ...rec(), state: "archived" })).status, 400);
