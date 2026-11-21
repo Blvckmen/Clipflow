@@ -20,6 +20,9 @@ export const streamers = sqliteTable("streamers", {
  // Posting rules for this streamer's clips (lib/posting-rules.mjs): a credit line, and a clipping campaign's label,
  // hashtags, mentions and clip lengths. JSON; null credits the streamer and has no campaign.
  postingRules:text("posting_rules"),
+ // Learned from how this streamer's posted clips did (lib/insights.mjs), refreshed with the analytics: JSON
+ // {chatWeight} (how much the worker weighs chat against loudness when picking a moment). Null: nothing learned yet.
+ learned:text("learned"),
 },t=>[uniqueIndex("streamers_owner_url").on(t.owner,t.url)]);
 export const preferences=sqliteTable("preferences",{
  owner:text("owner").primaryKey(),mode:text("mode").notNull().default("automatic"),duration:integer("duration").notNull().default(45),dailyLimit:integer("daily_limit").notNull().default(5),captions:integer("captions",{mode:"boolean"}).notNull().default(true),destinations:text("destinations").notNull().default('[]'),control:text("control").notNull().default("paused"),framing:text("framing").notNull().default("blur"),
@@ -42,6 +45,8 @@ export const preferences=sqliteTable("preferences",{
  // Discord alerts (lib/alerts.ts): the webhook link, encrypted with TOKEN_KEY; when the last review alert went out; and
  // why the last one failed (null when it worked).
  discordWebhookEnc:text("discord_webhook_enc"),alertAt:text("alert_at"),alertError:text("alert_error"),
+ // Whether the worker uses what was learned from views (streamers.learned) when it picks moments.
+ learn:integer("learn",{mode:"boolean"}).notNull().default(true),
  // No longer used: the single Zernio key setting, moved to zernio_keys by migration 0011.
  zernioKeyEnc:text("zernio_key_enc"),zernioLabel:text("zernio_label"),
 });

@@ -13,7 +13,11 @@ export type Analytics = {
   accounts: { id: string; platform: string; username: string; posts: number; views: Num; likes: Num; comments: Num; failed: number }[];
   daily: { posts: { day: string; n: number }[]; clips: { day: string; n: number }[] };
   syncedAt: string | null; noAccess: boolean;
+  // What works (lib/insights.mjs): findings for the workspace and each streamer with enough measured posts, and the
+  // chat weight the worker learned for each streamer.
+  insights?: { all: Finding[]; measured: number; streamers: { id: string; name: string; findings: Finding[]; chatWeight: number | null }[] };
 };
+type Finding = { kind: string; text: string; ratio: number; n: number };
 
 const compact = (n: Num) => n === null || n === undefined ? "—" : Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(n);
 const full = (n: Num) => n === null || n === undefined ? "—" : Intl.NumberFormat().format(n);
@@ -32,6 +36,22 @@ function DailyBars({ title, unit, data }: { title: string; unit: string; data: {
     </div>
     <div className="bar-axis"><span>{day(data[0].day)}</span><span>{day(data[data.length - 1].day)}</span></div>
   </figure>;
+}
+
+// Which clips do best, from measured posts, and what the worker now leans on when it picks moments.
+function WhatWorks({ insights }: { insights: NonNullable<Analytics["insights"]> }) {
+  const lean = (w: number) => w > 0.55 ? "leans on chat (" + Math.round(w * 100) + "%) when picking moments" : w < 0.45 ? "leans on loudness (" + Math.round((1 - w) * 100) + "%) when picking moments" : "weighs chat and loudness evenly";
+  const empty = !insights.all.length && !insights.streamers.length;
+  return <section className="panel what-works"><div className="panel-heading"><div><h2>What works</h2><p>From {insights.measured} measured post{insights.measured === 1 ? "" : "s"}: typical (median) views, compared</p></div></div>
+    {empty ? <div className="empty"><p>Clipflow needs at least 10 measured posts{insights.measured ? " (" + insights.measured + " so far)" : ""} before it can say which kinds of clips do best. It keeps learning as views come in.</p></div>
+      : <div className="what-works-body">
+        {insights.all.length > 0 && <div className="what-works-group"><strong>All streamers</strong><ul>{insights.all.map(f => <li key={f.kind}>{f.text} <small className="muted">({f.n} posts)</small></li>)}</ul></div>}
+        {insights.streamers.map(s => <div key={s.id} className="what-works-group"><strong>{s.name}</strong><ul>
+          {s.findings.map(f => <li key={f.kind}>{f.text} <small className="muted">({f.n} posts)</small></li>)}
+          {s.chatWeight !== null && <li className="learned">The worker {lean(s.chatWeight)} for {s.name}.</li>}
+        </ul></div>)}
+      </div>}
+  </section>;
 }
 
 export function AnalyticsView({ analytics, hasAccounts, brand, platformName, onConnect }: { analytics: Analytics | null; hasAccounts: boolean; brand: (name: string) => ReactNode; platformName: (p: string) => string; onConnect: () => void }) {
@@ -65,6 +85,8 @@ export function AnalyticsView({ analytics, hasAccounts, brand, platformName, onC
           <div><strong>{c.audio ?? 0}</strong><span>from loud moments</span></div>
         </div></section>
     </div>
+
+    {analytics.insights && <WhatWorks insights={analytics.insights} />}
 
     <section className="panel analytics-table"><div className="panel-heading"><div><h2>Top posts</h2><p>Most viewed first</p></div></div>
       {analytics.top.length ? <div className="table-scroll"><table><thead><tr><th>Clip</th><th>Account</th><th>Posted</th><th className="num">Views</th><th className="num">Likes</th><th className="num">Comments</th><th className="num">Shares</th><th></th></tr></thead>

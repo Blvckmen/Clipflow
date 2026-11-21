@@ -883,3 +883,17 @@ describe("Discord alerts", () => {
     assert.equal("discord_webhook_enc" in settings, false, "the stored webhook is never sent to the browser");
   });
 });
+
+describe("learning from views", () => {
+  test("learning is a setting, and Analytics says what works once there are measured posts", async () => {
+    const { mode, duration, dailyLimit, captions, destinations, framing } = originalSettings, set = learn => dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, destinations, framing, learn } });
+    assert.equal((await dash()).body.settings.learn, true, "on by default");
+    assert.equal((await set(false)).status, 200);
+    assert.equal((await dash()).body.settings.learn, false);
+    assert.equal((await set(true)).status, 200);
+    const { analytics } = await (await fetch(base + "/api/analytics", { headers: { cookie } })).json();
+    assert.ok(analytics.insights && Array.isArray(analytics.insights.all) && Number.isInteger(analytics.insights.measured));
+    const config = await (await worker("/api/worker/config")).json();
+    assert.ok(config.streamers.every(s => s.chatWeight === undefined || (s.chatWeight >= 0.2 && s.chatWeight <= 0.8)));
+  });
+});

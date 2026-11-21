@@ -49,6 +49,8 @@ export function validateControl(c) {
     s.captureMode ??= "clip";
     if (!["clip","record","both"].includes(s.captureMode)) throw new Error("Invalid capture mode");
     // This streamer's own transcription, subtitles and hook choices; dashboards that predate them omit the object.
+    // Learned from views: how much chat counts against loudness when picking this streamer's moments.
+    if (s.chatWeight !== undefined && !(typeof s.chatWeight === "number" && s.chatWeight >= 0.2 && s.chatWeight <= 0.8)) throw new Error("Invalid learned chat weight");
     s.text ??= {};
     if (typeof s.text !== "object" || Array.isArray(s.text) || Object.entries(s.text).some(([k, v]) => !["transcribe","subtitles","hook"].includes(k) || typeof v !== "boolean")) throw new Error("Invalid streamer text settings");
     channelUrl(s.url); ids.add(s.id);

@@ -26,9 +26,10 @@ const normalised = values => { const max = Math.max(0, ...values); return max > 
 
 // Best clip start in [from, to - duration], scoring each second by loudness and by chat activity `lag` seconds
 // later (viewers react after the moment). Without chat the choice is loudness alone.
-export function pickWindow({ energy, chat = [], duration, from = 0, to = energy.length, lag = 4 }) {
+// `chatWeight` (0..1, even at 0.5): how much chat counts against loudness; learned per streamer from views.
+export function pickWindow({ energy, chat = [], duration, from = 0, to = energy.length, lag = 4, chatWeight = 0.5 }) {
   const e = normalised(energy), c = normalised(chat), useChat = c.some(v => v > 0);
-  const score = i => (e[i] ?? 0) * (useChat ? 0.5 : 1) + (useChat ? (c[i + lag] ?? 0) * 0.5 : 0);
+  const score = i => (e[i] ?? 0) * (useChat ? 1 - chatWeight : 1) + (useChat ? (c[i + lag] ?? 0) * chatWeight : 0);
   const last = Math.max(from, Math.min(to, energy.length) - duration);
   let best = from, bestScore = -1;
   for (let s = from; s <= last; s++) {
@@ -69,9 +70,9 @@ export function commandTrigger(commands, { sinceMs, who = "mods", crowd = 3, win
 
 // Up to `count` distinct candidate starts in [from, to - duration], best loudness-and-chat score first (the same
 // score as pickWindow), each at least `gap` seconds from the others. `score` is relative to the best (1).
-export function candidateWindows({ energy, chat = [], duration, from = 0, to = energy.length, lag = 4, count = 4, gap = Math.max(5, Math.round(duration / 2)) }) {
+export function candidateWindows({ energy, chat = [], duration, from = 0, to = energy.length, lag = 4, count = 4, gap = Math.max(5, Math.round(duration / 2)), chatWeight = 0.5 }) {
   const e = normalised(energy), c = normalised(chat), useChat = c.some(v => v > 0);
-  const score = i => (e[i] ?? 0) * (useChat ? 0.5 : 1) + (useChat ? (c[i + lag] ?? 0) * 0.5 : 0);
+  const score = i => (e[i] ?? 0) * (useChat ? 1 - chatWeight : 1) + (useChat ? (c[i + lag] ?? 0) * chatWeight : 0);
   const last = Math.max(from, Math.min(to, energy.length) - duration), all = [];
   for (let s = from; s <= last; s++) { let total = 0; for (let i = s; i < s + duration; i++) total += score(i); all.push({ start: s, total }); }
   all.sort((a, b) => b.total - a.total || a.start - b.start);

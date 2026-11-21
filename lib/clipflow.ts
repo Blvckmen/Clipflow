@@ -11,11 +11,13 @@ export const settingsSchema=z.object({mode:z.enum(["automatic","review"]),durati
  // Viewers' Twitch clips: the fewest views a clip needs for the worker to import it; 0 is off.
  importClips:z.number().int().min(0).max(1000).optional(),
  // Who can clip with "!clip" in Twitch chat.
- clipCommand:z.enum(["off","mods","everyone"]).optional()});
+ clipCommand:z.enum(["off","mods","everyone"]).optional(),
+ // Whether the worker uses what was learned from views when it picks moments.
+ learn:z.boolean().optional()});
 // A streamer's own publishing mode; "workspace" follows Settings → Publishing mode.
 export const publishModes={workspace:"Use the workspace setting",review:"Review clips first",automatic:"Post to social media directly"} as const;
 export const defaultCaption="{streamer} on {platform} #clips #{platform}";
-export const defaults={mode:"automatic",duration:45,dailyLimit:5,captions:true,framing:"blur",destinations:[] as string[],control:"paused",captionTemplate:defaultCaption,aiCaptions:true,captionNotes:"",transcribe:true,recordingDays:7,importClips:0,clipCommand:"mods" as "off"|"mods"|"everyone"};
+export const defaults={mode:"automatic",duration:45,dailyLimit:5,captions:true,framing:"blur",destinations:[] as string[],control:"paused",captionTemplate:defaultCaption,aiCaptions:true,captionNotes:"",transcribe:true,recordingDays:7,importClips:0,clipCommand:"mods" as "off"|"mods"|"everyone",learn:true};
 export const captureModes={clip:"Clip live",record:"Record the whole stream, clip it afterwards",both:"Clip live and record the whole stream"} as const;
 // Platforms this build can actually publish to once an account is connected.
 export const publishable=["Instagram"] as const;

@@ -247,6 +247,8 @@ async function processJobs() {
       const result = await processWindow(job.raw, { settings: job.settings, text: textOf(job.settings, job.streamer.id), style: job.style, focusFrom: job.focusFrom, focusTo: job.focusTo, chat: job.chat, exact: !!job.exact,
         hint: [who.name, title].filter(Boolean).join(". "), writer: writerEnabled() ? writer : null,
         // Weighs what was said when choosing the moment (not for exact picks, which are kept as they are).
+        // Chat against loudness for this streamer, as learned from how its clips did (0.5 until then).
+        chatWeight: job.settings.streamers.find(s => s.id === job.streamer.id)?.chatWeight ?? 0.5,
         // Twitch chat during the window, kept with the clip so it can be shown on it.
         messages: (job.chatLines ?? []).map(l => [(l.t - job.rawStartMs) / 1000, l.name ?? "", l.text, l.color ?? null]),
         rater: pickerEnabled() && !job.exact ? texts => rateMoments(texts, { streamer: who.name, title, chat: job.chatLines?.length ? chatSample(job.chatLines, job.rawStartMs, job.rawStartMs + 120_000, 15) : [] }, { signal: controller.signal }) : null, findFacecam, background: edit => backgroundFor(edit, job.id, title ?? "") }, job.dir, controller.signal);

@@ -67,7 +67,7 @@ export function sourceSignals(energy,chat,from,to) {
 // the editor, and fills in the webcam box when the clip's look uses a facecam layout and has none yet.
 // `rater(texts)` (rateMoments in writer.mjs) scores candidate moments by what was said in them, 0..10 each; with it and
 // a transcript, the clip is the candidate that's best on loudness, chat and what was said together.
-export async function processWindow(raw,{settings,text=null,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false,hint="",writer=null,rater=null,findFacecam=null,messages=[]},dir,signal) {
+export async function processWindow(raw,{settings,text=null,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false,hint="",writer=null,rater=null,findFacecam=null,messages=[],chatWeight=0.5},dir,signal) {
   const source=join(dir,"source.mp4"), energyFile=join(dir,"energy.json"), wordsFile=join(dir,"words.json");
   await mkdir(dir,{recursive:true});
   try {
@@ -89,7 +89,8 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
     let start,end;
     if(exact){start=Math.max(0,focusFrom);end=Math.min(total,focusTo);if(end-start<15)throw new Error("That part of the recording is too short to clip");}
     else{
-      const range={energy,chat,duration,from:Math.max(0,Math.floor(focusFrom)),to:Math.min(total,Math.ceil(focusTo))};
+      // chatWeight: how much chat counts against loudness for this streamer, learned from views (0.5 even).
+      const range={energy,chat,duration,from:Math.max(0,Math.floor(focusFrom)),to:Math.min(total,Math.ceil(focusTo)),chatWeight};
       const snap=s=>snapToSentences(s,s+duration,segments,{minLen:Math.max(15,duration-8),maxLen:Math.min(90,duration+8),total});
       const first=pickWindow(range);
       ({start,end}=snap(first));

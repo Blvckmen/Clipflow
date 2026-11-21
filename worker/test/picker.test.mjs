@@ -49,3 +49,16 @@ test("rateMoments asks Ollama once and returns one score per moment, or null", a
   assert.equal(await rateMoments(["a", "b"]), null, "Ollama not running");
   delete process.env.OLLAMA_URL;
 });
+
+test("chatWeight shifts the pick between the loudest and the chattiest moment", async () => {
+  const { validateControl } = await import("../core.mjs");
+  // Loud at 10-20s, chat at 70-80s (chat counts 4s after a moment, like real chat).
+  const energy = Array.from({ length: 100 }, (_, i) => (i >= 10 && i < 20 ? 10 : 1)), chat = Array.from({ length: 100 }, (_, i) => (i >= 74 && i < 84 ? 10 : 0));
+  assert.ok(pickWindow({ energy, chat, duration: 10, chatWeight: 0.2 }) < 30, "leaning on loudness");
+  assert.ok(pickWindow({ energy, chat, duration: 10, chatWeight: 0.8 }) > 60, "leaning on chat");
+  assert.equal(candidateWindows({ energy, chat, duration: 10, chatWeight: 0.8 })[0].start, pickWindow({ energy, chat, duration: 10, chatWeight: 0.8 }));
+  const base = { control: "running", duration: 45, dailyLimit: 5, captions: true };
+  const s = { id: "11111111-1111-4111-8111-111111111111", url: "https://twitch.tv/alpha", status: "armed" };
+  assert.equal(validateControl({ ...base, streamers: [{ ...s, chatWeight: 0.7 }] }).streamers[0].chatWeight, 0.7);
+  assert.throws(() => validateControl({ ...base, streamers: [{ ...s, chatWeight: 2 }] }));
+});
