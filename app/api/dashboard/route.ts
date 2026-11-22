@@ -11,6 +11,7 @@ import { decrypt, encrypt } from "../../../lib/secure";
 import { normalizeStyle } from "../../../worker/edit.mjs";
 import { PLATFORM_NAMES, videoLink } from "../../../worker/video-link.mjs";
 import { emptyRules, readRules } from "../../../lib/posting-rules.mjs";
+import { viralityScore } from "../../../lib/virality.mjs";
 import { socialCaptionsAvailable } from "../../../lib/social-caption";
 import { aiCaptionsAvailable } from "../../../lib/post-caption";
 import { removeRecordingFiles } from "../../../lib/recordings";
@@ -97,8 +98,8 @@ const parse=(json:unknown)=>{try{return typeof json==="string"?JSON.parse(json):
 // The library's clips, newest first, CLIPS_PAGE at a time: the dashboard loads the newest page, and ?before=<created_at>
 // pages further back ("Load older clips"), read through the clips_owner_created index.
 const CLIPS_PAGE=200;
-const CLIPS_SQL="SELECT c.id,c.streamer_id,c.created_at,c.duration,c.captions,c.size,c.file_key IS NOT NULL AS stored,c.review,c.reason,(c.edit IS NOT NULL OR c.file_key IS NOT NULL) AS editable,c.edit IS NULL AS legacy,c.post_caption,c.caption_source,c.source_key IS NOT NULL AS source_stored,c.render_state,c.render_error,c.rendered_at,c.edit_rev,c.thumb_rev,s.name AS streamer,(SELECT json_group_object(p.account_id,p.state) FROM posts p WHERE p.clip_id=c.id AND p.round=(SELECT MAX(q.round) FROM posts q WHERE q.clip_id=p.clip_id AND q.account_id=p.account_id)) AS targets FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner";
-const clipRow=(x:Record<string,unknown>)=>({...x,targets:parse(x.targets as string|null)??{},captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored});
+const CLIPS_SQL="SELECT c.id,c.streamer_id,c.created_at,c.duration,c.captions,c.size,c.file_key IS NOT NULL AS stored,c.review,c.reason,(c.edit IS NOT NULL OR c.file_key IS NOT NULL) AS editable,c.edit IS NULL AS legacy,c.post_caption,c.caption_source,c.source_key IS NOT NULL AS source_stored,c.render_state,c.render_error,c.rendered_at,c.edit_rev,c.thumb_rev,json_extract(c.signals,'$.score') AS score,s.name AS streamer,(SELECT json_group_object(p.account_id,p.state) FROM posts p WHERE p.clip_id=c.id AND p.round=(SELECT MAX(q.round) FROM posts q WHERE q.clip_id=p.clip_id AND q.account_id=p.account_id)) AS targets FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner";
+const clipRow=(x:Record<string,unknown>)=>({...x,score:typeof x.score==="number"?x.score:viralityScore({reason:x.reason as string|null}),targets:parse(x.targets as string|null)??{},captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored});
 export async function GET(request:Request){
  const user=await currentUser();if(!user)return Response.json({error:"Sign in to open your dashboard.",signIn:signInPath()},{status:401});
  const before=new URL(request.url).searchParams.get("before");

@@ -14,3 +14,14 @@ test("copyPlan copies the stream's video from the keyframe before, when it's sma
   process.env.SOURCE_COPY = "off";
   try { assert.equal(copyPlan({ ...window, from: 23.4, to: 60, keyframe: 22 }), null, "turned off"); } finally { delete process.env.SOURCE_COPY; }
 });
+
+test("lift: how far a moment's busiest 10 seconds stand out from the window's typical 10 seconds", async () => {
+  const { lift } = await import("../media.mjs");
+  const quiet = Array(120).fill(2);
+  assert.equal(lift(quiet, 30, 70), 1, "nothing stands out");
+  const spike = quiet.map((v, i) => i >= 50 && i < 60 ? 10 : v);
+  assert.equal(lift(spike, 40, 80), 5, "chat five times its usual rate");
+  assert.equal(lift(spike, 80, 110), 1, "the spike is outside this moment");
+  assert.equal(lift([1, 2], 0, 2), null, "too short to say");
+  assert.equal(lift(Array(60).fill(0), 0, 40), null, "no chat at all");
+});

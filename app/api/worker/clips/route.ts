@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { database } from "../../../../db/raw";
 import { workerOwner } from "../../../../lib/worker-auth";
+import { viralityScore } from "../../../../lib/virality.mjs";
 import { normalizeEdit, normalizeWords } from "../../../../worker/edit.mjs";
 const box=z.object({x:z.number().min(0).max(1),y:z.number().min(0).max(1),w:z.number().min(0.01).max(1),h:z.number().min(0.01).max(1)});
 const sha=z.string().regex(/^[0-9a-f]{64}$/);
@@ -11,7 +12,9 @@ const clipSchema=z.object({id:z.string().uuid(),streamerId:z.string().uuid(),cre
  postCaption:z.string().trim().min(1).max(2200).optional(),
  signals:z.object({energy:z.array(z.number().min(0).max(1)).max(200),chat:z.array(z.number().int().min(0).max(100000)).max(200),
   // Twitch chat during the source: [seconds into it, name, text, colour], for showing chat on the clip.
-  messages:z.array(z.tuple([z.number().min(0).max(700),z.string().max(25),z.string().max(200),z.string().regex(/^#[0-9a-f]{6}$/i).nullable()])).max(400).optional()}).optional(),
+  messages:z.array(z.tuple([z.number().min(0).max(700),z.string().max(25),z.string().max(200),z.string().regex(/^#[0-9a-f]{6}$/i).nullable()])).max(400).optional(),
+  // For the virality score (lib/virality.mjs): the AI's rating of the moment, and how far its chat and loudness stood out.
+  rating:z.number().min(0).max(10).optional(),chatLift:z.number().min(0).max(100).optional(),loudLift:z.number().min(0).max(100).optional()}).optional(),
  source:z.object({width:z.number().int().min(0).max(8192),height:z.number().int().min(0).max(8192),duration:z.number().min(1).max(200),sha,size:z.number().int().min(1024).max(64*1024*1024),
   // The streamer's webcam overlay found by the worker (fractions of the frame), for the facecam layouts.
   face:box.nullish(),
@@ -39,7 +42,7 @@ export async function POST(request:Request){
   await db.batch([
    db.prepare("INSERT INTO clips (id,owner,streamer_id,created_at,duration,captions,sha,size,review,reason,edit,transcript,signals,source_meta,source_sha,source_size,rendered_at,post_caption,caption_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
     .bind(clip.id,owner,clip.streamerId,clip.createdAt,clip.duration,Number(clip.captions),clip.sha,clip.size,review,clip.reason??null,
-     edit?JSON.stringify(edit):null,words?JSON.stringify(words):null,edit&&clip.signals?JSON.stringify(clip.signals):null,edit&&src?JSON.stringify({width:src.width,height:src.height,duration:src.duration,...(src.face&&{face:src.face}),...(src.content&&{content:src.content})}):null,edit&&src?src.sha:null,edit&&src?src.size:null,edit?iso:null,clip.postCaption??null,clip.postCaption?"ai":null),
+     edit?JSON.stringify(edit):null,words?JSON.stringify(words):null,edit&&clip.signals?JSON.stringify({...clip.signals,score:viralityScore({reason:clip.reason,...clip.signals})}):null,edit&&src?JSON.stringify({width:src.width,height:src.height,duration:src.duration,...(src.face&&{face:src.face}),...(src.content&&{content:src.content})}):null,edit&&src?src.sha:null,edit&&src?src.size:null,edit?iso:null,clip.postCaption??null,clip.postCaption?"ai":null),
    db.prepare("INSERT INTO events (id,owner,message,created_at) VALUES (?,?,?,?)").bind(crypto.randomUUID(),owner,"Worker captured a "+clip.duration+"s clip from "+streamer.name+(clip.reason?reasonText[clip.reason]:"")+(review==="pending"?"; waiting for your review.":"."),iso),
   ]);
   return Response.json({ok:true});

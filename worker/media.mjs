@@ -69,6 +69,17 @@ export function sourceWords(segments,from,to) {
 }
 // Per-second loudness (0-1, relative to the loudest second) and chat message counts across the source, for the
 // editor's "why this moment" heat strip.
+// How far the clip stands out from the rest of its window: the busiest 10 seconds inside [start, end] against the
+// window's typical (median) 10 seconds. 1 is ordinary; a chat spike is often 3 or more. Null without enough data.
+export function lift(values,start,end,span=10){
+  const n=values.length;if(n<span*2)return null;
+  const sums=[];for(let i=0;i+span<=n;i++){let t=0;for(let j=i;j<i+span;j++)t+=values[j]||0;sums.push(t);}
+  const sorted=[...sums].sort((x,y)=>x-y),median=sorted[Math.floor(sorted.length/2)];
+  const a=Math.max(0,Math.floor(start)),b=Math.min(sums.length,Math.max(a+1,Math.ceil(end)-span+1));
+  const peak=Math.max(...sums.slice(a,b));
+  if(!(peak>0))return null;
+  return Math.round(Math.min(20,peak/Math.max(median,peak/20,1e-9))*10)/10;
+}
 export function sourceSignals(energy,chat,from,to) {
   const a=Math.max(0,Math.floor(from)),b=Math.min(energy.length,Math.ceil(to));
   const e=energy.slice(a,b),peak=Math.max(1e-9,...e);
@@ -109,7 +120,7 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
       if(captions||signal.aborted)throw error;
     }
     const duration=settings.duration, total=energy.length;
-    let start,end;
+    let start,end,rating=null;
     if(exact){start=Math.max(0,focusFrom);end=Math.min(total,focusTo);if(end-start<15)throw new Error("That part of the recording is too short to clip");}
     else{
       // chatWeight: how much chat counts against loudness for this streamer, learned from views (0.5 even).
@@ -128,7 +139,7 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
         // check): stop before encoding, writing and rendering. Without ratings (no AI) the clip is made as before.
         if(ratings&&minRating&&Math.max(...ratings)<minRating)throw Object.assign(new Error("nothing worth a clip (best moment rated "+Math.max(...ratings)+"/10)"),{skip:true});
         const pick=chooseMoment(candidates,ratings);
-        if(ratings&&pick){({start,end}=pick);console.log("Moment ratings",ratings.join(", ")+": picked",candidates.indexOf(candidates.find(c=>c.start===pick.start))+1,"of",candidates.length);}
+        if(ratings&&pick){({start,end}=pick);rating=Number.isFinite(pick.rating)?pick.rating:null;console.log("Moment ratings",ratings.join(", ")+": picked",candidates.indexOf(candidates.find(c=>c.start===pick.start))+1,"of",candidates.length);}
       }
     }
     let from=Math.max(0,start-SOURCE_PAD);const to=Math.min(total,end+SOURCE_PAD);
@@ -174,7 +185,10 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
     const bg=background?await background(edit):null;
     if(bg?.ref&&!edit.frame.background)edit={...edit,frame:{...edit.frame,background:bg.ref}};
     // The Twitch chat sent during the source ([seconds into it, name, text, colour]), kept for showing chat on the clip.
-    const signals={...sourceSignals(energy,chat,from,to),messages:sourceMessages(messages,from,to)};
+    // With what the virality score is made from (lib/virality.ts): the AI rating of the moment and how far its chat and
+    // loudness stand out from the rest of the window.
+    const chatLift=chat.some(v=>v>0)?lift(chat,start,end):null,loudLift=lift(energy,start,end);
+    const signals={...sourceSignals(energy,chat,from,to),messages:sourceMessages(messages,from,to),...(Number.isFinite(rating)&&{rating}),...(chatLift!==null&&{chatLift}),...(loudLift!==null&&{loudLift})};
     took("framing");
     const rendered=await renderClip(source,{edit,words,width:info.width,height:info.height,background:bg,energy:signals.energy,messages:signals.messages},join(dir,"clip.mp4"),signal);
     const sourceBytes=await readFile(source);

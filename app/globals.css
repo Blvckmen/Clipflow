@@ -705,3 +705,42 @@ button.account-streamers{max-width:none;justify-self:start}
 .caption-controls.off{opacity:.45}
 .caption-controls.off:hover,.caption-controls.off:focus-within{opacity:.8}
 @media (max-width:900px){.editor-tabs{overflow-x:auto;scrollbar-width:none;padding:8px 10px 0}.editor-tabs::-webkit-scrollbar{display:none}.editor-tabs button{white-space:nowrap;flex-shrink:0}}
+
+/* ---- Virality score badge (on clip thumbnails and in review) ---- */
+.score-badge{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:650;line-height:1;padding:4px 7px 4px 6px;border-radius:999px;background:#0009;backdrop-filter:blur(6px);color:#dfe5ec;border:1px solid #ffffff22}
+.clip-thumb .score-badge{position:absolute;left:8px;bottom:8px}
+.score-badge.hot{color:#11180c;background:var(--lime);border-color:var(--lime)}
+.score-badge.promising{color:#ffd59a;border-color:#f2b36b88}
+.score-badge.weak{color:#9aa4b1}
+
+/* ---- Phone review: full-screen swipe feed (review-feed.tsx) ---- */
+.review-feed{position:fixed;inset:0;z-index:60;background:#000;display:flex;flex-direction:column;color:#fff;touch-action:none;user-select:none;-webkit-user-select:none}
+.feed-top{display:flex;align-items:center;gap:12px;padding:calc(10px + env(safe-area-inset-top)) 12px 10px}
+.feed-icon{display:grid;place-items:center;width:40px;height:40px;border-radius:50%;border:0;background:#ffffff14;color:#fff}
+.feed-progress{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;font-size:13px;color:#d7dde4}
+.feed-progress::after{content:"";display:block;width:100%;height:3px;border-radius:3px;background:#ffffff22;margin-top:-3px}
+.feed-progress i{display:block;align-self:flex-start;height:3px;border-radius:3px;background:var(--lime);position:relative;z-index:1;transition:width .25s}
+.feed-stage{position:relative;flex:1;min-height:0;margin:0 10px;border-radius:16px;overflow:hidden;background:#111;transition:transform .2s ease}
+.feed-stage video{width:100%;height:100%;object-fit:contain;display:block;background:#000}
+.feed-stage.hint-approve{box-shadow:0 0 0 3px var(--lime)}
+.feed-stage.hint-reject{box-shadow:0 0 0 3px #ff6b6b}
+.feed-stage.hint-skip{box-shadow:0 0 0 3px #8ab7ff}
+.feed-stamp{position:absolute;top:22px;left:50%;transform:translateX(-50%);font-size:22px;font-weight:800;letter-spacing:1px;text-transform:uppercase;padding:6px 16px;border-radius:10px;border:3px solid currentColor;background:#0008}
+.hint-approve .feed-stamp{color:var(--lime)}.hint-reject .feed-stamp{color:#ff8a8a}.hint-skip .feed-stamp{color:#9cc3ff}
+.feed-meta{position:absolute;left:0;right:0;bottom:0;padding:40px 16px 14px;background:linear-gradient(transparent,#000c);display:flex;flex-direction:column;align-items:flex-start;gap:4px;pointer-events:none}
+.feed-meta strong{font-size:17px}
+.feed-meta small{color:#cfd6de;font-size:12px}
+.feed-preload{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.feed-actions{display:flex;justify-content:center;align-items:center;gap:26px;padding:16px 12px 6px}
+.feed-btn{display:flex;flex-direction:column;align-items:center;gap:5px;border:0;background:none;color:#d7dde4;font-size:12px}
+.feed-btn svg{box-sizing:content-box;padding:16px;border-radius:50%;background:#ffffff14}
+.feed-btn.approve svg{background:var(--lime);color:#11180c;padding:20px}
+.feed-btn.reject svg{background:#ff6b6b22;color:#ff8a8a;padding:20px}
+.feed-btn:active svg{transform:scale(.92)}
+.feed-tools{display:flex;justify-content:center;gap:24px;padding:6px 12px calc(12px + env(safe-area-inset-bottom))}
+.feed-tools button{display:inline-flex;align-items:center;gap:6px;border:0;background:none;color:#aeb7c2;font-size:13px}
+.feed-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;padding:24px}
+.feed-empty>svg{color:var(--lime)}
+.feed-empty p{color:#aeb7c2}
+.feed-empty-actions{display:flex;gap:10px;margin-top:8px}
+@media (min-width:901px){.review-feed{left:50%;width:min(460px,100vw);transform:translateX(-50%);box-shadow:0 0 0 100vmax #000c}}
