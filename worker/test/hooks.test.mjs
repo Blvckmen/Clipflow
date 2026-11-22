@@ -49,3 +49,13 @@ test('the hook length follows the look and can cover the whole clip', () => {
   assert.match(buildAss(whole, []), /0:00:00\.00,0:00:15\.00,Hook/);
   assert.equal(normalizeEdit({ ...edit(), hook: { text: 'x' } }, { duration: 20 }).hook.seconds, 5, 'older edits without a length get the default');
 });
+
+test('a hook can drop its background and gets a contrasting outline instead', () => {
+  const plain = normalizeEdit({ ...edit(), hook: { text: 'No box', color: '#111111', bg: null } }, { duration: 20 });
+  assert.equal(plain.hook.bg, null);
+  assert.match(buildAss(plain, []), /Style: Hook,[^,]+,52,&H00111111,&H00111111,&H00FFFFFF,[^,]+,-1,0,0,0,100,100,0,0,1,5,/i, 'dark text, white outline');
+  const light = normalizeEdit({ ...edit(), hook: { text: 'No box', color: '#ffe14d', bg: null } }, { duration: 20 });
+  assert.match(buildAss(light, []), /Style: Hook,[^,]+,52,&H004DE1FF,&H004DE1FF,&H00000000,/i, 'light text, black outline');
+  assert.match(buildAss(edit(), []), /,0,0,3,14,0,8,/, 'the box stays the default');
+  assert.throws(() => normalizeEdit({ ...edit(), hook: { text: 'x', bg: 'red' } }, { duration: 20 }), /Hook background/);
+});

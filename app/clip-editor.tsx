@@ -3,7 +3,7 @@
 // worker renders with, so what you see is what gets posted. Saving stores the edit; the worker re-renders it.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, Scissors, Sparkles, Undo2, Copy } from "lucide-react";
-import { ANIMATIONS, ASPECTS, ASPECT_LABELS, KEYWORD_SCALE, CHAT_SIZE, DEFAULT_CHAT, chatWindows, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, HOOK_LINES, MAX_CLIP, MIN_CLIP, PRESETS, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks, timeline, zoomAt } from "../worker/edit.mjs";
+import { ANIMATIONS, ASPECTS, ASPECT_LABELS, KEYWORD_SCALE, CHAT_SIZE, DEFAULT_CHAT, chatWindows, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, HOOK_LINES, HOOK_OUTLINE, hookOutlineColor, MAX_CLIP, MIN_CLIP, PRESETS, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks, timeline, zoomAt } from "../worker/edit.mjs";
 
 import { applyAutomaticHook } from "../worker/hooks.mjs";
 
@@ -14,7 +14,7 @@ type Aspect = keyof typeof ASPECTS;
 type Frame = { mode: "blur" | "crop" | "fit" | "split" | "cam" | "pip" | "phone"; aspect?: Aspect; content?: CamBox | null; zoom: number; x: number; y: number; background?: string | null; split?: Split; facecam?: Facecam };
 type Captions = { on: boolean; preset: string; font: string; size: number; color: string; highlight: string; outline: number; outlineColor: string; box: boolean; boxColor: string; uppercase: boolean; animation: string; words: number; y: number; mask: boolean; keywords: boolean; keywordColor: string };
 type Word = [number, number, string];
-export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { text: string; seconds: number; color: string; bg: string }; progress: { on: boolean; color: string }; pace?: Pace; chat?: ChatLook; words?: Word[] };
+export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { text: string; seconds: number; color: string; bg: string | null }; progress: { on: boolean; color: string }; pace?: Pace; chat?: ChatLook; words?: Word[] };
 type ChatLook = { on: boolean; y: number };
 // [seconds into the source, name, text, colour]: the Twitch chat sent during the clip's source.
 type ChatMessage = [number, string, string, string | null];
@@ -232,7 +232,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
         else drawText(ctx, cue.words.map((x: { t: string; k?: boolean }, i: number) => ({ t: x.t, big: x.k, color: c.animation === "karaoke" && i === word ? c.highlight : x.k ? c.keywordColor : c.color })), c, W / 2, y, "middle", c.animation === "pop" || c.animation === "karaoke" ? pop(rel - cue.start) : 1);
       }
       // Word by word (wrapped like the render), with the hook's own line breaks.
-      if (e.hook.text && out < e.hook.seconds) drawText(ctx, e.hook.text.split("\n").flatMap((l, i) => [...(i ? [{ t: "\n", color: e.hook.color }] : []), ...l.split(" ").filter(Boolean).map(t => ({ t, color: e.hook.color }))]), { font: c.font, size: 52, outline: 0, outlineColor: "#000000", box: true, boxColor: e.hook.bg }, W / 2, 150, "top", pop(out), 60);
+      if (e.hook.text && out < e.hook.seconds) drawText(ctx, e.hook.text.split("\n").flatMap((l, i) => [...(i ? [{ t: "\n", color: e.hook.color }] : []), ...l.split(" ").filter(Boolean).map(t => ({ t, color: e.hook.color }))]), e.hook.bg ? { font: c.font, size: 52, outline: 0, outlineColor: "#000000", box: true, boxColor: e.hook.bg } : { font: c.font, size: 52, outline: HOOK_OUTLINE, outlineColor: hookOutlineColor(e.hook.color), box: false, boxColor: "#000000" }, W / 2, 150, "top", pop(out), 60);
       if (e.progress.on) { ctx.fillStyle = e.progress.color; ctx.fillRect(0, H - 10, W * clamp(out / clipLen, 0, 1), 10); }
       ctx.restore();
     };
@@ -530,7 +530,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
               <label>Hook length <span>{edit.hook.seconds >= len ? "Whole clip" : edit.hook.seconds + "s"}</span><input type="range" min={1} max={Math.max(1, Math.min(30, Math.floor(len)))} step={0.5} value={Math.min(edit.hook.seconds, Math.max(1, Math.min(30, Math.floor(len))))} disabled={edit.hook.seconds >= len} onChange={e => set("hook", { seconds: Number(e.target.value) })} />
                 <span className="check-inline"><input type="checkbox" checked={edit.hook.seconds >= len} onChange={e => set("hook", { seconds: e.target.checked ? 90 : 5 })} />Keep for the whole clip</span></label>
               <label className="color">Hook text<input type="color" value={edit.hook.color} onChange={e => set("hook", { color: e.target.value })} /></label>
-              <label className="color">Hook background<input type="color" value={edit.hook.bg} onChange={e => set("hook", { bg: e.target.value })} /></label>
+              <label className="color" title="Turn off for the text alone, with an outline so it stays readable">Hook background<div className="color-pair"><input type="checkbox" aria-label="Show a hook background" checked={!!edit.hook.bg} onChange={e => set("hook", { bg: e.target.checked ? "#ffffff" : null })} />{edit.hook.bg && <input type="color" value={edit.hook.bg} onChange={e => set("hook", { bg: e.target.value })} />}</div></label>
             </div>
             <div className="pace-controls">
               <label className="wide">Jump cuts <small>Takes quiet pauses out between words. Pauses full of game sound or shouting are kept, and so are the opening and ending.</small>

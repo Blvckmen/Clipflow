@@ -84,6 +84,13 @@ const fail = message => { throw new EditError(message); };
 const num = (v, min, max, name) => { if (typeof v !== "number" || !Number.isFinite(v)) fail(name + " must be a number"); return Math.min(max, Math.max(min, v)); };
 const int = (v, min, max, name) => Math.round(num(v, min, max, name));
 const bool = (v, name) => { if (typeof v !== "boolean") fail(name + " must be true or false"); return v; };
+// A hook without a background (hook.bg null) gets an outline that contrasts with its text: black around light text,
+// white around dark text.
+export const HOOK_OUTLINE = 5;
+export function hookOutlineColor(text) {
+  const [r, g, b] = [1, 3, 5].map(i => parseInt(text.slice(i, i + 2), 16) / 255);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5 ? "#000000" : "#ffffff";
+}
 const color = (v, name) => { if (typeof v !== "string" || !/^#[0-9a-f]{6}$/i.test(v)) fail(name + " must be a #rrggbb colour"); return v.toLowerCase(); };
 const pick = (v, list, name) => { if (!list.includes(v)) fail(name + " is not a supported value"); return v; };
 // Hook text keeps the line breaks typed in the editor: at most HOOK_LINES lines, without empty ones.
@@ -125,7 +132,7 @@ export function normalizeStyle(input, base = defaultStyle()) {
       // Looks saved before keyword highlighting get it on, in their preset's colour.
       keywords: bool(c.keywords ?? true, "Keyword highlight"), keywordColor: color(s.captions?.keywordColor ?? PRESETS[c.preset]?.keywordColor ?? c.keywordColor ?? "#ffe14d", "Keyword colour"),
     },
-    hook: { color: color(h.color, "Hook text colour"), bg: color(h.bg, "Hook background"), seconds: num(h.seconds ?? DEFAULT_HOOK_SECONDS, 1, MAX_CLIP, "Hook length") },
+    hook: { color: color(h.color, "Hook text colour"), bg: h.bg === null ? null : color(h.bg, "Hook background"), seconds: num(h.seconds ?? DEFAULT_HOOK_SECONDS, 1, MAX_CLIP, "Hook length") },
     progress: { on: bool(p.on, "Progress bar"), color: color(p.color, "Progress bar colour") },
     pace: { cuts: pick(pc.cuts, CUT_LEVELS, "Jump cuts"), zooms: bool(pc.zooms, "Punch-in zooms") },
     chat: { on: bool(ch.on, "Chat on the clip"), y: num(ch.y, 0.15, 0.95, "Chat position") },
@@ -422,7 +429,9 @@ export function buildAss(edit, words, tl = plain(edit), messages = []) {
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     `Style: Cap,${c.font},${c.size},${assColor(c.color)},${assColor(c.highlight)},${boxStyle.outlineColor},${assColor("#000000", 0x80)},-1,0,0,0,100,100,0,0,${boxStyle.border},${boxStyle.outline},0,5,40,40,0,1`,
     `Style: Chat,Arial,${CHAT_SIZE},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,0,1,40,40,0,1`,
-    `Style: Hook,${c.font},52,${assColor(edit.hook.color)},${assColor(edit.hook.color)},${assColor(edit.hook.bg)},${assColor("#000000", 0x80)},-1,0,0,0,100,100,0,0,3,14,0,8,60,60,0,1`,
+    edit.hook.bg
+      ? `Style: Hook,${c.font},52,${assColor(edit.hook.color)},${assColor(edit.hook.color)},${assColor(edit.hook.bg)},${assColor("#000000", 0x80)},-1,0,0,0,100,100,0,0,3,14,0,8,60,60,0,1`
+      : `Style: Hook,${c.font},52,${assColor(edit.hook.color)},${assColor(edit.hook.color)},${assColor(hookOutlineColor(edit.hook.color))},${assColor("#000000", 0x80)},-1,0,0,0,100,100,0,0,1,${HOOK_OUTLINE},0,8,60,60,0,1`,
     "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
   ];
   const pos = "{\\an5\\pos(" + W / 2 + "," + y + ")}";
