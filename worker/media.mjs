@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { join } from "node:path";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { command } from "./process.mjs";
 import { fileURLToPath } from "node:url";
 import { channelUrl, clipHash, probeResult } from "./core.mjs";
@@ -40,6 +40,24 @@ export function sourceMessages(messages,from,to) {
   const inside=(messages??[]).filter(m=>m[0]>=from&&m[0]<=to).map(([t,name,text,color])=>[Math.round((t-from)*100)/100,String(name??"").slice(0,25),String(text??"").slice(0,200),color??null]);
   if(inside.length<=400)return inside;
   return Array.from({length:400},(_,i)=>inside[Math.floor(i*inside.length/400)]);
+}
+// The last keyframe at or before `t` seconds into `file`, or null when there's none in the 20 seconds before it.
+export async function keyframeAt(file,t,signal){
+  try {
+    const {stdout}=await run("ffprobe",["-v","error","-select_streams","v:0","-skip_frame","nokey","-show_entries","frame=pts_time:format=start_time","-of","json","-read_intervals",Math.max(0,t-20)+"%"+(t+1),file],{timeout:60_000,signal,windowsHide:true});
+    const json=JSON.parse(stdout),offset=Number(json.format?.start_time)||0;
+    const keys=(json.frames??[]).map(x=>Number(x.pts_time)-offset).filter(k=>Number.isFinite(k)&&k<=t+0.01);
+    return keys.length?Math.max(0,Math.max(...keys)):null;
+  } catch { return null; }
+}
+// The editable source is the stream's own video, copied (no encode, about half a minute less per clip), when that copy
+// stays under SOURCE_COPY_MAX bytes (the dashboard takes sources up to 64 MB) and starts at a keyframe close before the
+// moment; otherwise it's re-encoded to at most 1280 pixels as before. SOURCE_COPY=off always re-encodes.
+export const SOURCE_COPY_MAX=40*1024*1024;
+export function copyPlan({rawBytes,rawSeconds,from,to,keyframe,limit=SOURCE_COPY_MAX}){
+  if((process.env.SOURCE_COPY??"on").toLowerCase()==="off"||keyframe===null||!(rawSeconds>0))return null;
+  if(from-keyframe>10)return null;
+  return rawBytes/rawSeconds*(to-keyframe)<=limit?{from:keyframe}:null;
 }
 export function sourceWords(segments,from,to) {
   const out=[];
@@ -113,7 +131,10 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
         if(ratings&&pick){({start,end}=pick);console.log("Moment ratings",ratings.join(", ")+": picked",candidates.indexOf(candidates.find(c=>c.start===pick.start))+1,"of",candidates.length);}
       }
     }
-    const from=Math.max(0,start-SOURCE_PAD), to=Math.min(total,end+SOURCE_PAD);
+    let from=Math.max(0,start-SOURCE_PAD);const to=Math.min(total,end+SOURCE_PAD);
+    // Copy the stream's own video when it's small enough, from the keyframe just before (a few seconds' more lead-in).
+    const copy=copyPlan({rawBytes:(await stat(raw)).size,rawSeconds:total,from,to,keyframe:await keyframeAt(raw,from,signal)});
+    if(copy)from=copy.from;
     if(timings.transcription===undefined)took("transcription");
     const words=sourceWords(segments,from,to);
     let base=null;
@@ -129,7 +150,8 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
     const said=words.filter(w=>w[0]>=initialEdit.trim.start-.05&&w[1]<=initialEdit.trim.end+.05).map(w=>w[2]).join(" ");
     const writing=writer&&!signal.aborted?writer({transcript:said,from,to:to}).catch(()=>null):Promise.resolve(null);
     // Frequent keyframes keep seeking in the editor responsive.
-    await command("ffmpeg",["-hide_banner","-loglevel","error","-y","-ss",String(from),"-i",raw,"-t",String(to-from),"-vf","scale=1280:1280:force_original_aspect_ratio=decrease:force_divisible_by=2","-c:v","libx264","-preset","veryfast","-crf","23","-maxrate","3000k","-bufsize","6000k","-g","30","-c:a","aac","-b:a","128k","-movflags","+faststart",source],{signal,timeout:encodeTimeout(to-from)}).done;
+    if(copy)await command("ffmpeg",["-hide_banner","-loglevel","error","-y","-ss",String(from),"-i",raw,"-t",String(to-from),"-map","0:v:0","-map","0:a:0?","-c","copy","-movflags","+faststart",source],{signal,timeout:120_000}).done;
+    else await command("ffmpeg",["-hide_banner","-loglevel","error","-y","-ss",String(from),"-i",raw,"-t",String(to-from),"-vf","scale=1280:1280:force_original_aspect_ratio=decrease:force_divisible_by=2","-c:v","libx264","-preset","veryfast","-crf","23","-maxrate","3000k","-bufsize","6000k","-g","30","-c:a","aac","-b:a","128k","-movflags","+faststart",source],{signal,timeout:encodeTimeout(to-from)}).done;
     took("source");
     const info=await videoInfo(source,signal);
     // "writing": how much longer the writer took than the encode.
