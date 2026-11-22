@@ -124,3 +124,75 @@ export async function rateMoments(texts, context = {}, { signal, timeoutMs = 120
     return Array.isArray(scores) && scores.length === texts.length && scores.every(s => Number.isFinite(s)) ? scores.map(s => Math.max(0, Math.min(10, s))) : null;
   } catch { return null; }
 }
+
+// ---- Translating a clip for accounts that post in another language ----
+export const LANGUAGE_NAMES = { es: "Latin American Spanish", pt: "Brazilian Portuguese", fr: "French" };
+
+// Transcript words [[start, end, text]] grouped into sentences, for translating whole thoughts rather than words.
+// Breaks after . ? !, at pauses over 0.8s, and every 14 words.
+export function sentencesOf(words) {
+  const out = [];
+  let cur = [];
+  const flush = () => { if (cur.length) out.push({ start: cur[0][0], end: cur.at(-1)[1], text: cur.map(w => w[2]).join(" ").replace(/\s+/g, " ").trim() }); cur = []; };
+  for (const w of words ?? []) {
+    if (!String(w[2] ?? "").trim()) continue;
+    if (cur.length && (w[0] - cur.at(-1)[1] > 0.8 || cur.length >= 14)) flush();
+    cur.push(w);
+    if (/[.?!]["')\]]*$/.test(String(w[2]).trim())) flush();
+  }
+  flush();
+  return out.filter(s => s.text);
+}
+
+// A translated sentence as timed words over the original sentence's span, each word's share by its length, so the
+// subtitles keep pace with the speech.
+export function spreadWords(sentence, translated) {
+  const parts = String(translated ?? "").replace(/[\r\n{}\\<>]/g, " ").split(/\s+/).filter(Boolean);
+  if (!parts.length) return [];
+  const span = Math.max(0.2, sentence.end - sentence.start), total = parts.reduce((a, p) => a + p.length + 1, 0);
+  let t = sentence.start;
+  return parts.map(p => { const d = span * (p.length + 1) / total, w = [Math.round(t * 100) / 100, Math.round((t + d) * 100) / 100, p.slice(0, 40)]; t += d; return w; });
+}
+
+const translateSchema = {
+  type: "object",
+  properties: { sentences: { type: "array", items: { type: "string" } }, hook: { type: "string" }, caption: { type: "string" } },
+  required: ["sentences", "hook", "caption"],
+};
+
+export function buildTranslatePrompt({ sentences, hook, caption, names = [] }, lang) {
+  const keep = names.map(n => clean(n)).filter(Boolean);
+  return [
+    "Translate this short vertical video clip from a live stream into " + LANGUAGE_NAMES[lang] + ".",
+    // Streamer names are often ordinary words ("Speed"), which a translator would otherwise translate.
+    keep.length ? "These are names: keep them exactly as written, never translate them: " + keep.join(", ") + "." : "",
+    "Keep it natural and casual, the way people talk on stream and in comments; keep names, gamer slang that's used as is (GG, W, L, clutch), emotes (KEKW, LUL) and hashtags unchanged.",
+    "Translate every subtitle line separately, in order: exactly " + sentences.length + " lines back, one per line given, each about as long as the original.",
+    "Return JSON: {\"sentences\": [...], \"hook\": \"...\", \"caption\": \"...\"}.",
+    JSON.stringify({ sentences: sentences.map(s => s.text), hook: hook || "", caption: caption || "" }),
+  ].filter(Boolean).join("\n\n");
+}
+
+// { sentences: [translated text per sentence], hook, caption } or null when Ollama is off, slow or answers oddly.
+export async function translateClip(input, lang, { signal, timeoutMs = 240_000 } = {}) {
+  if (!LANGUAGE_NAMES[lang] || !writerEnabled()) return null;
+  const base = (process.env.OLLAMA_URL || URL_DEFAULT).replace(/\/$/, "");
+  try {
+    const response = await fetch(base + "/api/chat", {
+      method: "POST", headers: { "content-type": "application/json" },
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
+      body: JSON.stringify({
+        model: process.env.OLLAMA_MODEL || MODEL_DEFAULT, stream: false, format: translateSchema, keep_alive: "30m",
+        options: { temperature: 0.2, num_ctx: 8192, num_predict: 3000 },
+        messages: [
+          { role: "system", content: "You translate subtitles and captions for short stream clips. You answer with JSON." },
+          { role: "user", content: buildTranslatePrompt(input, lang) },
+        ],
+      }),
+    });
+    if (!response.ok) return null;
+    const out = JSON.parse((await response.json())?.message?.content ?? "null");
+    if (!out || !Array.isArray(out.sentences) || out.sentences.length !== input.sentences.length || out.sentences.some(s => typeof s !== "string")) return null;
+    return { sentences: out.sentences, hook: clean(out.hook).slice(0, 90), caption: String(out.caption ?? "").replace(/[{}\\<>]/g, "").trim().slice(0, 2000) };
+  } catch { return null; }
+}

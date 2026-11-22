@@ -6,6 +6,7 @@ import { useState, type ReactNode } from "react";
 import { Check, ExternalLink, KeyRound, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { gapChoices, tiktokModes, tiktokPrivacy, whenFullChoices, youtubeVisibility, type AccountOptions, hoursChoices } from "../lib/account-options";
 import { MIN_MEASURED } from "../lib/posting-plan.mjs";
+import { subtitleLanguages } from "../lib/languages";
 
 export type ZernioKey = { id: string; label: string; created_at: string; last_error: string | null; accounts: number };
 export type Publishing = { zernio: boolean; zernioSource: "workspace" | "site" | null; zernioKeys: ZernioKey[]; canSaveKey: boolean };
@@ -89,6 +90,8 @@ export function AccountOptionsForm({ account, busy, workspaceLimit, onSave }: { 
     : null;
   // How many and how often, for every platform.
   const pacing = <>
+    <label>Language<select value={draft.subtitleLanguage} onChange={e => set("subtitleLanguage", e.target.value as AccountOptions["subtitleLanguage"])}>{Object.entries(subtitleLanguages).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+      <small>{draft.subtitleLanguage === "en" ? "Clips post as captured. Pick another language for an account aimed at viewers who speak it." : "Before each clip posts here, your worker PC translates its subtitles, hook and caption with its local AI model and renders this version. Posts wait for it, and fail with the reason if it can't be made, so nothing goes out in English by mistake. A streamer's campaign label, tags and credit stay as written."}</small></label>
     <label>Daily limit<input type="number" min={1} max={100} placeholder={"Workspace setting (" + workspaceLimit + ")"} value={draft.dailyLimit ?? ""} onChange={e => set("dailyLimit", e.target.value === "" ? null : Math.max(1, Math.min(100, Math.round(Number(e.target.value)))))} />
       <small>Posts (drafts included) this account sends in any 24 hours. Leave empty to use the workspace limit from Settings.{account.platform === "tiktok" ? " TikTok itself takes about 15 videos a day from apps, drafts included; for more, download clips and post them in the TikTok app." : ""}</small></label>
     <label>Spacing<select value={draft.gapMinutes} onChange={e => set("gapMinutes", Number(e.target.value))}>{Object.entries(gapChoices).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>

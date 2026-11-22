@@ -11,7 +11,7 @@ export async function GET(request:Request){
  try{
   const db=database(),owner=await workerOwner(request,db);
   if(!owner)return Response.json({error:"Invalid worker token."},{status:401});
-  const [s,p,r,,b,rec,req]=await Promise.all([
+  const [s,p,r,,b,rec,req,tr]=await Promise.all([
    db.prepare("SELECT id,url,status,style,capture_mode,clip_text,learned FROM streamers WHERE owner=? ORDER BY priority IS NULL,priority,created_at").bind(owner).all<{id:string;url:string;status:string;style:string|null;capture_mode:string|null;clip_text:string|null;learned:string|null}>(),
    db.prepare("SELECT duration,daily_limit,captions,framing,control,style,transcribe,recording_days,import_clips,clip_command,learn FROM preferences WHERE owner=?").bind(owner).first(),
    // Edits saved in the dashboard that still need rendering, oldest request first.
@@ -24,6 +24,7 @@ export async function GET(request:Request){
    // (read in the same pass), and clips asked for from them.
    db.prepare("SELECT id,streamer_id,state,source_url FROM recordings WHERE owner=? ORDER BY started_at DESC LIMIT 2000").bind(owner).all<{id:string;streamer_id:string;state:string;source_url:string|null}>(),
    db.prepare("SELECT id,recording_id,kind,start,end,count FROM recording_requests WHERE owner=? AND state IN ('queued','working') ORDER BY created_at LIMIT 50").bind(owner).all<{id:string;recording_id:string;kind:string;start:number|null;end:number|null;count:number|null}>(),
+   db.prepare("SELECT t.clip_id,t.lang,t.rev,t.source_caption,c.edit,c.transcript,c.source_meta,c.signals,s.name AS streamer FROM clip_translations t INDEXED BY clip_translations_owner_state JOIN clips c ON c.id=t.clip_id LEFT JOIN streamers s ON s.id=c.streamer_id WHERE t.owner=? AND t.state='queued' AND c.edit IS NOT NULL ORDER BY t.created_at LIMIT 3").bind(owner).all<{clip_id:string;lang:string;rev:number;source_caption:string|null;edit:string;transcript:string|null;source_meta:string|null;signals:string|null;streamer:string|null}>(),
   ]);
   // streamers is in recording-priority order: the worker gives full capture slots to the first live ones.
   return Response.json({
@@ -36,6 +37,8 @@ export async function GET(request:Request){
    clipRequests:req.results.map(x=>x.kind==="moment"?{id:x.id,recordingId:x.recording_id,kind:x.kind,start:x.start,end:x.end}:{id:x.id,recordingId:x.recording_id,kind:x.kind,count:x.count}),
    // kind: a looping video, or a still image (rendered for the clip's whole length).
    backgrounds:b.results.map(({content_type,...x})=>({...x,kind:content_type.startsWith("image/")?"image":"video",type:content_type})),
+   // Clips to translate for accounts that post in another language (lib/languages.ts): like renders, plus the caption.
+   translations:tr.results.map(x=>({id:x.clip_id,lang:x.lang,rev:x.rev,caption:x.source_caption,streamer:x.streamer,edit:parse(x.edit),words:parse(x.transcript)??[],source:parse(x.source_meta),signals:parse(x.signals)})).filter(x=>x.edit),
    renders:r.results.map(x=>({id:x.id,rev:x.edit_rev,edit:parse(x.edit),words:parse(x.transcript)??[],source:parse(x.source_meta),signals:parse(x.signals)})).filter(x=>x.edit),
   },{headers:{"Cache-Control":"private, no-store"}});
  }catch(error){console.error("Worker config failed",error);return Response.json({error:"Config unavailable."},{status:503});}

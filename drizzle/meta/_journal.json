@@ -225,6 +225,13 @@
       "when": 1795251770548,
       "tag": "0031_learn_from_views",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1795255151236,
+      "tag": "0032_clip_translations",
+      "breakpoints": true
     }
   ]
 }

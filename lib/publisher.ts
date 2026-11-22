@@ -12,6 +12,7 @@ import { captionForPost, fillCaptions } from "./post-caption";
 import { syncAnalytics } from "./analytics";
 import { expireRecordings } from "./recordings";
 import { readOptions, tiktokSettings, wantsDraft } from "./account-options";
+import { subtitleLanguages, translatable } from "./languages";
 import { planNext, tiktokBusy, TIKTOK_DAILY, bestHours, hoursLabel, nextOpenAt, windowHours } from "./posting-plan.mjs";
 import { applyRules, lengthProblem, readRules } from "./posting-rules.mjs";
 import { keyConnection, siteConnection, zernioApiUrl, type Connection } from "./zernio-keys";
@@ -251,7 +252,7 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   // 2. Otherwise start the oldest queued post, within the daily limit.
   const queued = await db.prepare("SELECT id,clip_id,state,container_id,attempts,updated_at,draft,queued_by_hand FROM posts WHERE account_id=? AND state='queued' AND next_attempt_at<=? ORDER BY created_at LIMIT 1").bind(account.id, iso).first<PostRow>();
   if (!queued) return;
-  const clip = await db.prepare("SELECT c.review,c.reviewed_at,c.file_key,c.render_state,c.duration,s.name,s.platform,s.url,s.posting_rules FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(queued.clip_id, account.owner).first<{ review: string; reviewed_at: string | null; file_key: string | null; render_state: string | null; duration: number | null; name: string | null; platform: string | null; url: string | null; posting_rules: string | null }>();
+  const clip = await db.prepare("SELECT c.review,c.reviewed_at,c.file_key,c.render_state,c.duration,c.edit_rev,c.edit IS NOT NULL AS editable,s.name,s.platform,s.url,s.posting_rules FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(queued.clip_id, account.owner).first<{ review: string; reviewed_at: string | null; file_key: string | null; render_state: string | null; duration: number | null; edit_rev: number; editable: number; name: string | null; platform: string | null; url: string | null; posting_rules: string | null }>();
   if (!clip || clip.review !== "approved" || !clip.file_key) {
     // Rejected or deleted after it was queued: drop it rather than post it.
     await db.prepare("DELETE FROM posts WHERE id=?").bind(queued.id).run();
@@ -298,13 +299,42 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
     return;
   }
   const draft = plan.action === "draft";
+  const info = { reviewed: !!clip.reviewed_at, streamer: clip.name ?? "a streamer", platform: clip.platform ?? "stream", draft };
+  // The clip's own caption (written by Claude or typed by the owner), else the workspace template.
+  const english = async () => await captionForPost(env, queued.clip_id).catch(() => null) ?? renderCaption(account.caption_template || defaultCaption, info);
+  // An account that posts in another language posts that version of the clip: subtitles, hook and caption translated
+  // and rendered on the worker PC (worker translate jobs). Asked for here, made from the clip's current edit.
+  let media = queued.clip_id, translatedCaption: string | null = null;
+  if (translatable(options.subtitleLanguage)) {
+    const lang = options.subtitleLanguage, name = subtitleLanguages[lang];
+    if (!clip.editable) {
+      await db.prepare("UPDATE posts SET state='failed',error=?,updated_at=? WHERE id=?").bind("This clip was captured before the editor existed, so it can't be made in " + name + ". Post it from an English account, or change this account's language.", iso, queued.id).run();
+      return;
+    }
+    const version = await db.prepare("SELECT rev,state,caption,error FROM clip_translations WHERE clip_id=? AND lang=?").bind(queued.clip_id, lang).first<{ rev: number; state: string; caption: string | null; error: string | null }>();
+    // Couldn't be made from this edit: the post fails with the reason. Retrying the post clears it, so it's asked again.
+    if (version?.state === "failed" && version.rev === clip.edit_rev) {
+      await db.prepare("UPDATE posts SET state='failed',error=?,updated_at=? WHERE id=?").bind("Couldn't make the " + name + " version: " + (version.error ?? "unknown error") + ". Retry to try again.", iso, queued.id).run();
+      return;
+    }
+    if (version?.state !== "ready" || version.rev !== clip.edit_rev) {
+      if (!version || version.rev !== clip.edit_rev)
+        await db.prepare(`INSERT INTO clip_translations (clip_id,owner,lang,rev,state,source_caption,created_at,updated_at) VALUES (?,?,?,?,'queued',?,?,?)
+          ON CONFLICT(clip_id,lang) DO UPDATE SET rev=excluded.rev,state='queued',source_caption=excluded.source_caption,caption=NULL,error=NULL,updated_at=excluded.updated_at`)
+          .bind(queued.clip_id, account.owner, lang, clip.edit_rev, await english(), iso, iso).run();
+      const next = new Date(now + 2 * 60_000).toISOString();
+      await db.prepare("UPDATE posts SET next_attempt_at=?,error=? WHERE id=?").bind(next, "Waiting for your worker PC to make the " + name + " version (subtitles, hook and caption).", queued.id).run();
+      return;
+    }
+    media = queued.clip_id + "-" + lang;
+    translatedCaption = version.caption;
+  }
   if (draft) await db.prepare("UPDATE posts SET draft=1 WHERE id=?").bind(queued.id).run();
   try {
-    const link = env.PUBLIC_URL!.replace(/\/$/, "") + await signedMediaPath(queued.clip_id, now + adapter.linkTtlMs, env.MEDIA_KEY!);
-    const info = { reviewed: !!clip.reviewed_at, streamer: clip.name ?? "a streamer", platform: clip.platform ?? "stream", draft };
-    // The clip's own caption (written by Claude or typed by the owner), else the workspace template.
-    // Then the streamer's posting rules: a campaign's label and tags, and the credit line.
-    const written = await captionForPost(env, queued.clip_id).catch(() => null) ?? renderCaption(account.caption_template || defaultCaption, info);
+    const link = env.PUBLIC_URL!.replace(/\/$/, "") + await signedMediaPath(media, now + adapter.linkTtlMs, env.MEDIA_KEY!);
+    // Then the streamer's posting rules: a campaign's label and tags, and the credit line, added after translating
+    // so a brand's own label and tags are never translated.
+    const written = translatedCaption ?? await english();
     const caption = applyRules(written, rules, { streamer: info.streamer, platform: info.platform, channel: channelLabel(clip.url) });
     await apply(queued, await adapter.start(queued, link, caption, info));
   } catch (error) { await handle(queued, error); }

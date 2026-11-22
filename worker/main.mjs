@@ -13,7 +13,7 @@ import { normalizeEdit } from "./edit.mjs";
 import { renderClip, videoInfo } from "./render.mjs";
 import { backgroundStart, chooseBackground, localBackground } from "./backgrounds.mjs";
 import { Recorder } from "./recorder.mjs";
-import { chatSample, pickerEnabled, rateMoments, writeClipText, writerEnabled } from "./writer.mjs";
+import { chatSample, LANGUAGE_NAMES, pickerEnabled, rateMoments, sentencesOf, spreadWords, translateClip, writeClipText, writerEnabled } from "./writer.mjs";
 import { command } from "./process.mjs";
 import { bucketSignals, encodePreview, extractRange, joinSegments, parts, pickMoments, scanRanges, suggestMoments } from "./recordings.mjs";
 import { screenText, screenTextAvailable } from "./screentext.mjs";
@@ -233,6 +233,7 @@ async function processJobs() {
   while (jobs.length && !stopping) {
     const job = jobs.shift();
     if (job.kind === "render") { await rerender(job); continue; }
+    if (job.kind === "translate") { await translateJob(job); continue; }
     // Live captures stop with their streamer; clips asked for from a recording were asked for by hand.
     if (!job.fromRecording && !allowed(config, job.streamer.id)) { store.fail(job.id); await rm(job.dir, { recursive: true, force: true }); continue; }
     const controller = new AbortController();
@@ -782,6 +783,65 @@ async function rerender(job) {
   }
 }
 
+// ---- Clips in another language ----
+// An account set to post in Spanish, Portuguese or French gets its own version of each clip: the subtitles (sentence
+// by sentence, timed over the original speech), the hook and the post caption translated by the local AI model, then
+// rendered from the clip's current edit and uploaded. If it can't be made, the dashboard is told why and the post
+// fails rather than going out in English.
+const translateRevs = new Map();  // "<clip>:<lang>" -> edit revision queued
+function queueTranslations(list) {
+  for (const t of list ?? []) {
+    const key = t.id + ":" + t.lang;
+    if ((translateRevs.get(key) ?? -1) >= t.rev) continue;
+    translateRevs.set(key, t.rev);
+    jobs.push({ kind: "translate", ...t });
+  }
+  if (jobs.length) void processJobs();
+}
+async function translateJob(job) {
+  const controller = new AbortController(), name = LANGUAGE_NAMES[job.lang];
+  processing = { job, controller };
+  const local = store.get(job.id), localSource = local && join(dirname(local.path), "source.mp4");
+  const scratch = join(dataDir, "renders", job.id + "-" + job.lang);
+  try {
+    let source = localSource;
+    if (!source || !await access(source).then(() => true, () => false)) {
+      await mkdir(scratch, { recursive: true });
+      const response = await api("/api/worker/clips/" + job.id + "/source", { timeout: 180_000 });
+      if (!response.ok) throw new Error("source download HTTP " + response.status);
+      source = join(scratch, "source.mp4");
+      await writeFile(source, Buffer.from(await response.arrayBuffer()));
+    }
+    await mkdir(scratch, { recursive: true });
+    const info = job.source?.width ? job.source : await videoInfo(source, controller.signal);
+    const base = normalizeEdit(job.edit, { duration: info.duration || job.source?.duration || 600 });
+    // Only what's said inside the trim (and a second either side) needs translating.
+    const words = (job.edit.words ?? job.words ?? []).filter(w => w[1] >= base.trim.start - 1 && w[0] <= base.trim.end + 1);
+    const sentences = sentencesOf(words);
+    // The streamer's name stays as it is: names like "Speed" would otherwise be translated.
+    const names = [job.streamer].filter(Boolean);
+    const out = await translateClip({ sentences, hook: base.hook.text, caption: job.caption ?? "", names }, job.lang, { signal: controller.signal });
+    if (!out) throw new Error("the AI model didn't translate it (is Ollama running on the worker PC?)");
+    const translatedWords = sentences.flatMap((s, i) => spreadWords(s, out.sentences[i]));
+    const edit = { ...base, hook: { ...base.hook, text: base.hook.text ? out.hook : "" } };
+    const file = join(scratch, "render-" + job.lang + "-" + job.rev + ".mp4");
+    const result = await renderClip(source, { edit, words: translatedWords, width: info.width, height: info.height, background: await backgroundFor(edit, job.id), energy: job.signals?.energy ?? null, messages: job.signals?.messages ?? [] }, file, controller.signal);
+    const upload = await api("/api/worker/clips/" + job.id + "/translation", { method: "PUT", body: await readFile(file), timeout: 180_000,
+      headers: { "content-type": "video/mp4", "x-lang": job.lang, "x-rev": String(job.rev), "x-clip-sha256": result.sha, ...(out.caption && { "x-caption": encodeURIComponent(out.caption) }) } });
+    // 409: no longer wanted (the clip was edited again, or the account changed language).
+    if (!upload.ok && upload.status !== 409) throw new Error("upload HTTP " + upload.status);
+    console.log("Made the", name, "version of clip", job.id, "(" + sentences.length + " lines translated)");
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      problem("Couldn't make the " + name + " version of clip " + job.id + ": " + error.message);
+      await api("/api/worker/clips/" + job.id + "/translation", { method: "POST", body: JSON.stringify({ lang: job.lang, rev: job.rev, error: String(error.message).slice(0, 300) }) }).catch(() => {});
+    } else translateRevs.delete(job.id + ":" + job.lang);
+  } finally {
+    processing = null;
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
 function queueRenders(list) {
   for (const r of list ?? []) {
     if ((renderRevs.get(r.id) ?? -1) >= r.rev) continue;
@@ -841,6 +901,7 @@ async function prune() {
 async function tick() {
   await refresh();
   queueRenders(config?.renders);
+  queueTranslations(config?.translations);
   if (config) await takeRequests(config.clipRequests);
   // Stop disallowed recordings before the (slow) live checks rather than after them.
   for (const id of sessions.keys()) if (!allowed(config, id)) await stopSession(id, "paused, stopped or disabled");

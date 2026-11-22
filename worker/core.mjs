@@ -79,6 +79,10 @@ export function validateControl(c) {
   c.imports ??= [];
   if (!Array.isArray(c.imports) || c.imports.length > 20) throw new Error("Invalid imports");
   for (const v of c.imports) if (!/^[0-9a-f-]{36}$/i.test(v?.id) || !/^[0-9a-f-]{36}$/i.test(v.streamerId) || videoLink(v.url)?.url !== v.url) throw new Error("Invalid import");
+  // Clips to make in another language for accounts that post in it; older dashboards send none.
+  c.translations ??= [];
+  if (!Array.isArray(c.translations) || c.translations.length > 20) throw new Error("Invalid translations");
+  for (const t of c.translations) if (!/^[0-9a-f-]{36}$/i.test(t?.id) || !["es", "pt", "fr"].includes(t.lang) || !Number.isInteger(t.rev) || t.rev < 0 || !t.edit || typeof t.edit !== "object") throw new Error("Invalid translation request");
   // Re-renders requested from the editor. Dashboards that predate the editor omit them.
   c.renders ??= [];
   if (!Array.isArray(c.renders) || c.renders.length > 20) throw new Error("Invalid renders");

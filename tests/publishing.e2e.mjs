@@ -232,6 +232,65 @@ test("Local code writes post captions from the transcript ahead of posting; the 
 
 });
 
+test("an account set to Spanish posts the Spanish version the worker made, or fails with the reason", async () => {
+  const words = [[6.2, 6.6, "No"], [6.7, 7.0, "way"], [7.1, 8.6, "that!"]];
+  const material = () => { const src = randomBytes(2048); return { edit: defaultEdit(defaultStyle(), { trimStart: 6, trimEnd: 36 }), transcript: words, source: { width: 1920, height: 1080, duration: 42, sha: createHash("sha256").update(src).digest("hex"), size: src.length } }; };
+  // One account, so each clip goes to one platform download per publisher run. (The local test Worker doesn't answer a
+  // second download made while the same run is still waiting on the first; real platforms aren't affected.)
+  const { body: before } = await dash(), links = before.streamers.find(s => s.id === streamer.id).accounts;
+  const accounts = before.accounts.filter(a => a.id === links[0]);
+  assert.equal((await dash({ action: "assign", streamerId: streamer.id, accounts: [links[0]] })).status, 200);
+  for (const a of accounts) assert.equal((await dash({ action: "accountOptions", id: a.id, options: { subtitleLanguage: "es" } })).status, 200);
+  const sendVersion = async (id, rev, bytes, caption) => worker("/api/worker/clips/" + id + "/translation", { method: "PUT", body: bytes, headers: { "content-type": "video/mp4", "x-lang": "es", "x-rev": String(rev), "x-clip-sha256": createHash("sha256").update(bytes).digest("hex"), "x-caption": encodeURIComponent(caption) } });
+  try {
+    // 1. The post waits while the worker makes the Spanish version; the worker is told what to translate. (It posts
+    // to more than one account, each sending one post at a time: any of its posts that gets its turn asks.)
+    const { clip } = await addClip(streamer.id, material());
+    let waiting;
+    for (let i = 0; i < 40 && !waiting; i++) { await cron(130_000); waiting = (await posts()).find(p => p.clip_id === clip.id && p.error); }
+    assert.ok(waiting, "never reached: " + JSON.stringify((await posts()).map(p => [p.clip_id === clip.id, p.state, p.error])));
+    assert.equal(waiting.state, "queued");
+    assert.match(waiting.error, /Spanish version/);
+    const asked = (await (await worker("/api/worker/config")).json()).translations.find(t => t.id === clip.id);
+    assert.equal(asked.lang, "es");
+    assert.ok(asked.edit && Array.isArray(asked.words) && typeof asked.caption === "string", "the edit, transcript and English caption to translate");
+    assert.ok(!(await fakeLog()).containers.some(([, c]) => c.videoUrl.includes(clip.id)), "nothing posted in English meanwhile");
+    // 2. The worker's upload: a stale revision refused, then the right one; the post goes out with it.
+    const spanish = randomBytes(5000);
+    assert.equal((await sendVersion(clip.id, asked.rev + 1, spanish, "x")).status, 409);
+    assert.equal((await sendVersion(clip.id, asked.rev, spanish, "¡No puede ser! #test")).status, 200);
+    // From here the local test Worker answers the cron request late (its work is done in under a second), so the
+    // publisher runs are started without waiting on that answer and the result is read from the fake platform.
+    const kick = async () => { clock += 130_000; fetch(base + "/__test/cron?time=" + clock, { signal: AbortSignal.timeout(20_000) }).catch(() => {}); await sleep(15_000); };
+    let container;
+    for (let i = 0; i < 6 && !container; i++) { await kick(); container = (await fakeLog()).containers.find(([, c]) => c.videoUrl.includes(clip.id))?.[1]; }
+    assert.ok(container, "posted once the version was ready");
+    assert.match(container.videoUrl, new RegExp("/media/" + clip.id + "-es\\.mp4\\?e=\\d+&s="));
+    assert.equal(container.fetchStatus, 200, "the platform could download the Spanish file");
+    assert.equal(container.bytes, spanish.length);
+    assert.equal(container.caption, "¡No puede ser! #test");
+    // 3. A version the worker couldn't make fails the post with the reason, rather than posting English.
+    const second = await addClip(streamer.id, material());
+    let ask;
+    for (let i = 0; i < 10 && !ask; i++) { await kick(); ask = (await (await worker("/api/worker/config")).json()).translations.find(t => t.id === second.clip.id); }
+    assert.ok(ask, "the second clip's version was asked for");
+    assert.equal((await worker("/api/worker/clips/" + second.clip.id + "/translation", { method: "POST", body: JSON.stringify({ lang: "es", rev: ask.rev, error: "Ollama is not running" }) })).status, 200);
+    let failed;
+    for (let i = 0; i < 6 && !failed; i++) { await kick(); failed = (await posts()).find(p => p.clip_id === second.clip.id && p.state === "failed"); }
+    assert.ok(failed, "a post of the clip failed: " + JSON.stringify((await posts()).filter(p => p.clip_id === second.clip.id).map(p => [p.state, p.error])));
+    assert.match(failed.error, /Couldn't make the Spanish version: Ollama is not running/);
+    assert.ok(!(await fakeLog()).containers.some(([, c]) => c.videoUrl.includes(second.clip.id)), "nothing posted in English");
+    // 4. Retrying the post asks the worker for the version again.
+    assert.equal((await dash({ action: "retryPost", id: failed.id })).status, 200);
+    let again;
+    for (let i = 0; i < 6 && !again; i++) { await kick(); again = (await (await worker("/api/worker/config")).json()).translations.find(t => t.id === second.clip.id); }
+    assert.ok(again, "asked again after Retry");
+  } finally {
+    for (const a of accounts) await dash({ action: "accountOptions", id: a.id, options: { subtitleLanguage: "en" } });
+    await dash({ action: "assign", streamerId: streamer.id, accounts: links });
+  }
+});
+
 test("a revoked Instagram token marks the account for reconnection without losing the post", async () => {
   await fetch("http://127.0.0.1:" + fake.port + "/__revoke", { method: "POST" });
   await cron(600_000); await cron(120_000);

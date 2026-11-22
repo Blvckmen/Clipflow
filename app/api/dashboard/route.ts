@@ -238,6 +238,10 @@ export async function POST(request:Request){
     catch(error){console.error("Zernio post cancel failed",error);}
    }
    statements.push(db.prepare("DELETE FROM posts WHERE owner=? AND state!='published' AND clip_id IN (SELECT value FROM json_each(?))").bind(owner,JSON.stringify(ids)));
+   // Their versions in other languages go too (files first, like the clips').
+   const {results:versions}=await db.prepare("SELECT file_key FROM clip_translations WHERE owner=? AND file_key IS NOT NULL AND clip_id IN (SELECT value FROM json_each(?))").bind(owner,JSON.stringify(ids)).all<{file_key:string}>();
+   for(let i=0;i<versions.length;i+=500)await bucket()?.delete(versions.slice(i,i+500).map(v=>v.file_key));
+   statements.push(db.prepare("DELETE FROM clip_translations WHERE owner=? AND clip_id IN (SELECT value FROM json_each(?))").bind(owner,JSON.stringify(ids)));
   };
   if(payload.action==="deleteClip"){
    const clip=await db.prepare("SELECT c.id,c.file_key,c.source_key,c.thumb_rev,s.name FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(payload.id,owner).first<{id:string;file_key:string|null;source_key:string|null;thumb_rev:number|null;name:string|null}>();
@@ -428,10 +432,12 @@ export async function POST(request:Request){
    return Response.json({ok:true,message:payload.op==="queue"?"Queued "+posts+". They go out as their accounts have room again, within each daily limit.":"Skipped "+posts+"; those clips won't post to those accounts."});
   }
   if(payload.action==="retryPost"){
-   const post=await db.prepare("SELECT state FROM posts WHERE id=? AND owner=?").bind(payload.id,owner).first<{state:string}>();
+   const post=await db.prepare("SELECT state,clip_id FROM posts WHERE id=? AND owner=?").bind(payload.id,owner).first<{state:string;clip_id:string}>();
    if(!post)return Response.json({error:"Post not found."},{status:404});
    if(post.state!=="failed")return Response.json({error:"Only failed posts can be retried."},{status:409});
-   await db.prepare("UPDATE posts SET state='queued',attempts=0,error=NULL,container_id=NULL,next_attempt_at=?,updated_at=? WHERE id=? AND owner=?").bind(iso,iso,payload.id,owner).run();
+   // A language version that couldn't be made is asked for again (the publisher sees it gone and asks the worker).
+   await db.batch([db.prepare("UPDATE posts SET state='queued',attempts=0,error=NULL,container_id=NULL,next_attempt_at=?,updated_at=? WHERE id=? AND owner=?").bind(iso,iso,payload.id,owner),
+    db.prepare("DELETE FROM clip_translations WHERE clip_id=? AND owner=? AND state='failed'").bind(post.clip_id,owner)]);
    return Response.json({ok:true,message:"Post queued again."});
   }
   if(payload.action==="addZernioKey"){

@@ -31,6 +31,8 @@ export const optionsSchema = z.object({
   gapMinutes: z.number().int().min(0).max(720).optional(),
   whenFull: z.enum(keys(whenFullChoices)).optional(),
   hours: z.enum(keys(hoursChoices)).optional(),
+  // The language this account posts in: clips get translated subtitles, hook and caption first (lib/languages.ts).
+  subtitleLanguage: z.enum(["en", "es", "pt", "fr"]).optional(),
   // The window for hours "window", from hoursFrom up to hoursTo (0-23; it may wrap past midnight).
   hoursFrom: z.number().int().min(0).max(23).optional(),
   hoursTo: z.number().int().min(0).max(23).optional(),
@@ -41,7 +43,7 @@ export const optionsSchema = z.object({
   overflowToDrafts: z.boolean().optional(),
 }).strict();
 export type AccountOptions = Required<z.infer<typeof optionsSchema>>;
-export const defaultOptions: AccountOptions = { tiktokMode: "reviewed", tiktokPrivacy: "PUBLIC_TO_EVERYONE", allowComments: true, youtubeVisibility: "public", dailyLimit: null, gapMinutes: 0, whenFull: "review", overflowToDrafts: true, hours: "any", hoursFrom: 17, hoursTo: 23, timeZone: "UTC" };
+export const defaultOptions: AccountOptions = { tiktokMode: "reviewed", tiktokPrivacy: "PUBLIC_TO_EVERYONE", allowComments: true, youtubeVisibility: "public", dailyLimit: null, gapMinutes: 0, whenFull: "review", overflowToDrafts: true, hours: "any", hoursFrom: 17, hoursTo: 23, timeZone: "UTC", subtitleLanguage: "en" };
 export const gapChoices = { 0: "Post as soon as possible", 15: "At least 15 minutes apart", 30: "At least 30 minutes apart", 60: "At least 1 hour apart", 120: "At least 2 hours apart", 180: "At least 3 hours apart" } as const;
 
 // Stored options merged over the defaults; anything unreadable falls back to them.

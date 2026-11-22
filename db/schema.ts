@@ -170,3 +170,13 @@ export const backgrounds=sqliteTable("backgrounds",{
  // Length in seconds, measured by the browser that uploaded it (or later in Settings); null until known.
  duration:real("duration"),
 },t=>[index("backgrounds_owner").on(t.owner)]);
+
+// A clip in another language for accounts set to post in it (account option subtitleLanguage): subtitles, hook and
+// post caption translated on the worker PC, rendered from the clip's edit revision `rev`. state: queued (asked for
+// by the publisher) -> ready (file_key) | failed (error). source_caption: the post caption to translate, fixed when
+// asked for; caption: its translation. The publisher applies the streamer's posting rules after translating.
+export const clipTranslations=sqliteTable("clip_translations",{
+ clipId:text("clip_id").notNull(),owner:text("owner").notNull(),lang:text("lang").notNull(),rev:integer("rev").notNull(),
+ state:text("state").notNull(),fileKey:text("file_key"),sourceCaption:text("source_caption"),caption:text("caption"),error:text("error"),
+ createdAt:text("created_at").notNull(),updatedAt:text("updated_at").notNull(),
+},t=>[primaryKey({columns:[t.clipId,t.lang]}),index("clip_translations_owner_state").on(t.owner,t.state)]);
