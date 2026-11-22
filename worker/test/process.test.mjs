@@ -46,3 +46,34 @@ test('errors keep their reason, not a stream link\'s access token', async () => 
   assert.ok(!said.includes('xxxx') && said.includes('403 Client Error: Forbidden'), said);
   assert.equal(hideQueries('see https://a.b/c?d=1&e=2, and http://x.y/z'), 'see https://a.b/c?…, and http://x.y/z');
 });
+
+test("stderr redacts huge signed URLs before truncation, across arbitrary chunks", async () => {
+  const { PassThrough } = await import("node:stream");
+  const { tail } = await import("../process.mjs");
+  const token="SECRET".repeat(3000);
+  const url="https://cdn.example/live.m3u8?token="+token;
+  const message="error: Unable to open URL: "+url+" (403 Client Error: Forbidden for url: "+url+")";
+  for (const size of [1,7,4096,message.length]) {
+    const stream=new PassThrough();
+    const output=tail(stream);
+    for (let i=0;i<message.length;i+=size) {
+      stream.write(message.slice(i,i+size));
+      assert.ok(!output.text.includes("SECRET"));
+      assert.ok(output.text.length<=4000);
+    }
+    assert.match(lastLines(output.text,1),/403 Client Error: Forbidden/);
+    stream.end();
+  }
+});
+
+test("stderr retains recent diagnostics and an unfinished final line", async () => {
+  const { PassThrough } = await import("node:stream");
+  const { tail } = await import("../process.mjs");
+  const stream=new PassThrough();
+  const output=tail(stream);
+  stream.write("old noise\n".repeat(1000));
+  stream.write("error: Read timeout, exiting");
+  assert.equal(lastLines(output.text,1),"error: Read timeout, exiting");
+  assert.ok(output.text.length<=4000);
+  stream.end();
+});

@@ -1,10 +1,26 @@
 import { spawn } from "node:child_process";
 const TAIL_CHARS=4000;
-// Keeps the end of a stream's text output, for error messages.
+// Redact query strings before retaining a bounded tail. Streamlink can print URLs
+// longer than the entire tail, and child-process chunks can split anywhere in a token.
 export function tail(stream) {
   const state={text:""};
+  let history="",word="",query=false,punctuation="";
   stream?.setEncoding?.("utf8");
-  stream?.on("data",chunk=>{state.text=(state.text+chunk).slice(-TAIL_CHARS);});
+  stream?.on("data",chunk=>{
+    for (const char of String(chunk)) {
+      if (/[\s)"']/.test(char)) {
+        history=(history+hideQueries(word)+punctuation+char).slice(-TAIL_CHARS);
+        word="";query=false;punctuation="";
+      } else if (query) {
+        punctuation=/[,.;:]/.test(char)?char:"";
+      } else if (char==="?" && /https?:\/\//.test(word)) {
+        word+="??";query=true;
+      } else {
+        word=(word+char).slice(-TAIL_CHARS);
+      }
+    }
+    state.text=(history+hideQueries(word)+punctuation).slice(-TAIL_CHARS);
+  });
   return state;
 }
 // Links in tool output without their query string: stream playlist links carry long access tokens that would fill
