@@ -2,7 +2,7 @@ import { z } from "zod";
 import { database } from "../../../../db/raw";
 import { workerOwner } from "../../../../lib/worker-auth";
 const statusSchema=z.object({
- streamers:z.array(z.object({id:z.string().uuid(),status:z.enum(["live","recording","offline","error"]),checkedAt:z.string().datetime(),title:z.string().max(200).nullish()})).max(500),
+ streamers:z.array(z.object({id:z.string().uuid(),status:z.enum(["live","recording","limit","offline","error"]),checkedAt:z.string().datetime(),title:z.string().max(200).nullish()})).max(500),
  // The worker's latest problem, e.g. a failed render or a refused upload.
  error:z.object({message:z.string().min(1).max(500),at:z.string().datetime()}).optional(),
 });

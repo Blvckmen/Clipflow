@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { Store, allowed, channelUrl, clipTextFor, dueForProbe, plan, retryDelay, validateControl } from "./core.mjs";
+import { Store, allowed, channelUrl, clipTextFor, dueForProbe, plan, retryDelay, shownStatus, validateControl } from "./core.mjs";
 // A streamer's transcription, subtitles and automatic hook with these settings (its own choices, else the workspace's).
 const textOf = (settings, id) => clipTextFor(settings, settings.streamers.find(s => s.id === id));
 import { chatSpike, commandTrigger, perSecond } from "./highlights.mjs";
@@ -142,7 +142,7 @@ async function reportStatus() {
   for (const id of sessions.keys()) setLive(id, "recording", live.get(id)?.title ?? null);
   if (!unreported.size && !pendingError) return;
   const ids = [...unreported], error = pendingError;
-  const streamers = ids.filter(id => live.has(id)).map(id => { const s = live.get(id); return { id, status: s.status, checkedAt: new Date(s.checkedAt).toISOString(), title: s.title }; });
+  const streamers = ids.filter(id => live.has(id)).map(id => { const s = live.get(id); return { id, status: shownStatus(config, id, s.status, id => store.countToday(id)), checkedAt: new Date(s.checkedAt).toISOString(), title: s.title }; });
   try {
     const response = await api("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers, ...(error && { error }) }) });
     if (!response.ok) throw new Error("HTTP " + response.status);

@@ -139,6 +139,9 @@ describe("live status", () => {
     assert.equal(response.status, 200);
     const row = (await dash()).body.streamers.find(s => s.id === streamer.id);
     assert.deepEqual([row.live_status, row.live_checked_at, row.live_title], ["live", checkedAt, "API test stream"]);
+    // Live, but today's clip limit is used up.
+    assert.equal((await worker("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers: [{ id: streamer.id, status: "limit", checkedAt, title: "API test stream" }] }) })).status, 200);
+    assert.equal((await dash()).body.streamers.find(s => s.id === streamer.id).live_status, "limit");
   });
   test("the worker's latest error is shown and a new token clears it", async () => {
     const at = new Date().toISOString();

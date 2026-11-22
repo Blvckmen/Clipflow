@@ -137,6 +137,13 @@ export function plan(c, { running, blockedUntil, countToday, now, maxCaptures, i
   }
   return { start, stop, bump };
 }
+// The status the dashboard shows: a live streamer left out by plan() because today's clips are used up is
+// reported as "limit", so its card says why nothing is recording. Internally it stays "live".
+export function shownStatus(c, id, status, countToday) {
+  if (status !== "live") return status;
+  const s = c?.streamers?.find(x => x.id === id);
+  return s && (s.captureMode ?? "clip") === "clip" && countToday(id) >= c.dailyLimit ? "limit" : status;
+}
 export function retryDelay(attempt) { return Math.min(300_000, 30_000 * 2 ** Math.min(attempt, 4)); }
 export function clipHash(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
 export class Store {

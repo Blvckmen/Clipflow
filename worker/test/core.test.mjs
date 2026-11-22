@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { Store, allowed, channelUrl, dueForProbe, plan, probeResult, retryDelay, validateControl } from "../core.mjs";
+import { Store, allowed, channelUrl, dueForProbe, plan, probeResult, retryDelay, shownStatus, validateControl } from "../core.mjs";
 import { sourceSignals, sourceWords } from "../media.mjs";
 
 const a = "11111111-1111-4111-8111-111111111111", b = "22222222-2222-4222-8222-222222222222", c = "33333333-3333-4333-8333-333333333333";
@@ -14,6 +14,17 @@ const config = (over = {}) => ({ control: "running", duration: 45, captions: tru
   { id: c, url: "https://youtube.com/@gamma", status: "paused" },
 ], ...over });
 const ctx = (over = {}) => ({ running: new Set(), blockedUntil: new Map(), countToday: () => 0, now: 1000, maxCaptures: 1, isLive: () => true, ...over });
+
+test("a live clipping streamer with today's clips used up is shown as at its daily limit", () => {
+  const full = id => id === a ? 2 : 0;
+  assert.equal(shownStatus(config(), a, "live", full), "limit");
+  assert.equal(shownStatus(config(), b, "live", full), "live", "room left");
+  assert.equal(shownStatus(config(), a, "recording", full), "recording");
+  assert.equal(shownStatus(config(), a, "offline", full), "offline");
+  const recorded = config({ streamers: [{ id: a, url: "https://twitch.tv/alpha", status: "armed", captureMode: "both" }] });
+  assert.equal(shownStatus(recorded, a, "live", full), "live", "whole-stream recording isn't limited");
+  assert.equal(shownStatus(null, a, "live", full), "live", "no settings yet");
+});
 
 test("probeResult distinguishes live, offline and failed checks", () => {
   assert.deepEqual(probeResult({ plugin: "kick", metadata: { title: "Brand Risk #16" }, streams: { "720p60": {}, best: {} } }), { status: "live", title: "Brand Risk #16" });
