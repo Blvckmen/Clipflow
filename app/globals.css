@@ -699,3 +699,9 @@ button.account-streamers{max-width:none;justify-self:start}
 @media (max-width:900px){.streamer-grid{grid-template-columns:1fr;padding:12px}}
 .streamer-card header>.muted{font-size:12px}
 .streamer-card .streamer-routing{width:100%;max-width:none;justify-content:flex-start}
+.unsaved-dot{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#f2b36b}
+.unsaved-dot::before{content:"";width:7px;height:7px;border-radius:50%;background:#f2b36b}
+.caption-controls{display:flex;flex-direction:column;gap:inherit;transition:opacity .15s}
+.caption-controls.off{opacity:.45}
+.caption-controls.off:hover,.caption-controls.off:focus-within{opacity:.8}
+@media (max-width:900px){.editor-tabs{overflow-x:auto;scrollbar-width:none;padding:8px 10px 0}.editor-tabs::-webkit-scrollbar{display:none}.editor-tabs button{white-space:nowrap;flex-shrink:0}}

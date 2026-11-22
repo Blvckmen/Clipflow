@@ -129,6 +129,16 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
     return () => { live = false; };
   }, [clipId]);
 
+  // Unsaved changes: closing (Esc, the Clips button) or leaving the page asks first instead of dropping them.
+  const opened = useMemo(() => bundle?.edit ? JSON.stringify({ ...bundle.edit, hook: { ...HOOK_DEFAULT, ...bundle.edit.hook } }) : null, [bundle]);
+  const dirty = !!edit && !!opened && JSON.stringify(edit) !== opened, dirtyRef = useRef(false);
+  dirtyRef.current = dirty && !saving;
+  const close = useCallback(() => { if (dirtyRef.current && !window.confirm("Leave without saving your changes to this clip?")) return; onClose(); }, [onClose]);
+  useEffect(() => {
+    const warn = (e: BeforeUnloadEvent) => { if (dirtyRef.current) e.preventDefault(); };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, []);
   // Every change goes through here. Rapid changes to the same control (a slider drag) become one undo step.
   const change = useCallback((key: string, next: (e: Edit) => Edit) => {
     setEditState(current => {
@@ -163,11 +173,16 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
 
   // Draw loop: video frame, framing, look, captions, hook, progress bar. Loops playback inside the trim.
   useEffect(() => {
-    let raf = 0;
+    let raf = 0, last = { e: null as Edit | null, t: -1, tab: "", at: 0 };
     const draw = () => {
       raf = requestAnimationFrame(draw);
       const v = video.current, cv = canvas.current, e = editRef.current;
       if (!v || !cv || !e || !bundle) return;
+      // Paused and nothing changed: skip the frame (a full redraw 60 times a second kept the CPU busy for nothing),
+      // still redrawing a few times a second for images and fonts that finish loading.
+      const now = performance.now();
+      if (v.paused && e === last.e && v.currentTime === last.t && tabRef.current === last.tab && now - last.at < 250) return;
+      last = { e, t: v.currentTime, tab: tabRef.current, at: now };
       const { W, H } = frameSize(e.frame);
       if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
       const ctx = cv.getContext("2d");
@@ -269,11 +284,11 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
       else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "z") { ev.preventDefault(); if (ev.shiftKey) redo(); else undo(); }
       else if (ev.key.toLowerCase() === "i" && video.current) setTrim("start", video.current.currentTime);
       else if (ev.key.toLowerCase() === "o" && video.current) setTrim("end", video.current.currentTime);
-      else if (ev.key === "Escape") onClose();
+      else if (ev.key === "Escape") close();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggle, undo, redo, setTrim, onClose]);
+  }, [toggle, undo, redo, setTrim, close]);
 
   // Drag the hook to place it, or anywhere else to reposition the picture within the room the zoom leaves.
   const drag = useRef<{ x: number; y: number; fx: number; fy: number; hook?: boolean } | null>(null);
@@ -376,15 +391,15 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
 
   return <div className="editor-shell" role="dialog" aria-label="Clip editor">
     <header className="editor-top">
-      <button className="secondary" onClick={onClose}><ArrowLeft size={16} />Clips</button>
+      <button className="secondary" onClick={close}><ArrowLeft size={16} />Clips</button>
       <div className="editor-title"><strong>{bundle.streamer ?? "Clip"}</strong><small>{new Date(bundle.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} · {finished.toFixed(1)}s{bundle.render.state === "queued" ? " · rendering a saved edit" : bundle.render.state === "failed" ? " · last render failed" : ""}</small></div>
       <div className="editor-actions">
         <button className="icon-button" aria-label="Undo" title="Undo (Ctrl+Z)" disabled={!past.length} onClick={undo}><Undo2 size={17} /></button>
         <button className="icon-button" aria-label="Redo" title="Redo (Ctrl+Shift+Z)" disabled={!future.length} onClick={redo}><Redo2 size={17} /></button>
-        <button className="icon-button" aria-label="Discard changes" title="Discard changes" disabled={!past.length} onClick={() => { setPast(p => [...p, edit]); setEditState(bundle.edit); }}><RotateCcw size={16} /></button>
-        {onCopied && <button className="secondary" disabled={saving || copying || past.length > 0} title={past.length ? "Save or discard your changes first: the copy starts from the saved clip" : "A second clip from the same footage, to give another hook or look and post to other accounts"} onClick={() => void makeCopy()}>{copying ? <Loader2 className="spin" size={16} /> : <Copy size={16} />}Make a copy</button>}
+        <button className="icon-button" aria-label="Discard changes" title="Discard changes" disabled={!dirty} onClick={() => { if (!opened) return; setPast(p => [...p, edit]); setFuture([]); setEditState(JSON.parse(opened)); }}><RotateCcw size={16} /></button>
+        {onCopied && <button className="secondary" disabled={saving || copying || dirty} title={dirty ? "Save or discard your changes first: the copy starts from the saved clip" : "A second clip from the same footage, to give another hook or look and post to other accounts"} onClick={() => void makeCopy()}>{copying ? <Loader2 className="spin" size={16} /> : <Copy size={16} />}Make a copy</button>}
         <label className="editor-check" title={"New clips from " + (bundle.streamer ?? "this streamer") + " start with this framing, look and caption style"}><input type="checkbox" checked={saveStyle} onChange={e => setSaveStyle(e.target.checked)} />Use this look for {bundle.streamer ?? "this streamer"}&apos;s new clips</label>
-        <button className="primary" disabled={saving} onClick={() => void save()}>{saving ? <Loader2 className="spin" size={16} /> : <Check size={16} />}Save &amp; render</button>
+        {dirty && !saving && <span className="unsaved-dot" title="Changes not saved yet">Unsaved</span>}<button className="primary" disabled={saving || !!bundle.pruned || (!dirty && !saveStyle)} title={bundle.pruned ? "This clip's editable copy was removed to save storage" : !dirty && !saveStyle ? "Nothing to save yet" : "Save and re-render the clip"} onClick={() => void save()}>{saving ? <Loader2 className="spin" size={16} /> : <Check size={16} />}Save &amp; render</button>
       </div>
     </header>
     {error && <div className="error editor-error" role="alert">{error}</div>}
@@ -436,7 +451,8 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
           </>}
           {tab === "captions" && !bundle.legacy && <>
             <label className="switch-row"><input type="checkbox" checked={c.on} onChange={e => setCaption({ on: e.target.checked, preset: c.preset })} />Show captions</label>
-            <div className="presets">{Object.entries(PRESETS).map(([key, p]) => <button key={key} className={c.preset === key ? "preset active" : "preset"} onClick={() => { const { label: _label, ...values } = p as typeof p & { label: string }; void _label; setCaption({ ...values, preset: key }); }} style={{ fontFamily: `"${p.font}", sans-serif`, color: p.box ? p.color : p.color, background: p.box ? p.boxColor : undefined, textShadow: p.box ? "none" : `0 0 3px ${p.outlineColor}, 0 0 3px ${p.outlineColor}` }}>{p.uppercase ? p.label.toUpperCase() : p.label}</button>)}</div>
+            <div className={"caption-controls" + (c.on ? "" : " off")} title={c.on ? undefined : "Captions are off: pick a style to turn them on"}>
+            <div className="presets">{Object.entries(PRESETS).map(([key, p]) => <button key={key} className={c.preset === key ? "preset active" : "preset"} onClick={() => { const { label: _label, ...values } = p as typeof p & { label: string }; void _label; setCaption({ ...values, preset: key, on: true }); }} style={{ fontFamily: `"${p.font}", sans-serif`, color: p.box ? p.color : p.color, background: p.box ? p.boxColor : undefined, textShadow: p.box ? "none" : `0 0 3px ${p.outlineColor}, 0 0 3px ${p.outlineColor}` }}>{p.uppercase ? p.label.toUpperCase() : p.label}</button>)}</div>
             <div className="control-grid">
               <label>Font<select value={c.font} onChange={e => setCaption({ font: e.target.value })}>{FONTS.map((f: string) => <option key={f} style={{ fontFamily: f }}>{f}</option>)}</select></label>
               <label>Animation<select value={c.animation} onChange={e => setCaption({ animation: e.target.value })}>{ANIMATIONS.map((a: string) => <option key={a} value={a}>{animationLabels[a]}</option>)}</select></label>
@@ -455,6 +471,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
               <label><input type="checkbox" checked={c.uppercase} onChange={e => setCaption({ uppercase: e.target.checked })} />ALL CAPS</label>
               <label title="Each line's most important word (a strong word, a number, a name, or one that was shouted) in its own colour and a little bigger"><input type="checkbox" checked={c.keywords} onChange={e => setCaption({ keywords: e.target.checked })} />Highlight key words</label>
               <label title="Replaces swear words with asterisks, e.g. f***, which keeps clips safer for brand-friendly accounts"><input type="checkbox" checked={c.mask} onChange={e => setCaption({ mask: e.target.checked })} />Bleep swear words in captions</label>
+            </div>
             </div>
           </>}
           {tab === "frame" && <>
