@@ -5,7 +5,7 @@
 // into the published clip: 720x1280 (9:16) unless frame.aspect picks another shape (see ASPECTS). Times are seconds from the start of the source.
 //   { v, trim:{start,end}, frame:{mode,zoom,x,y,background}, look:{brightness,contrast,saturation},
 //     captions:{on,preset,font,size,color,highlight,outline,outlineColor,box,boxColor,uppercase,animation,words,y,mask,keywords,keywordColor},
-//     hook:{text,seconds,color,bg}, progress:{on,color}, pace:{cuts,zooms}, chat:{on,y}, words?:[[start,end,text],...] }
+//     hook:{text,seconds,color,bg,x,y,size}, progress:{on,color}, pace:{cuts,zooms}, chat:{on,y}, words?:[[start,end,text],...] }
 // A *style* is the reusable part of an edit (everything except trim, hook text and words; it includes how long the
 // hook stays up). Hook seconds at or past the clip's length keep the hook up for the whole clip. Each streamer can have
 // its own style, so every new clip from that streamer comes out with that streamer's look.
@@ -51,6 +51,12 @@ export const DEFAULT_PACE = { cuts: "off", zooms: false };
 // Chat on the clip: chat.on shows the Twitch chat messages sent during the clip (the clip's signals.messages), the
 // newest CHAT_LINES at a time, each for up to CHAT_HOLD seconds, in a column on the left whose bottom is chat.y down.
 export const DEFAULT_CHAT = { on: false, y: 0.62 };
+// Background music, to avoid copyright claims: audio.music "keep" (as recorded), "lower" (the voice at full volume,
+// everything else - music and game sound - turned down to MUSIC_LEVEL) or "voice" (the voice alone). The worker splits
+// the voice from the rest with Demucs (worker/music.mjs) before rendering.
+export const MUSIC_MODES = ["keep", "lower", "voice"];
+export const DEFAULT_AUDIO = { music: "keep" };
+export const MUSIC_LEVEL = 0.2;
 export const CHAT_LINES = 4, CHAT_HOLD = 8, CHAT_SIZE = 30;
 
 // Caption looks. Picking a preset copies its values; every value can then be changed on its own. keywordColor is the
@@ -72,9 +78,10 @@ export function defaultStyle({ framing = "blur", captions = true } = {}) {
     look: { brightness: 1, contrast: 1, saturation: 1 },
     // Split screen puts captions on the seam between the two videos.
     captions: { on: !!captions, preset: "bold", ...preset, keywords: true, y: framing === "split" ? 0.5 : framing === "cam" ? DEFAULT_FACECAM.share : 0.72, mask: false },
-    hook: { color: "#111111", bg: "#ffffff", seconds: DEFAULT_HOOK_SECONDS },
+    hook: { color: "#111111", bg: "#ffffff", seconds: DEFAULT_HOOK_SECONDS, ...HOOK_DEFAULT },
     progress: { on: false, color: "#bcfa76" },
     chat: { ...DEFAULT_CHAT },
+    audio: { ...DEFAULT_AUDIO },
     pace: { ...DEFAULT_PACE },
   };
 }
@@ -87,6 +94,15 @@ const bool = (v, name) => { if (typeof v !== "boolean") fail(name + " must be tr
 // A hook without a background (hook.bg null) gets an outline that contrasts with its text: black around light text,
 // white around dark text.
 export const HOOK_OUTLINE = 5;
+// Where the hook sits: x is its centre and y its top, as fractions of the frame; size is its text size in pixels.
+// x stays in the middle half so a line always has room to wrap.
+export const HOOK_X = [0.25, 0.75], HOOK_Y = [0.02, 0.9], HOOK_SIZE = [28, 120], HOOK_DEFAULT = { x: 0.5, y: 0.117, size: 52 };
+// The hook's anchor in pixels and the side margins that give it the same wrap width either side of its centre.
+export function hookPlacement(edit) {
+  const { W, H } = canvas(edit.frame), h = { ...HOOK_DEFAULT, ...edit.hook };
+  const x = Math.round(h.x * W), margin = Math.round(W / 2 - Math.min(x, W - x) + 60);
+  return { x, y: Math.round(h.y * H), size: h.size, margin, wrap: W - 2 * margin };
+}
 export function hookOutlineColor(text) {
   const [r, g, b] = [1, 3, 5].map(i => parseInt(text.slice(i, i + 2), 16) / 255);
   return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5 ? "#000000" : "#ffffff";
@@ -116,6 +132,7 @@ export function normalizeStyle(input, base = defaultStyle()) {
   const h = { ...base.hook, ...(s.hook ?? {}) }, p = { ...base.progress, ...(s.progress ?? {}) }, pc = { ...DEFAULT_PACE, ...(base.pace ?? {}), ...(s.pace ?? {}) };
   const fc = { ...DEFAULT_FACECAM, ...(base.frame.facecam ?? {}), ...(s.frame?.facecam ?? {}) };
   const ch = { ...DEFAULT_CHAT, ...(base.chat ?? {}), ...(s.chat ?? {}) };
+  const au = { ...DEFAULT_AUDIO, ...(base.audio ?? {}), ...(s.audio ?? {}) };
   const aspect = pick(f.aspect ?? "9:16", Object.keys(ASPECTS), "Clip shape");
   // A landscape clip has no room to stack two pictures: split screen and facecam-on-top become the blurred fill.
   const mode = pick(f.mode, FRAMINGS, "Framing"), fits = stacks({ aspect }) || (mode !== "split" && mode !== "cam");
@@ -132,16 +149,18 @@ export function normalizeStyle(input, base = defaultStyle()) {
       // Looks saved before keyword highlighting get it on, in their preset's colour.
       keywords: bool(c.keywords ?? true, "Keyword highlight"), keywordColor: color(s.captions?.keywordColor ?? PRESETS[c.preset]?.keywordColor ?? c.keywordColor ?? "#ffe14d", "Keyword colour"),
     },
-    hook: { color: color(h.color, "Hook text colour"), bg: h.bg === null ? null : color(h.bg, "Hook background"), seconds: num(h.seconds ?? DEFAULT_HOOK_SECONDS, 1, MAX_CLIP, "Hook length") },
+    hook: { color: color(h.color, "Hook text colour"), bg: h.bg === null ? null : color(h.bg, "Hook background"), seconds: num(h.seconds ?? DEFAULT_HOOK_SECONDS, 1, MAX_CLIP, "Hook length"),
+      x: num(h.x ?? HOOK_DEFAULT.x, ...HOOK_X, "Hook position"), y: num(h.y ?? HOOK_DEFAULT.y, ...HOOK_Y, "Hook position"), size: int(h.size ?? HOOK_DEFAULT.size, ...HOOK_SIZE, "Hook size") },
     progress: { on: bool(p.on, "Progress bar"), color: color(p.color, "Progress bar colour") },
     pace: { cuts: pick(pc.cuts, CUT_LEVELS, "Jump cuts"), zooms: bool(pc.zooms, "Punch-in zooms") },
     chat: { on: bool(ch.on, "Chat on the clip"), y: num(ch.y, 0.15, 0.95, "Chat position") },
+    audio: { music: pick(au.music, MUSIC_MODES, "Background music") },
   };
 }
 
 export function styleOf(edit) {
-  const { frame, look, captions, hook, progress, pace = { ...DEFAULT_PACE }, chat = { ...DEFAULT_CHAT } } = edit;
-  return { frame, look, captions, hook: { color: hook.color, bg: hook.bg, seconds: hook.seconds }, progress, pace, chat };
+  const { frame, look, captions, hook, progress, pace = { ...DEFAULT_PACE }, chat = { ...DEFAULT_CHAT }, audio = { ...DEFAULT_AUDIO } } = edit;
+  return { frame, look, captions, hook: { color: hook.color, bg: hook.bg, seconds: hook.seconds, x: hook.x, y: hook.y, size: hook.size }, progress, pace, chat, audio };
 }
 
 // A first edit for a freshly captured clip: the chosen moment, in the streamer's (or workspace's) style.
@@ -420,7 +439,7 @@ export function chatWindows(messages, edit) {
 // `tl` (see timeline) moves every caption to its time in the finished clip, after any jump cuts.
 // `messages`: the clip's chat (signals.messages), drawn when edit.chat.on.
 export function buildAss(edit, words, tl = plain(edit), messages = []) {
-  const { W, H } = canvas(edit.frame), c = edit.captions, len = tl.length, y = Math.round(c.y * H), at = tl.toClip;
+  const { W, H } = canvas(edit.frame), c = edit.captions, len = tl.length, y = Math.round(c.y * H), at = tl.toClip, hp = hookPlacement(edit);
   const stamp = t => clock(at(t));
   const boxStyle = c.box ? { border: 3, outline: Math.max(8, Math.round(c.size * 0.22)), outlineColor: assColor(c.boxColor) } : { border: 1, outline: c.outline, outlineColor: assColor(c.outlineColor) };
   const lines = [
@@ -430,8 +449,8 @@ export function buildAss(edit, words, tl = plain(edit), messages = []) {
     `Style: Cap,${c.font},${c.size},${assColor(c.color)},${assColor(c.highlight)},${boxStyle.outlineColor},${assColor("#000000", 0x80)},-1,0,0,0,100,100,0,0,${boxStyle.border},${boxStyle.outline},0,5,40,40,0,1`,
     `Style: Chat,Arial,${CHAT_SIZE},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,0,1,40,40,0,1`,
     edit.hook.bg
-      ? `Style: Hook,${c.font},52,${assColor(edit.hook.color)},${assColor(edit.hook.color)},${assColor(edit.hook.bg)},${assColor("#000000", 0x80)},-1,0,0,0,100,100,0,0,3,14,0,8,60,60,0,1`
-      : `Style: Hook,${c.font},52,${assColor(edit.hook.color)},${assColor(edit.hook.color)},${assColor(hookOutlineColor(edit.hook.color))},${assColor("#000000", 0x80)},-1,0,0,0,100,100,0,0,1,${HOOK_OUTLINE},0,8,60,60,0,1`,
+      ? `Style: Hook,${c.font},${hp.size},${assColor(edit.hook.color)},${assColor(edit.hook.color)},${assColor(edit.hook.bg)},${assColor("#000000", 0x80)},-1,0,0,0,100,100,0,0,3,${Math.round(hp.size * 14 / 52)},0,8,60,60,0,1`
+      : `Style: Hook,${c.font},${hp.size},${assColor(edit.hook.color)},${assColor(edit.hook.color)},${assColor(hookOutlineColor(edit.hook.color))},${assColor("#000000", 0x80)},-1,0,0,0,100,100,0,0,1,${Math.max(3, Math.round(hp.size * HOOK_OUTLINE / 52))},0,8,60,60,0,1`,
     "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
   ];
   const pos = "{\\an5\\pos(" + W / 2 + "," + y + ")}";
@@ -465,7 +484,7 @@ export function buildAss(edit, words, tl = plain(edit), messages = []) {
     lines.push("Dialogue: 0," + stamp(w.start - t0) + "," + stamp(w.end - t0) + ",Chat,,0,0,0,,{\\an1\\pos(40," + Math.round(edit.chat.y * H) + ")\\q2}" + body);
   }
   // The hook's times are already in the finished clip.
-  if (edit.hook.text) lines.push(`Dialogue: 1,${clock(0)},${clock(Math.min(len, edit.hook.seconds))},Hook,,0,0,0,,{\\an8\\pos(${W / 2},150)}${POP}${esc(edit.hook.text).replace(/\n/g, "\\N")}`);
+  if (edit.hook.text) lines.push(`Dialogue: 1,${clock(0)},${clock(Math.min(len, edit.hook.seconds))},Hook,,${hp.margin},${hp.margin},0,,{\\an8\\pos(${hp.x},${hp.y})}${POP}${esc(edit.hook.text).replace(/\n/g, "\\N")}`);
   return lines.join("\n") + "\n";
 }
 

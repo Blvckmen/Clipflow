@@ -34,7 +34,7 @@ test("normalizeStyle fills parts an older saved style lacks", () => {
   const s = normalizeStyle({ frame: { mode: "fit" } });
   assert.equal(s.frame.mode, "fit");
   assert.equal(s.captions.font, PRESETS.bold.font);
-  assert.deepEqual(Object.keys(styleOf(edit())).sort(), ["captions", "chat", "frame", "hook", "look", "pace", "progress"]);
+  assert.deepEqual(Object.keys(styleOf(edit())).sort(), ["audio", "captions", "chat", "frame", "hook", "look", "pace", "progress"]);
   assert.equal("text" in styleOf(edit()).hook, false, "hook text belongs to one clip, not the style");
 });
 
