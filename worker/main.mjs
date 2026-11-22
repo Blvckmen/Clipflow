@@ -20,6 +20,13 @@ import { bucketSignals, encodePreview, extractRange, joinSegments, parts, pickMo
 import { screenText, screenTextAvailable } from "./screentext.mjs";
 import { Twitch, clipUrl, pickClips, twitchLogin } from "./twitch.mjs";
 import { PLATFORM_NAMES, downloadVideo, findYtDlp, videoLink, videoTitle } from "./vod.mjs";
+import { stopTranscriber, transcribe as whisper } from "./whisper.mjs";
+
+// Every log line starts with the time (HH:MM:SS), so how long things take can be read off worker.log.
+for (const level of ["log", "warn", "error"]) {
+  const original = console[level].bind(console);
+  console[level] = (...args) => original(new Date().toTimeString().slice(0, 8), ...args);
+}
 const run = promisify(execFile);
 
 const env = process.env;
@@ -220,7 +227,7 @@ async function clipWindow(session, fromMs, toMs, reason) {
     const style = settings.streamers.find(s => s.id === streamer.id)?.style ?? settings.style ?? null;
     // What chat said during the window (Twitch), for the AI writer.
     const chatLines = session.chat?.lines.filter(l => l.t >= rawStartMs && l.t <= toMs + 15_000) ?? [];
-    jobs.push({ id, dir, raw, streamer, settings, style, reason, rawStartMs, chatLines, chat: session.chat ? perSecond(session.chat.times, rawStartMs, length) : [], focusFrom: (fromMs - rawStartMs) / 1000, focusTo: (toMs - rawStartMs) / 1000 });
+    jobs.push({ queuedAt: Date.now(), id, dir, raw, streamer, settings, style, reason, rawStartMs, chatLines, chat: session.chat ? perSecond(session.chat.times, rawStartMs, length) : [], focusFrom: (fromMs - rawStartMs) / 1000, focusTo: (toMs - rawStartMs) / 1000 });
     void processJobs();
   } catch (error) {
     store.fail(id);
@@ -233,7 +240,7 @@ async function processJobs() {
   if (processing) return;
   while (jobs.length && !stopping) {
     // Highlight videos are long and never urgent: everything else goes first.
-    const next = jobs.findIndex(j => j.kind !== "highlight"), job = jobs.splice(next >= 0 ? next : 0, 1)[0];
+    const next = jobs.findIndex(j => j.kind !== "highlight"), job = jobs.splice(next >= 0 ? next : 0, 1)[0], startedAt = Date.now();
     if (job.kind === "render") { await rerender(job); continue; }
     if (job.kind === "translate") { await translateJob(job); continue; }
     if (job.kind === "highlight") { await highlightJob(job); continue; }
@@ -259,6 +266,9 @@ async function processJobs() {
       store.ready(job.id, result.sha, Math.min(90, Math.max(15, Math.round(result.end - result.start))));
       made = true;
       console.log("Clip ready", job.id, "from", job.streamer.url, "(" + reasonLabel[job.reason] + ", " + Math.round(result.end - result.start) + "s)");
+      // Where the time went: waiting in the queue, then each step (seconds).
+      const steps = Object.entries(result.timings ?? {}).map(([k, v]) => k + " " + v + "s").join(", ");
+      console.log("  timings: waited " + Math.round((startedAt - (job.queuedAt ?? startedAt)) / 1000) + "s, " + steps + ", total " + Math.round((Date.now() - startedAt) / 1000) + "s");
     } catch (error) {
       store.fail(job.id);
       why = error.message;
@@ -374,7 +384,7 @@ async function importClip(streamer, clip, settings) {
     store.add(id, streamer.id, join(dir, "clip.mp4"), Math.min(90, Math.max(15, Math.round(Number(clip.duration)))), textOf(settings, streamer.id).subtitles, "viewer");
     const style = settings.streamers.find(s => s.id === streamer.id)?.style ?? settings.style ?? null;
     // The whole clip, as the viewer cut it.
-    jobs.push({ id, dir, raw, streamer, settings, style, reason: "viewer", exact: true, focusFrom: 0, focusTo: Infinity, chat: [], title: String(clip.title ?? "").trim().slice(0, 140) || null });
+    jobs.push({ queuedAt: Date.now(), id, dir, raw, streamer, settings, style, reason: "viewer", exact: true, focusFrom: 0, focusTo: Infinity, chat: [], title: String(clip.title ?? "").trim().slice(0, 140) || null });
     console.log("Imported a viewer's Twitch clip from", streamer.url, "(" + clip.view_count + " views):", clip.id);
     void processJobs();
   } catch (error) {
@@ -527,7 +537,9 @@ async function recordingStep(row) {
     const { energy } = await readJson(join(row.dir, "energy.json"), { energy: [] });
     const chat = await readJson(join(row.dir, "chat.json"), []);
     const ranges = scanRanges({ energy, chat, duration: config?.duration ?? 45 });
+    const scanStarted = Date.now();
     const events = ranges.length ? await screenText(file, { python, ranges, signal, scratch: join(row.dir, "screen") }) : [];
+    console.log("Recording", row.id.slice(0, 8) + ": screen read in", Math.round((Date.now() - scanStarted) / 1000) + "s (" + ranges.length + " stretches)");
     await writeFile(join(row.dir, "screen.json"), JSON.stringify(events));
     const signals = await readJson(join(row.dir, "signals.json"), null);
     if (signals) await writeFile(join(row.dir, "signals.json"), JSON.stringify({ ...signals, moments: suggestions(energy, chat, events) }));
@@ -544,7 +556,7 @@ async function recordingStep(row) {
 // a worker restart don't lose much), into transcript.json { upto, lines: [[start, end, text]] }; then it is uploaded
 // for the Recordings page's search. WHISPER_SEARCH_MODEL (default "base") is faster than the clips' "small" model:
 // search needs the words, not perfect punctuation.
-const TRANSCRIPT_PIECE = 600, captionsScript = fileURLToPath(new URL("./captions.py", import.meta.url));
+const TRANSCRIPT_PIECE = 600;
 async function transcribePiece(row, file, signal) {
   const out = join(row.dir, "transcript.json"), done = await readJson(out, { upto: 0, lines: [] }), total = row.duration ?? 0;
   if (done.upto < total - 1) {
@@ -552,7 +564,9 @@ async function transcribePiece(row, file, signal) {
     try {
       await command("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-ss", String(from), "-t", String(TRANSCRIPT_PIECE), "-i", file, "-vn", "-ac", "1", "-ar", "16000", piece], { signal, timeout: 5 * 60_000 }).done;
       const hint = [config?.streamers.find(s => s.id === row.streamer) && streamerInfo(config.streamers.find(s => s.id === row.streamer).url).name, row.title].filter(Boolean).join(". ");
-      await command(python, [captionsScript, "words", piece, words, String(hint).slice(0, 200)], { signal, timeout: 60 * 60_000, env: { ...process.env, WHISPER_MODEL: process.env.WHISPER_SEARCH_MODEL || "base" } }).done;
+      const pieceStarted = Date.now();
+      await whisper(piece, words, { hint, python, signal, timeout: 60 * 60_000, model: process.env.WHISPER_SEARCH_MODEL || "base" });
+      console.log("Recording", row.id.slice(0, 8) + ": 10 minutes transcribed in", Math.round((Date.now() - pieceStarted) / 1000) + "s");
       const { segments } = await readJson(words, { segments: [] });
       for (const seg of segments ?? []) {
         const text = (seg.words ?? []).map(w => String(w[2]).trim()).join(" ").replace(/\s+/g, " ").trim();
@@ -627,7 +641,7 @@ async function clipFromRecording(row, start, end, { reason, exact, tracker }) {
   }
   const chat = await readJson(join(row.dir, "chat.json"), []);
   const style = streamer.style ?? settings.style ?? null;
-  jobs.push({ id, dir, raw, streamer, settings: exact ? { ...settings, duration: length } : settings, style, reason, fromRecording: true, exact, tracker,
+  jobs.push({ queuedAt: Date.now(), id, dir, raw, streamer, settings: exact ? { ...settings, duration: length } : settings, style, reason, fromRecording: true, exact, tracker,
     chat: Array.from({ length: Math.ceil(to - from) + 10 }, (_, i) => chat[Math.floor(from) + i] ?? 0), focusFrom: start - from, focusTo: end - from });
   void processJobs();
 }
@@ -794,7 +808,7 @@ function queueHighlights(list) {
   for (const h of list ?? []) {
     if (highlightsQueued.has(h.id)) continue;
     highlightsQueued.add(h.id);
-    jobs.push({ kind: "highlight", ...h });
+    jobs.push({ queuedAt: Date.now(), kind: "highlight", ...h });
   }
   if (jobs.length) void processJobs();
 }
@@ -854,7 +868,7 @@ function queueTranslations(list) {
     const key = t.id + ":" + t.lang;
     if ((translateRevs.get(key) ?? -1) >= t.rev) continue;
     translateRevs.set(key, t.rev);
-    jobs.push({ kind: "translate", ...t });
+    jobs.push({ queuedAt: Date.now(), kind: "translate", ...t });
   }
   if (jobs.length) void processJobs();
 }
@@ -909,7 +923,7 @@ function queueRenders(list) {
     // A newer revision replaces a waiting older one.
     const waiting = jobs.findIndex(j => j.kind === "render" && j.id === r.id);
     if (waiting >= 0) jobs.splice(waiting, 1);
-    jobs.push({ kind: "render", ...r });
+    jobs.push({ queuedAt: Date.now(), kind: "render", ...r });
   }
   if (jobs.length) void processJobs();
 }
@@ -932,9 +946,10 @@ async function report() {
       if (permanent(response.status)) { store.rejected(row.id); problem("Dashboard refused clip " + row.id + " (HTTP " + response.status + ")"); continue; }
       if (!response.ok) throw new Error("HTTP " + response.status);
       // Both steps are idempotent server-side, so a retry after a failed upload safely repeats the report.
+      const uploadStarted = Date.now();
       const upload = await api("/api/worker/clips/" + row.id + "/file", { method: "PUT", body: await readFile(row.path), headers: { "content-type": "video/mp4" }, timeout: 180_000 });
       if (upload.status === 501) { store.uploaded(row.id); console.log("Clip reported; dashboard storage is off, file kept locally:", row.id); continue; }
-      else if (upload.ok) { store.uploaded(row.id); console.log("Clip uploaded:", row.id); }
+      else if (upload.ok) { store.uploaded(row.id); console.log("Clip uploaded:", row.id, "(" + Math.round((Date.now() - uploadStarted) / 100) / 10 + "s)"); }
       else if (permanent(upload.status)) { store.rejected(row.id); problem("Dashboard refused the file for clip " + row.id + " (HTTP " + upload.status + ")"); continue; }
       else throw new Error("upload HTTP " + upload.status);
       // The source lets the clip be edited after this machine has pruned it. Not fatal: without it the clip
@@ -992,6 +1007,7 @@ async function shutdown() {
   stopping = true; clearTimeout(timer); clearInterval(sessionTimer);
   setTimeout(() => process.exit(1), 15_000).unref();
   processing?.controller.abort();
+  stopTranscriber();
   backgroundController.abort();
   await Promise.all([...sessions.keys()].map(id => stopSession(id, "worker shutting down")));
   store.close();

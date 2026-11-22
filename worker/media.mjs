@@ -9,6 +9,7 @@ import { candidateWindows, chooseMoment, pickWindow, snapToSentences } from "./h
 import { defaultEdit, defaultStyle, maskWord, normalizeStyle } from "./edit.mjs";
 import { encodeTimeout, findPhonePicture, renderClip, videoInfo } from "./render.mjs";
 import { applyAutomaticHook } from "./hooks.mjs";
+import { transcribe as whisper } from "./whisper.mjs";
 const run=promisify(execFile);
 export const streamlink=process.env.STREAMLINK||"streamlink";
 const python=process.env.PYTHON||"python", script=name=>fileURLToPath(new URL("./"+name,import.meta.url));
@@ -72,14 +73,18 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
   await mkdir(dir,{recursive:true});
   try {
     if(signal.aborted)throw new Error("Cancelled");
+    // How long each step takes (seconds), returned as result.timings for the worker's log.
+    const timings={};let lap=Date.now();const took=name=>{const now=Date.now();timings[name]=Math.round((now-lap)/100)/10;lap=now;};
     await command(python,[script("highlight.py"),raw,energyFile],{signal,timeout:120_000}).done;
+    took("loudness");
     const {energy}=JSON.parse(await readFile(energyFile,"utf8"));
     let segments=[];
     // Transcription off (for this streamer, or the workspace): no Whisper, so no subtitles, no automatic hook and no
     // sentence-aligned cuts. `text` is the streamer's choices (see clipTextFor); without it, the workspace's.
     const transcribe=text?text.transcribe:settings.transcribe!==false, captions=text?text.subtitles:transcribe&&!!settings.captions;
     if(transcribe)try {
-      await command(python,[script("captions.py"),"words",raw,wordsFile,String(hint).slice(0,200)],{signal,timeout:600_000}).done;
+      // The kept-loaded transcriber (whisper.mjs) when it can, else a process of its own.
+      await whisper(raw,wordsFile,{hint,python,signal,timeout:600_000});
       segments=JSON.parse(await readFile(wordsFile,"utf8")).segments;
     } catch(error) {
       // Sentence snapping is a refinement; only captions make the transcript mandatory.
@@ -98,13 +103,16 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
       const candidates=rater&&segments.length&&!signal.aborted?candidateWindows(range).map(c=>({...c,...snap(c.start)})):[];
       if(candidates.length>1){
         const texts=candidates.map(c=>sourceWords(segments,c.start,c.end).map(w=>w[2]).join(" "));
+        took("transcription");
         const ratings=await rater(texts).catch(()=>null);
+        took("rating");
         const pick=chooseMoment(candidates,ratings);
         if(ratings&&pick){({start,end}=pick);console.log("Moment ratings",ratings.join(", ")+": picked",candidates.indexOf(candidates.find(c=>c.start===pick.start))+1,"of",candidates.length);}
       }
     }
     const from=Math.max(0,start-SOURCE_PAD), to=Math.min(total,end+SOURCE_PAD);
     // Frequent keyframes keep seeking in the editor responsive.
+    if(timings.transcription===undefined)took("transcription");
     await command("ffmpeg",["-hide_banner","-loglevel","error","-y","-ss",String(from),"-i",raw,"-t",String(to-from),"-vf","scale=1280:1280:force_original_aspect_ratio=decrease:force_divisible_by=2","-c:v","libx264","-preset","veryfast","-crf","23","-maxrate","3000k","-bufsize","6000k","-g","30","-c:a","aac","-b:a","128k","-movflags","+faststart",source],{signal,timeout:encodeTimeout(to-from)}).done;
     const info=await videoInfo(source,signal);
     const words=sourceWords(segments,from,to);
@@ -120,7 +128,9 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
     let ai=null;
     if(writer&&!signal.aborted){
       const said=words.filter(w=>w[0]>=initialEdit.trim.start-.05&&w[1]<=initialEdit.trim.end+.05).map(w=>w[2]).join(" ");
+      took("source");
       ai=await writer({transcript:said,from,to:to}).catch(()=>null);
+      took("writing");
     }
     let withAi=initialEdit;
     if(hooks&&ai?.hook&&!initialEdit.hook.text?.trim()){
@@ -129,6 +139,7 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
       withAi={...initialEdit,hook:{...initialEdit.hook,text,seconds}};
     }
     let edit=applyAutomaticHook(withAi,words,{enabled:hooks});
+    if(timings.source===undefined)took("source");
     const face=findFacecam?await findFacecam(source,signal).catch(()=>null):null;
     // A stream filmed on a phone: keep where its picture is, and frame it as a phone stream instead of a small
     // picture on a blurred fill (or between black bars).
@@ -140,11 +151,13 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
     if(bg?.ref&&!edit.frame.background)edit={...edit,frame:{...edit.frame,background:bg.ref}};
     // The Twitch chat sent during the source ([seconds into it, name, text, colour]), kept for showing chat on the clip.
     const signals={...sourceSignals(energy,chat,from,to),messages:sourceMessages(messages,from,to)};
+    took("framing");
     const rendered=await renderClip(source,{edit,words,width:info.width,height:info.height,background:bg,energy:signals.energy,messages:signals.messages},join(dir,"clip.mp4"),signal);
     const sourceBytes=await readFile(source);
     const meta={edit,words,...(ai?.caption&&{postCaption:ai.caption}),signals,source:{width:info.width,height:info.height,duration:Math.round((info.duration||to-from)*100)/100,face,content},sourceSha:clipHash(sourceBytes),sourceSize:sourceBytes.length};
     await writeFile(join(dir,"meta.json"),JSON.stringify(meta));
-    return {...rendered,start,end};
+    took("render");
+    return {...rendered,start,end,timings};
   } finally {
     for(const path of [raw,energyFile,wordsFile])await rm(path,{force:true});
   }

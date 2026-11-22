@@ -3,7 +3,9 @@
 // this returns null and the clip keeps the transcript-based hook and caption, so nothing ever waits on it.
 // Settings: AI_WRITER=off turns it off; OLLAMA_URL (default http://127.0.0.1:11434); OLLAMA_MODEL (default qwen2.5:7b;
 // qwen2.5:3b is twice as fast with weaker hooks).
-const URL_DEFAULT = "http://127.0.0.1:11434", MODEL_DEFAULT = "qwen2.5:7b";
+const URL_DEFAULT = "http://127.0.0.1:11434", MODEL_DEFAULT = "qwen2.5:7b", PICKER_MODEL_DEFAULT = "qwen2.5:3b";
+// A number of seconds from the environment as milliseconds, or the default.
+const seconds = (value, fallback) => (Number(value) > 0 ? Number(value) : fallback) * 1000;
 export const writerEnabled = () => (process.env.AI_WRITER ?? "on").toLowerCase() !== "off";
 
 const schema = {
@@ -57,7 +59,9 @@ export function tidy(answer, { streamer, platform } = {}) {
   return { hook, caption: text + credit + "\n\n" + tags.map(t => "#" + t).join(" ") };
 }
 
-export async function writeClipText(input, { signal, timeoutMs = 150_000 } = {}) {
+// Up to 75 seconds: past that the clip keeps the transcript-based hook and caption rather than waiting (AI_WRITER_TIMEOUT
+// in seconds changes it).
+export async function writeClipText(input, { signal, timeoutMs = seconds(process.env.AI_WRITER_TIMEOUT, 75) } = {}) {
   if (!writerEnabled()) return null;
   const base = (process.env.OLLAMA_URL || URL_DEFAULT).replace(/\/$/, "");
   try {
@@ -103,7 +107,9 @@ export function buildRatePrompt(texts, { streamer, title, chat }) {
   ].filter(Boolean).join("\n\n");
 }
 
-export async function rateMoments(texts, context = {}, { signal, timeoutMs = 120_000 } = {}) {
+// Up to 60 seconds, with the smaller model (OLLAMA_PICKER_MODEL, default qwen2.5:3b, about twice as fast; a rough 0-10
+// score doesn't need the bigger one): past that the moment is picked from loudness and chat (AI_PICKER_TIMEOUT).
+export async function rateMoments(texts, context = {}, { signal, timeoutMs = seconds(process.env.AI_PICKER_TIMEOUT, 60) } = {}) {
   if (!pickerEnabled() || texts.length < 2 || texts.every(t => !clean(t))) return null;
   const base = (process.env.OLLAMA_URL || URL_DEFAULT).replace(/\/$/, "");
   try {
@@ -111,7 +117,7 @@ export async function rateMoments(texts, context = {}, { signal, timeoutMs = 120
       method: "POST", headers: { "content-type": "application/json" },
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({
-        model: process.env.OLLAMA_MODEL || MODEL_DEFAULT, stream: false, format: rateSchema, keep_alive: "30m",
+        model: process.env.OLLAMA_PICKER_MODEL || PICKER_MODEL_DEFAULT, stream: false, format: rateSchema, keep_alive: "30m",
         options: { temperature: 0.2, num_ctx: 4096, num_predict: 60 },
         messages: [
           { role: "system", content: "You pick the best moments of live streams for short clips. You answer with JSON." },

@@ -24,18 +24,24 @@ def chunk(segments):
         if i + 1 < len(cues): end = min(end, cues[i + 1][0][0])
         out.append((start, end, " ".join(w[2] for w in cue)))
     return out
-def transcribe(source, target, hint=""):
+MODELS = {}
+def load(name):
+    """A Whisper model, loaded once per process (`serve` keeps them between requests)."""
+    from faster_whisper import WhisperModel
+    if name not in MODELS:
+        # "small" is far more accurate than "tiny" on stream audio (game sound, music, crosstalk, slang) and still runs
+        # on a laptop CPU. WHISPER_MODEL=tiny brings back the fast, rough transcripts; WHISPER_THREADS sets the cores.
+        MODELS[name]=WhisperModel(name,device="cpu",compute_type="int8",download_root=os.getenv("WHISPER_DIR","/data/models"),cpu_threads=int(os.getenv("WHISPER_THREADS","4")))
+    return MODELS[name]
+def transcribe(source, target, hint="", model_name=None):
     """Writes {"segments": [{"start", "end", "words": [[start, end, text], ...]}]} for the whole file. `hint` (the
     streamer's name, the stream title) nudges Whisper towards spelling those words right."""
     import json
     import numpy as np
-    from faster_whisper import WhisperModel
     # Decode with ffmpeg rather than faster-whisper's PyAV path, whose keyword arguments break across PyAV releases.
     pcm=subprocess.run(["ffmpeg","-v","error","-i",source,"-vn","-ac","1","-ar","16000","-f","s16le","pipe:1"],capture_output=True,timeout=120,check=True).stdout
     audio=np.frombuffer(pcm,dtype="<i2").astype(np.float32)/32768.0
-    # "small" is far more accurate than "tiny" on stream audio (game sound, music, crosstalk, slang) and still runs on
-    # a laptop CPU. WHISPER_MODEL=tiny brings back the fast, rough transcripts; WHISPER_THREADS sets the cores used.
-    model=WhisperModel(os.getenv("WHISPER_MODEL","small"),device="cpu",compute_type="int8",download_root=os.getenv("WHISPER_DIR","/data/models"),cpu_threads=int(os.getenv("WHISPER_THREADS","4")))
+    model=load(model_name or os.getenv("WHISPER_MODEL","small"))
     # Measured on a 4-core laptop: small with beam 1 runs faster than real time; beam 5 is slower than real time for
     # little gain. Keeping earlier text as context gives fuller punctuation (clip cuts snap to sentence ends);
     # WHISPER_CONTEXT=off trades that for fewer repeated lines in very noisy audio.
@@ -51,8 +57,27 @@ def write_srt(words_file, start, end, target):
     with open(target,"w",encoding="utf-8") as f:
         for index,(s,e,text) in enumerate(chunk(window(segments,start,end)),1):
             f.write(f"{index}\n{stamp(s)} --> {stamp(e)}\n{text}\n\n")
+def serve():
+    """One request per line on stdin, {"id", "source", "target", "hint", "model"}, answered with one line on stdout,
+    {"id", "ok"} or {"id", "ok": false, "error"}. Models stay loaded between requests (worker/whisper.mjs). Exits when
+    stdin closes, so it never outlives the worker that started it."""
+    import json
+    for line in sys.stdin:
+        line=line.strip()
+        if not line: continue
+        try:
+            req=json.loads(line)
+        except ValueError:
+            continue
+        try:
+            transcribe(req["source"],req["target"],req.get("hint",""),req.get("model"))
+            reply={"id":req.get("id"),"ok":True}
+        except Exception as error:
+            reply={"id":req.get("id"),"ok":False,"error":(type(error).__name__+": "+str(error))[:300]}
+        sys.stdout.write(json.dumps(reply)+"\n"); sys.stdout.flush()
 if __name__ == "__main__":
-    # captions.py words <media> <words.json> [hint]  |  captions.py srt <words.json> <start> <end> <out.srt>
-    if sys.argv[1] == "words": transcribe(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else "")
+    # captions.py words <media> <words.json> [hint]  |  captions.py srt <words.json> <start> <end> <out.srt>  |  captions.py serve
+    if sys.argv[1] == "serve": serve()
+    elif sys.argv[1] == "words": transcribe(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else "")
     elif sys.argv[1] == "srt": write_srt(sys.argv[2], float(sys.argv[3]), float(sys.argv[4]), sys.argv[5])
     else: sys.exit("usage: captions.py words <media> <out.json> | srt <words.json> <start> <end> <out.srt>")
