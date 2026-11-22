@@ -18,7 +18,7 @@ import { chatSample, LANGUAGE_NAMES, pickerEnabled, rateMoments, rateSegments, s
 import { command } from "./process.mjs";
 import { bucketSignals, encodePreview, extractRange, joinSegments, parts, pickMoments, scanRanges, suggestMoments } from "./recordings.mjs";
 import { screenText, screenTextAvailable } from "./screentext.mjs";
-import { Twitch, clipUrl, pickClips, twitchLogin } from "./twitch.mjs";
+import { Twitch, clipUrl, momentOf, pickClips, twitchLogin } from "./twitch.mjs";
 import { PLATFORM_NAMES, downloadVideo, findYtDlp, videoLink, videoTitle } from "./vod.mjs";
 import { stopTranscriber, transcribe as whisper } from "./whisper.mjs";
 import { AI_BATCH, autoClipPicks, mergeAiMoments, transcriptWindows } from "./stream-pass.mjs";
@@ -376,7 +376,7 @@ async function checkSessions() {
 // IMPORT_MINUTES (30) the most-viewed clips viewers made in the last day on each running Twitch streamer's channel
 // are downloaded and turned into clips, up to 2 a streamer at a time and within the daily clip limit. Needs this
 // worker's own Twitch app (TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET). Imported clip ids are remembered for a week in
-// viewer-clips.json so none is imported twice.
+// viewer-clips.json, with their moment, so none is imported twice and no moment twice (see sameMoment).
 const twitch = Twitch.fromEnv(env), importEveryMs = seconds(env.IMPORT_MINUTES, 30) * 60, seenFile = join(dataDir, "viewer-clips.json");
 let lastImport = 0, importing = false, twitchWarned = false;
 async function importViewerClips() {
@@ -387,16 +387,22 @@ async function importViewerClips() {
   }
   importing = true; lastImport = Date.now();
   try {
+    // Each entry: when it was imported and its moment ({ at, ...momentOf }); older entries are just the time.
     const seen = await readJson(seenFile, {}), weekAgo = Date.now() - 7 * 86_400_000, settings = config;
-    for (const [clip, at] of Object.entries(seen)) if (!(Date.parse(at) > weekAgo)) delete seen[clip];
+    const when = v => Date.parse(typeof v === "string" ? v : v?.at);
+    for (const [clip, v] of Object.entries(seen)) if (!(when(v) > weekAgo)) delete seen[clip];
     for (const streamer of settings.streamers) {
       const login = twitchLogin(streamer.url), room = settings.dailyLimit - store.countToday(streamer.id);
       if (!login || !allowed(settings, streamer.id) || room <= 0 || stopping) continue;
       let list;
       try { list = await twitch.clips(login, new Date(Date.now() - 86_400_000)); }
       catch (error) { problem("Couldn't list viewers' Twitch clips for " + login + ": " + error.message); continue; }
-      for (const clip of pickClips(list, { minViews: settings.importClips, seen: new Set(Object.keys(seen)), max: Math.min(2, room) })) {
-        seen[clip.id] = new Date().toISOString();
+      // The moments already imported: as Twitch lists them now (their place in the broadcast may have been filled in
+      // since), else as remembered.
+      const listed = new Map(list.map(c => [c.id, c]));
+      const taken = Object.entries(seen).map(([clip, v]) => listed.get(clip) ?? (typeof v === "object" ? v : null)).filter(Boolean);
+      for (const clip of pickClips(list, { minViews: settings.importClips, seen: new Set(Object.keys(seen)), max: Math.min(2, room), taken })) {
+        seen[clip.id] = { at: new Date().toISOString(), ...momentOf(clip) };
         await writeFile(seenFile, JSON.stringify(seen));
         await importClip(streamer, clip, settings);
       }

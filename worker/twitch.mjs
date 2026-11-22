@@ -16,13 +16,34 @@ export function twitchLogin(url) {
 // Where streamlink can fetch a clip; ids are letters, digits, - and _.
 export const clipUrl = id => { if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(id)) throw new Error("Invalid Twitch clip id"); return "https://clips.twitch.tv/" + id; };
 
+// Whether two viewers' clips show the same moment: several viewers often clip the same thing, each clip with its own
+// id. With both places in the broadcast known (video_id and vod_offset, seconds into it), they overlap (or come
+// within GAP seconds); otherwise (Twitch fills vod_offset in later) they were made within a clip's length of each other.
+const GAP = 5;
+export function sameMoment(a, b) {
+  const len = x => Math.max(0, Number(x.duration) || 0);
+  if (a.video_id && b.video_id && Number.isFinite(a.vod_offset) && Number.isFinite(b.vod_offset))
+    return a.video_id === b.video_id && a.vod_offset < b.vod_offset + len(b) + GAP && b.vod_offset < a.vod_offset + len(a) + GAP;
+  const ta = Date.parse(a.created_at), tb = Date.parse(b.created_at);
+  return Number.isFinite(ta) && Number.isFinite(tb) && Math.abs(ta - tb) < Math.max(len(a), len(b), 30) * 1000;
+}
+// What to remember of an imported clip, to know its moment once Twitch stops listing it.
+export const momentOf = c => ({ video_id: c.video_id || null, vod_offset: Number.isFinite(c.vod_offset) ? c.vod_offset : null, duration: Number(c.duration) || 0, created_at: c.created_at ?? null });
+
 // The clips worth importing, best first: at least `minViews` views, at least `minSeconds` long (shorter ones are
-// too short to post), not imported before, at most `max`.
-export function pickClips(list, { minViews, seen, max, minSeconds = 15 }) {
-  return (list ?? [])
+// too short to post), not imported before, not the same moment as one imported before (`taken`: their moments) or
+// as a better one picked now, at most `max`.
+export function pickClips(list, { minViews, seen, max, minSeconds = 15, taken = [] }) {
+  const have = [...taken], out = [];
+  const ranked = (list ?? [])
     .filter(c => c && typeof c.id === "string" && Number(c.view_count) >= minViews && Number(c.duration) >= minSeconds && !seen.has(c.id))
-    .sort((a, b) => b.view_count - a.view_count || String(a.created_at).localeCompare(String(b.created_at)))
-    .slice(0, max);
+    .sort((a, b) => b.view_count - a.view_count || String(a.created_at).localeCompare(String(b.created_at)));
+  for (const c of ranked) {
+    if (out.length >= max) break;
+    if (have.some(t => sameMoment(c, t))) continue;
+    out.push(c); have.push(c);
+  }
+  return out;
 }
 
 export class Twitch {

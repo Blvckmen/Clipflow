@@ -1,7 +1,7 @@
 // Viewers' Twitch clips: finding them through Helix (with a fake Twitch here) and picking which to import.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Twitch, clipUrl, pickClips, twitchLogin } from "../twitch.mjs";
+import { Twitch, clipUrl, momentOf, pickClips, sameMoment, twitchLogin } from "../twitch.mjs";
 import { validateControl } from "../core.mjs";
 
 test("only Twitch channels have viewer clips to import", () => {
@@ -25,6 +25,21 @@ test("the most-viewed clips go first; too few views, too short or already import
   assert.deepEqual(pickClips(list, { minViews: 10, seen: new Set(["e"]), max: 2 }).map(c => c.id), ["b", "d"]);
   assert.deepEqual(pickClips(list, { minViews: 3, seen: new Set(), max: 5 }).map(c => c.id), ["b", "e", "d", "a"]);
   assert.deepEqual(pickClips(null, { minViews: 3, seen: new Set(), max: 5 }), []);
+});
+
+test("several viewers' clips of one moment are imported once", () => {
+  const v = (id, views, offset, duration = 30, created_at = "2026-11-21T12:00:00Z", video_id = "v1") => ({ id, view_count: views, vod_offset: offset, duration, created_at, video_id });
+  // The GTA 6 ending: three viewers, overlapping places in the broadcast.
+  const list = [v("end1", 42, 11280), v("end2", 22, 11310), v("end3", 67, 11300, 50.4), v("other", 30, 44490), v("vod2", 50, 11300, 30, undefined, "v2")];
+  assert.deepEqual(pickClips(list, { minViews: 10, seen: new Set(), max: 5 }).map(c => c.id), ["end3", "vod2", "other"], "the most viewed of the moment, and the same time in another broadcast is another moment");
+  // Already imported (remembered moment): the others of that moment stay out.
+  assert.deepEqual(pickClips(list, { minViews: 10, seen: new Set(["end1"]), max: 5, taken: [momentOf(list[0])] }).map(c => c.id), ["vod2", "other"]);
+  // Too far apart to be one moment (more than 5 seconds between them).
+  assert.equal(sameMoment(v("a", 1, 100, 30), v("b", 1, 136, 30)), false);
+  assert.equal(sameMoment(v("a", 1, 100, 30), v("b", 1, 134, 30)), true);
+  // No place in the broadcast yet: clips made within a clip's length of each other are one moment.
+  const live = (id, at) => ({ id, view_count: 20, duration: 30, created_at: at, video_id: "", vod_offset: null });
+  assert.deepEqual(pickClips([live("x", "2026-11-22T10:00:00Z"), live("y", "2026-11-22T10:00:20Z"), live("z", "2026-11-22T10:05:00Z")], { minViews: 10, seen: new Set(), max: 5 }).map(c => c.id), ["x", "z"]);
 });
 
 test("signs in once with the app's keys, looks the channel up once, and signs in again when the token expires", async () => {
