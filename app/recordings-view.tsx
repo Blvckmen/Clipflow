@@ -206,9 +206,9 @@ function RecordingPlayer({ r, requests, storage, busy, workerOnline, duration, m
       {ready && (r.transcript ? <TranscriptSearch recordingId={r.id} total={total} duration={duration} busy={busy} mutate={mutate} onWatch={seek} /> : <div className="subtle-note"><Search size={14} /> Searching what was said becomes available once the worker PC has transcribed this recording. It does that when it has nothing else to do, so a long stream can take a few hours.</div>)}
       {ready && <div className="moment-picker">
         <div className="moment-fields">
-          <label>Start<input value={startText} placeholder="0:00" onChange={e => { setStartText(e.target.value); const v = parseClock(e.target.value); setStart(v); }} /></label>
+          <label>Start<input data-emoji="off" value={startText} placeholder="0:00" onChange={e => { setStartText(e.target.value); const v = parseClock(e.target.value); setStart(v); }} /></label>
           <button type="button" className="secondary" onClick={() => setFrom(at)}>Start here</button>
-          <label>End<input value={endText} placeholder={clock(duration)} onChange={e => { setEndText(e.target.value); const v = parseClock(e.target.value); setEnd(v); }} /></label>
+          <label>End<input data-emoji="off" value={endText} placeholder={clock(duration)} onChange={e => { setEndText(e.target.value); const v = parseClock(e.target.value); setEnd(v); }} /></label>
           <button type="button" className="secondary" onClick={() => setTo(at)}>End here</button>
         </div>
         <div className="moment-actions">

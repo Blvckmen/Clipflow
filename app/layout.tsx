@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import EmojiAssist from "./emoji-assist";
 
 export const metadata: Metadata = {
   title: "Clipflow — Stream control",
@@ -17,7 +18,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="antialiased">{children}</body>
+      <body className="antialiased">{children}<EmojiAssist /></body>
     </html>
   );
 }

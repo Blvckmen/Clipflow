@@ -57,8 +57,8 @@ function PostingRulesFields({ value, onChange, streamer }: { value: Rules; onCha
     <div className="row-actions"><button type="button" className="secondary" disabled={!value.brief.trim()} onClick={readBrief}>Read the brief</button>{found && <small className="muted" role="status">{found}</small>}</div>
     <div className="posting-rules-grid">
       <label>Ad label<input maxLength={40} value={value.label} onChange={e => set({ label: e.target.value })} placeholder="#ad" /></label>
-      <label>Required hashtags<input value={tagText(value.hashtags)} onChange={e => set({ hashtags: tagList(e.target.value) })} placeholder="#kaicenat #clips" /></label>
-      <label>Required mentions<input value={tagText(value.mentions)} onChange={e => set({ mentions: tagList(e.target.value) })} placeholder="@kaicenat" /></label>
+      <label>Required hashtags<input data-emoji="off" value={tagText(value.hashtags)} onChange={e => set({ hashtags: tagList(e.target.value) })} placeholder="#kaicenat #clips" /></label>
+      <label>Required mentions<input data-emoji="off" value={tagText(value.mentions)} onChange={e => set({ mentions: tagList(e.target.value) })} placeholder="@kaicenat" /></label>
       <label>Shortest clip (s)<input inputMode="numeric" value={value.minSeconds ?? ""} onChange={e => set({ minSeconds: seconds(e.target.value) })} placeholder="any" /></label>
       <label>Longest clip (s)<input inputMode="numeric" value={value.maxSeconds ?? ""} onChange={e => set({ maxSeconds: seconds(e.target.value) })} placeholder="any" /></label>
     </div>
