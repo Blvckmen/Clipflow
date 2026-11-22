@@ -7,10 +7,16 @@ export function tail(stream) {
   stream?.on("data",chunk=>{state.text=(state.text+chunk).slice(-TAIL_CHARS);});
   return state;
 }
+// Links in tool output without their query string: stream playlist links carry long access tokens that would fill
+// the message (cutting off the actual error) and shouldn't be shown or logged.
+export function hideQueries(text) {
+  // Punctuation ending the sentence after a link stays.
+  return String(text).replace(/(https?:\/\/[^\s?#)"']+)\?[^\s)"']*?([,.;:]?)(?=[\s)"']|$)/g,"$1?…$2");
+}
 // The last meaningful lines of tool output, e.g. a Python traceback's final error line.
 export function lastLines(text,count=2,max=300) {
   // Lines with no letters or digits (")", "^^^^", "~~~") are layout from tracebacks, not information.
-  const lines=String(text).split(/\r?\n/).map(l=>l.trim()).filter(l=>/[\p{L}\p{N}]/u.test(l));
+  const lines=hideQueries(text).split(/\r?\n/).map(l=>l.trim()).filter(l=>/[\p{L}\p{N}]/u.test(l));
   return lines.slice(-count).join(" | ").slice(-max);
 }
 // `env`: the child's environment (default: this process's), e.g. to pick a different Whisper model for one run.

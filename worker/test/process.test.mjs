@@ -37,3 +37,12 @@ test("encodes get time in proportion to the video's length, at least five minute
   assert.equal(encodeTimeout(44), 880_000);
   assert.equal(encodeTimeout(56.2), 1_140_000);
 });
+
+test('errors keep their reason, not a stream link\'s access token', async () => {
+  const { lastLines: last, hideQueries } = await import('../process.mjs');
+  const token = 'eyJ0eXAiOiJKV1Qi.' + 'x'.repeat(900) + '.sig';
+  const err = `error: Unable to open URL: https://abc.playback.live-video.net/api/video/v1/x.m3u8?token=${token} (403 Client Error: Forbidden for url: https://abc.playback.live-video.net/api/x.m3u8?token=${token})`;
+  const said = last(err, 1);
+  assert.ok(!said.includes('xxxx') && said.includes('403 Client Error: Forbidden'), said);
+  assert.equal(hideQueries('see https://a.b/c?d=1&e=2, and http://x.y/z'), 'see https://a.b/c?…, and http://x.y/z');
+});

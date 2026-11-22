@@ -4,6 +4,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { validBackgrounds } from "./backgrounds.mjs";
 import { videoLink } from "./video-link.mjs";
+import { hideQueries } from "./process.mjs";
 
 export function channelUrl(value) {
   const u = new URL(value);
@@ -99,7 +100,7 @@ export function allowed(c, id) { return c?.control === "running" && c.streamers.
 export function probeResult(json) {
   if (json?.streams && typeof json.streams === "object" && Object.keys(json.streams).length) return { status: "live", title: typeof json.metadata?.title === "string" ? json.metadata.title.slice(0, 200) : null };
   if (typeof json?.error === "string" && /no playable streams/i.test(json.error)) return { status: "offline", title: null };
-  return { status: "error", title: null, message: typeof json?.error === "string" ? json.error.slice(0, 300) : "no readable answer from streamlink" };
+  return { status: "error", title: null, message: typeof json?.error === "string" ? hideQueries(json.error).slice(0, 300) : "no readable answer from streamlink" };
 }
 // Armed streamers whose last live check is older than `interval`, least recently checked first.
 export function dueForProbe(c, live, { running, now, interval, limit }) {
