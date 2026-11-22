@@ -202,3 +202,47 @@ export async function translateClip(input, lang, { signal, timeoutMs = 240_000 }
     return { sentences: out.sentences, hook: clean(out.hook).slice(0, 90), caption: String(out.caption ?? "").replace(/[{}\\<>]/g, "").trim().slice(0, 2000) };
   } catch { return null; }
 }
+
+// ---- The full pass after a stream ----
+// Scores stretches of a whole stream's transcript, 0..10 each, with a short title of what happens, so the pick list
+// can surface stories, jokes and reveals that chat and loudness missed. The smaller model, a few windows per request.
+// Null when Ollama is off, slow or answers oddly.
+const segmentSchema = {
+  type: "object",
+  properties: { segments: { type: "array", items: { type: "object", properties: { score: { type: "integer", minimum: 0, maximum: 10 }, title: { type: "string" } }, required: ["score", "title"] } } },
+  required: ["segments"],
+};
+
+export function buildSegmentPrompt(texts, { streamer, title }) {
+  return [
+    "These are " + texts.length + " consecutive stretches of a live stream" + (streamer ? " by " + streamer : "") + ", from its automatic transcript (may contain mistakes).",
+    title ? "Stream title: " + clean(title).slice(0, 150) : "",
+    ...texts.map((t, i) => "Stretch " + (i + 1) + ":\n" + (clean(t).slice(0, 900) || "(no speech)")),
+    "For each stretch: a score from 0 to 10 for how well it would work as a short clip on its own (a funny moment, a story, a strong reaction or opinion, a reveal, drama; something that makes sense without the rest of the stream), and a title of 3 to 7 words saying what happens, in plain words (e.g. 'Tells the car crash story', 'Roasts chat for losing').",
+    "Score low: filler, reading donations, adjusting settings, waiting, small talk that needs context.",
+    "Return JSON: {\"segments\": [{\"score\": n, \"title\": \"...\"}, one per stretch, in order]}.",
+  ].filter(Boolean).join("\n\n");
+}
+
+export async function rateSegments(texts, context = {}, { signal, timeoutMs = 180_000 } = {}) {
+  if (!pickerEnabled() || !texts.length) return null;
+  const base = (process.env.OLLAMA_URL || URL_DEFAULT).replace(/\/$/, "");
+  try {
+    const response = await fetch(base + "/api/chat", {
+      method: "POST", headers: { "content-type": "application/json" },
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
+      body: JSON.stringify({
+        model: process.env.OLLAMA_PICKER_MODEL || PICKER_MODEL_DEFAULT, stream: false, format: segmentSchema, keep_alive: "30m",
+        options: { temperature: 0.2, num_ctx: 8192, num_predict: 60 * texts.length },
+        messages: [
+          { role: "system", content: "You find the best moments of live streams for short clips. You answer with JSON." },
+          { role: "user", content: buildSegmentPrompt(texts, context) },
+        ],
+      }),
+    });
+    if (!response.ok) return null;
+    const out = JSON.parse((await response.json())?.message?.content ?? "null")?.segments;
+    if (!Array.isArray(out) || out.length !== texts.length) return null;
+    return out.map(s => ({ score: Number.isFinite(s?.score) ? Math.max(0, Math.min(10, Math.round(s.score))) : null, title: clean(s?.title).replace(/^["'“]+|["'”]+$/g, "").slice(0, 60) || "A moment" }));
+  } catch { return null; }
+}

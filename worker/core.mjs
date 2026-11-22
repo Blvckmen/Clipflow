@@ -149,6 +149,8 @@ export class Store {
     // transcribed: the whole recording has been transcribed for search (set to 0 when it becomes ready). Recordings
     // from before this was added aren't transcribed afterwards: a long one would keep the PC busy for hours.
     if (!this.db.prepare("PRAGMA table_info(recordings)").all().some(c => c.name === "transcribed")) this.db.exec("ALTER TABLE recordings ADD COLUMN transcribed INTEGER NOT NULL DEFAULT 1");
+    // rated: the AI has read the whole transcript for the pick list (the full pass after a stream; set to 0 at ready).
+    if (!this.db.prepare("PRAGMA table_info(recordings)").all().some(c => c.name === "rated")) this.db.exec("ALTER TABLE recordings ADD COLUMN rated INTEGER NOT NULL DEFAULT 1");
   }
   addRecording(id,streamer,dir,mode) { this.db.prepare("INSERT INTO recordings(id,streamer,dir,mode,state,started_at,scanned) VALUES (?,?,?,?,'recording',?,0)").run(id,streamer,dir,mode,new Date().toISOString()); }
   recording(id) { return this.db.prepare("SELECT * FROM recordings WHERE id=?").get(id)??null; }

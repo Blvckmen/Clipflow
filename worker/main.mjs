@@ -14,13 +14,14 @@ import { makeHighlightVideo } from "./highlights-video.mjs";
 import { renderClip, videoInfo } from "./render.mjs";
 import { backgroundStart, chooseBackground, localBackground } from "./backgrounds.mjs";
 import { Recorder } from "./recorder.mjs";
-import { chatSample, LANGUAGE_NAMES, pickerEnabled, rateMoments, sentencesOf, spreadWords, translateClip, writeClipText, writerEnabled } from "./writer.mjs";
+import { chatSample, LANGUAGE_NAMES, pickerEnabled, rateMoments, rateSegments, sentencesOf, spreadWords, translateClip, writeClipText, writerEnabled } from "./writer.mjs";
 import { command } from "./process.mjs";
 import { bucketSignals, encodePreview, extractRange, joinSegments, parts, pickMoments, scanRanges, suggestMoments } from "./recordings.mjs";
 import { screenText, screenTextAvailable } from "./screentext.mjs";
 import { Twitch, clipUrl, pickClips, twitchLogin } from "./twitch.mjs";
 import { PLATFORM_NAMES, downloadVideo, findYtDlp, videoLink, videoTitle } from "./vod.mjs";
 import { stopTranscriber, transcribe as whisper } from "./whisper.mjs";
+import { AI_BATCH, autoClipPicks, mergeAiMoments, transcriptWindows } from "./stream-pass.mjs";
 
 // Every log line starts with the time (HH:MM:SS), so how long things take can be read off worker.log.
 for (const level of ["log", "warn", "error"]) {
@@ -475,7 +476,7 @@ async function runBackground() {
       const due = r => (recordingRetry.get(r.id) ?? 0) <= now;
       // Transcribing for search comes last: after every other recording's steps, and only while no clip is being made.
       const row = store.recordings().find(r => due(r) && (r.state === "ended" || (r.state === "ready" && (!r.clipped || !r.previewed || !r.scanned))))
-        ?? (!processing && !jobs.length ? store.recordings().find(r => due(r) && r.state === "ready" && !r.transcribed) : undefined);
+        ?? (!processing && !jobs.length ? store.recordings().find(r => due(r) && r.state === "ready" && (!r.transcribed || !r.rated)) : undefined);
       if (!row || stopping) break;
       backgroundRow = row.id;
       try { await recordingStep(row); recordingRetry.delete(row.id); }
@@ -505,7 +506,7 @@ async function recordingStep(row) {
     await writeFile(join(row.dir, "signals.json"), JSON.stringify({ ...bucketSignals(energy, chat), moments: suggestions(energy, chat, []) }));
     // Only "record" has its best moments picked here: "both" was clipped live, and an imported video makes the clips
     // asked for with it.
-    store.setRecording(row.id, { state: "ready", duration: info.duration || energy.length, clipped: row.mode === "record" ? 0 : 1, transcribed: 0, reported: 0 });
+    store.setRecording(row.id, { state: "ready", duration: info.duration || energy.length, clipped: row.mode === "record" ? 0 : 1, transcribed: 0, rated: 0, reported: 0 });
     void syncRecordings();
     console.log("Recording", row.id.slice(0, 8), "saved:", Math.round((info.duration || energy.length) / 60), "minutes");
     return;
@@ -553,7 +554,45 @@ async function recordingStep(row) {
     console.log("Recording", row.id.slice(0, 8) + ":", events.length ? "game text on screen: " + [...new Set(events.map(e => e.text))].join(", ") : "no game banners found on screen");
     return;
   }
-  if (!row.transcribed) await transcribePiece(row, file, signal);
+  if (!row.transcribed) return void await transcribePiece(row, file, signal);
+  if (!row.rated) await aiPass(row, signal);
+}
+
+// ---- The full pass after a stream (stream-pass.mjs) ----
+// With the whole transcript there, the AI scores every clip-length window of the stream, AI_BATCH windows per
+// background pass (progress in ai-pass.json, so a restart resumes). Then its best windows join the pick list
+// (signals.json moments, with its titles as reasons), and for record-only streams the ones rated AI_AUTO_CLIP+ that
+// weren't clipped yet become clips, within the daily limit. If the AI keeps not answering, it finishes with what it has.
+async function aiPass(row, signal) {
+  const stateFile = join(row.dir, "ai-pass.json"), duration = config?.duration ?? 45, total = row.duration ?? 0;
+  if (!pickerEnabled() || !config) return void store.setRecording(row.id, { rated: 1 });
+  const { lines = [] } = await readJson(join(row.dir, "transcript.json"), {});
+  const state = await readJson(stateFile, null) ?? { windows: transcriptWindows(lines, { duration, total, skip: total > duration * 4 + 60 ? 60 : 0 }), rated: [], misses: 0 };
+  if (state.rated.length < state.windows.length && state.misses < 3) {
+    const batch = state.windows.slice(state.rated.length, state.rated.length + AI_BATCH);
+    const who = config.streamers.find(s => s.id === row.streamer), started = Date.now();
+    const scores = await rateSegments(batch.map(w => w.text), { streamer: who ? streamerInfo(who.url).name : "", title: row.title ?? "" }, { signal });
+    if (!scores) { state.misses++; await writeFile(stateFile, JSON.stringify(state)); throw new Error("the AI didn't score this part of the stream (is Ollama running?)"); }
+    batch.forEach((w, i) => state.rated.push({ start: w.start, end: w.end, score: scores[i].score, title: scores[i].title }));
+    await writeFile(stateFile, JSON.stringify(state));
+    console.log("Recording", row.id.slice(0, 8) + ": AI read", state.rated.length, "of", state.windows.length, "stretches (" + Math.round((Date.now() - started) / 1000) + "s)");
+    return;
+  }
+  const signals = await readJson(join(row.dir, "signals.json"), null);
+  if (signals) await writeFile(join(row.dir, "signals.json"), JSON.stringify({ ...signals, moments: mergeAiMoments(signals.moments, state.rated) }));
+  store.setRecording(row.id, { rated: 1, reported: 0 });
+  void syncRecordings();
+  const strong = state.rated.filter(r => r.score >= 8).length;
+  console.log("Recording", row.id.slice(0, 8) + ": AI pass done,", state.rated.length, "stretches read,", strong, "rated 8+");
+  // Record-only streams: the AI's best moments that nothing clipped yet (live captures of "both" streams aren't
+  // tracked against the recording, so those only get the pick list).
+  if (row.mode !== "record") return;
+  const room = Math.max(0, config.dailyLimit - store.countToday(row.streamer));
+  const clipped = await readJson(join(row.dir, "clipped.json"), []);
+  for (const pick of autoClipPicks(state.rated, clipped, { max: Math.min(5, room) })) {
+    try { await clipFromRecording(row, pick.start, pick.end, { reason: "best", exact: false, tracker: null }); }
+    catch (error) { problem("Could not cut the AI's moment from recording " + row.id.slice(0, 8) + ": " + error.message); }
+  }
 }
 
 // ---- Searching recordings by what was said ----
@@ -635,6 +674,9 @@ async function clipFromRecording(row, start, end, { reason, exact, tracker }) {
   const id = crypto.randomUUID(), dir = join(dataDir, "clips", row.streamer, id), raw = join(dir, "window.m2t");
   const from = await keyframeBefore(file, Math.max(0, start - RECORDING_PAD)), to = Math.min(row.duration ?? Infinity, end + RECORDING_PAD);
   const length = Math.round(end - start);
+  // What has been clipped from this recording, so the AI pass doesn't clip the same moment again.
+  const clippedFile = join(row.dir, "clipped.json");
+  await writeFile(clippedFile, JSON.stringify([...await readJson(clippedFile, []), { start, end }])).catch(() => {});
   store.add(id, row.streamer, join(dir, "clip.mp4"), exact ? length : settings.duration, textOf(settings, row.streamer).subtitles, reason);
   try {
     await mkdir(dir, { recursive: true });
