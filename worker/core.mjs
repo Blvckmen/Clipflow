@@ -79,6 +79,11 @@ export function validateControl(c) {
   c.imports ??= [];
   if (!Array.isArray(c.imports) || c.imports.length > 20) throw new Error("Invalid imports");
   for (const v of c.imports) if (!/^[0-9a-f-]{36}$/i.test(v?.id) || !/^[0-9a-f-]{36}$/i.test(v.streamerId) || videoLink(v.url)?.url !== v.url) throw new Error("Invalid import");
+  // Highlight videos to make: each a list of clips and the part of each to use; older dashboards send none.
+  c.highlights ??= [];
+  if (!Array.isArray(c.highlights) || c.highlights.length > 5) throw new Error("Invalid highlights");
+  for (const h of c.highlights) if (!/^[0-9a-f-]{36}$/i.test(h?.id) || !Array.isArray(h.clips) || !h.clips.length || h.clips.length > 20
+    || h.clips.some(x => !/^[0-9a-f-]{36}$/i.test(x?.id) || !Number.isFinite(x.start) || !Number.isFinite(x.end) || x.start < 0 || x.end <= x.start || x.end - x.start > 600)) throw new Error("Invalid highlight");
   // Clips to make in another language for accounts that post in it; older dashboards send none.
   c.translations ??= [];
   if (!Array.isArray(c.translations) || c.translations.length > 20) throw new Error("Invalid translations");

@@ -897,3 +897,61 @@ describe("learning from views", () => {
     assert.ok(config.streamers.every(s => s.chatWeight === undefined || (s.chatWeight >= 0.2 && s.chatWeight <= 0.8)));
   });
 });
+
+describe("highlight videos", () => {
+  test("a highlight video is made from accepted clips, uploaded in parts, played, downloaded and deleted", async () => {
+    // A streamer of its own, so other tests' clips don't count.
+    const added = await dash({ action: "add", url: "https://twitch.tv/hl" + Date.now().toString(36) });
+    const sid = added.body.streamerId;
+    assert.equal((await dash({ action: "makeHighlights", days: 7, count: 8, streamerId: sid })).status, 409, "too few clips");
+    const source = Buffer.alloc(9000, 6), edit = defaultEdit(defaultStyle(), { trimStart: 6, trimEnd: 36 });
+    const ids = [];
+    for (let i = 0; i < 3; i++) {
+      const { clip } = await reportClip(Buffer.alloc(5000, 4 + i), { streamerId: sid, edit, transcript: [], source: { width: 1920, height: 1080, duration: 42, sha: sha256(source), size: source.length } });
+      assert.equal((await worker("/api/worker/clips/" + clip.id + "/source", { method: "PUT", headers: { "content-type": "video/mp4" }, body: source })).status, 200);
+      await dash({ action: "reviewClip", id: clip.id, review: "approved" });
+      ids.push(clip.id);
+    }
+    const made = await dash({ action: "makeHighlights", days: 7, count: 8, streamerId: sid });
+    assert.equal(made.status, 200, JSON.stringify(made.body));
+    const h = (await dash()).body.highlights[0];
+    assert.equal(h.state, "queued");
+    assert.equal(h.clips, 3);
+    const asked = (await (await worker("/api/worker/config")).json()).highlights.find(x => x.id === h.id);
+    assert.deepEqual(asked.clips.map(c => [c.start, c.end]), [[6, 36], [6, 36], [6, 36]], "each clip's trimmed part");
+    assert.deepEqual([...asked.clips.map(c => c.id)].sort(), [...ids].sort());
+    // The worker's upload, in parts.
+    const part = (n, of, body) => worker("/api/worker/highlights/" + h.id, { method: "PUT", headers: { "content-type": "application/octet-stream", "x-part": String(n), "x-parts": String(of) }, body });
+    const one = Buffer.alloc(5 * 1024 * 1024 + 10, 1), two = Buffer.alloc(3000, 2);
+    assert.equal((await part(2, 2, two)).status, 409, "parts in order");
+    assert.equal((await part(1, 2, one)).status, 200);
+    assert.equal((await part(2, 2, two)).status, 200);
+    assert.equal((await worker("/api/worker/highlights/" + h.id, { method: "POST", body: JSON.stringify({ parts: 2, size: one.length + two.length, duration: 91.25 }) })).status, 200);
+    const ready = (await dash()).body.highlights.find(x => x.id === h.id);
+    assert.deepEqual([ready.state, ready.size, ready.duration], ["ready", one.length + two.length, 91.3]);
+    const file = await fetch(base + "/api/highlights/" + h.id, { headers: { cookie } });
+    assert.equal(file.status, 200);
+    assert.equal((await file.arrayBuffer()).byteLength, one.length + two.length);
+    const download = await fetch(base + "/api/highlights/" + h.id + "?download=1", { headers: { cookie } });
+    assert.match(download.headers.get("content-disposition"), /^attachment; filename=".*weekly-highlights.*\.mp4"$/);
+    await download.arrayBuffer();
+    assert.equal((await fetch(base + "/api/highlights/" + h.id)).status, 401, "owners only");
+    // A failure is recorded with its reason.
+    const again = await dash({ action: "makeHighlights", days: 7, count: 8, streamerId: sid });
+    const second = (await dash()).body.highlights.find(x => x.state === "queued");
+    assert.equal(again.status, 200);
+    assert.equal((await worker("/api/worker/highlights/" + second.id, { method: "POST", body: JSON.stringify({ error: "ffmpeg crashed" }) })).status, 200);
+    assert.deepEqual((({ state, error }) => [state, error])((await dash()).body.highlights.find(x => x.id === second.id)), ["failed", "ffmpeg crashed"]);
+    // Deleting.
+    for (const id of [h.id, second.id]) assert.equal((await dash({ action: "deleteHighlight", id })).status, 200);
+    assert.equal((await fetch(base + "/api/highlights/" + h.id, { headers: { cookie } })).status, 404);
+    assert.equal((await dash({ action: "deleteHighlight", id: h.id })).status, 404);
+    // Weekly highlights is a setting.
+    const { mode, duration, dailyLimit, captions, destinations, framing } = originalSettings;
+    assert.equal((await dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, destinations, framing, weeklyHighlights: true } })).status, 200);
+    assert.equal((await dash()).body.settings.weeklyHighlights, true);
+    await dash({ action: "settings", settings: { mode, duration, dailyLimit, captions, destinations, framing, weeklyHighlights: false } });
+    await dash({ action: "bulkClips", ids, op: "delete" });
+    await dash({ action: "remove", id: sid });
+  });
+});

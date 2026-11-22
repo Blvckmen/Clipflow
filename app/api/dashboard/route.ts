@@ -1,5 +1,5 @@
 import { currentUser, signInPath } from "../../auth";
-import { bucket, database, clipKey, sourceKey } from "../../../db/raw";
+import { bucket, database, clipKey, sourceKey, highlightKey } from "../../../db/raw";
 import { defaultCaption, defaults, parseStreamer, settingsSchema } from "../../../lib/clipflow";
 import { instagramConfig } from "../../../lib/publisher";
 import { connectionFor, connections, hashKey, listKeys, siteConnection, zernioApiUrl } from "../../../lib/zernio-keys";
@@ -16,6 +16,7 @@ import { removeRecordingFiles } from "../../../lib/recordings";
 import { thumbOf } from "../../../lib/thumbs";
 import { env } from "cloudflare:workers";
 import { isDiscordWebhook, sendDiscord } from "../../../lib/alerts";
+import { createHighlight } from "../../../lib/highlights";
 import { hashToken, newToken } from "../../../lib/worker-auth";
 import { z } from "zod";
 const accountIds=z.array(z.string().uuid()).max(50).transform(x=>[...new Set(x)]);
@@ -38,6 +39,9 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("discord"),op:z.enum(["connect","test","remove"]),url:z.string().trim().max(300).optional()}),
  // A second clip from the same footage (to give it another hook or look and post it to other accounts).
  z.object({action:z.literal("duplicateClip"),id:z.string().uuid()}),
+ // Highlight videos (lib/highlights.ts): make one now, or delete one.
+ z.object({action:z.literal("makeHighlights"),days:z.number().int().min(1).max(31),count:z.number().int().min(3).max(20),streamerId:z.string().uuid().nullable().optional()}),
+ z.object({action:z.literal("deleteHighlight"),id:z.string().uuid()}),
  z.object({action:z.literal("reviewClip"),id:z.string().uuid(),review:z.enum(["approved","rejected","pending"])}),
  // `platform` is the pre-multi-account form: it disconnects that platform's only account.
  z.object({action:z.literal("disconnect"),id:z.string().uuid().optional(),platform:z.enum(["instagram"]).optional()}),
@@ -105,10 +109,11 @@ export async function GET(){
   const prefs=Object.fromEntries(Object.entries((p??{}) as Record<string,unknown>).filter(([k])=>k!=="zernio_key_enc"&&k!=="zernio_label"&&k!=="discord_webhook_enc"));
   const keys=(await listKeys(db,owner)).map(k=>({id:k.id,label:k.label,created_at:k.created_at,last_error:k.last_error,accounts:a.results.filter(x=>x.zernio_key_id===k.id).length}));
   const site=!keys.length&&!!siteConnection(env);
-  const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,importClips:Number(p.import_clips??0),clipCommand:p.clip_command??defaults.clipCommand,learn:p.learn===undefined?true:!!p.learn,discordAlerts:!!p.discord_webhook_enc,alertError:p.alert_error??null,style:parse(p.style)}:{...defaults,style:null};
+  const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,importClips:Number(p.import_clips??0),clipCommand:p.clip_command??defaults.clipCommand,learn:p.learn===undefined?true:!!p.learn,weeklyHighlights:!!p.weekly_highlights,discordAlerts:!!p.discord_webhook_enc,alertError:p.alert_error??null,style:parse(p.style)}:{...defaults,style:null};
   return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(x=>({...x,targets:parse(x.targets)??{},captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored})),storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,duration,content_type,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,
    // Whole-stream recordings (their heat strips load with GET /api/recordings/<id>) and clips asked for from them.
    recordings:(await db.prepare("SELECT r.id,r.streamer_id,s.name AS streamer,r.title,r.started_at,r.ended_at,r.duration,r.size,r.state,r.error,r.preview_key IS NOT NULL AS preview,r.transcript_at IS NOT NULL AS transcript,r.upload_id IS NOT NULL AS uploading,r.expires_at,r.source_url FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.owner=? ORDER BY r.started_at DESC LIMIT 100").bind(owner).all<Record<string,unknown>>()).results.map(x=>({...x,preview:!!x.preview,uploading:!!x.uploading,transcript:!!x.transcript})),
+   highlights:(await db.prepare("SELECT id,title,state,size,duration,error,auto,clips,created_at FROM highlights WHERE owner=? ORDER BY created_at DESC LIMIT 20").bind(owner).all<{clips:string}>()).results.map(({clips,...h})=>({...h,clips:(JSON.parse(clips) as unknown[]).length})),
    recordingRequests:(await db.prepare("SELECT id,recording_id,kind,start,end,count,state,error,clips,created_at,updated_at FROM recording_requests WHERE owner=? ORDER BY created_at DESC LIMIT 200").bind(owner).all()).results,
   },{headers:{"Cache-Control":"private, no-store"}});
  }catch(error){console.error("Dashboard load failed",error);return Response.json({error:"We couldn't load your workspace. Please retry."},{status:503});}
@@ -223,6 +228,7 @@ export async function POST(request:Request){
    if(s.importClips!==undefined)statements.push(db.prepare("UPDATE preferences SET import_clips=? WHERE owner=?").bind(s.importClips,owner));
    if(s.clipCommand!==undefined)statements.push(db.prepare("UPDATE preferences SET clip_command=? WHERE owner=?").bind(s.clipCommand,owner));
    if(s.learn!==undefined)statements.push(db.prepare("UPDATE preferences SET learn=? WHERE owner=?").bind(Number(s.learn),owner));
+   if(s.weeklyHighlights!==undefined)statements.push(db.prepare("UPDATE preferences SET weekly_highlights=? WHERE owner=?").bind(Number(s.weeklyHighlights),owner));
    message="Saved clipping and publishing preferences.";
   }
   if(payload.action==="control"){
@@ -265,6 +271,21 @@ export async function POST(request:Request){
     if(payload.op==="connect")statements.push(db.prepare("INSERT INTO preferences (owner,discord_webhook_enc) VALUES (?,?) ON CONFLICT(owner) DO UPDATE SET discord_webhook_enc=excluded.discord_webhook_enc,alert_error=NULL").bind(owner,await encrypt(url.trim(),env.TOKEN_KEY)));
     message=payload.op==="test"?"Sent a test message to your Discord.":"Discord alerts are on. A test message was sent to the channel.";
    }
+  }
+  if(payload.action==="makeHighlights"){
+   if(payload.streamerId&&!await db.prepare("SELECT 1 FROM streamers WHERE id=? AND owner=?").bind(payload.streamerId,owner).first())return Response.json({error:"Streamer not found."},{status:404});
+   const made=await createHighlight(db,owner,{days:payload.days,count:payload.count,streamerId:payload.streamerId??null});
+   if(!made)return Response.json({error:"Not enough clips for a highlight video: it needs at least 3 accepted clips from that time that can still be edited."},{status:409});
+   message="Making \""+made.title+"\" from "+made.clips+" clips on your worker PC.";
+  }
+  if(payload.action==="deleteHighlight"){
+   const row=await db.prepare("SELECT file_key,upload_id FROM highlights WHERE id=? AND owner=?").bind(payload.id,owner).first<{file_key:string|null;upload_id:string|null}>();
+   if(!row)return Response.json({error:"Highlight video not found."},{status:404});
+   const store=bucket();
+   if(row.upload_id)await store?.resumeMultipartUpload(highlightKey(payload.id),row.upload_id).abort().catch(()=>{});
+   if(row.file_key)await store?.delete(row.file_key);
+   statements.push(db.prepare("DELETE FROM highlights WHERE id=? AND owner=?").bind(payload.id,owner));
+   message="Deleted the highlight video.";
   }
   if(payload.action==="duplicateClip"){
    const clip=await db.prepare("SELECT c.id,c.file_key,c.source_key,s.name FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(payload.id,owner).first<{id:string;file_key:string|null;source_key:string|null;name:string|null}>();

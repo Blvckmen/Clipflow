@@ -10,6 +10,7 @@ import { chatSpike, commandTrigger, perSecond } from "./highlights.mjs";
 import { openChat } from "./chat.mjs";
 import { PROBE_TIMEOUT_MS, probeLive, processWindow, streamlink } from "./media.mjs";
 import { normalizeEdit } from "./edit.mjs";
+import { makeHighlightVideo } from "./highlights-video.mjs";
 import { renderClip, videoInfo } from "./render.mjs";
 import { backgroundStart, chooseBackground, localBackground } from "./backgrounds.mjs";
 import { Recorder } from "./recorder.mjs";
@@ -231,9 +232,11 @@ async function clipWindow(session, fromMs, toMs, reason) {
 async function processJobs() {
   if (processing) return;
   while (jobs.length && !stopping) {
-    const job = jobs.shift();
+    // Highlight videos are long and never urgent: everything else goes first.
+    const next = jobs.findIndex(j => j.kind !== "highlight"), job = jobs.splice(next >= 0 ? next : 0, 1)[0];
     if (job.kind === "render") { await rerender(job); continue; }
     if (job.kind === "translate") { await translateJob(job); continue; }
+    if (job.kind === "highlight") { await highlightJob(job); continue; }
     // Live captures stop with their streamer; clips asked for from a recording were asked for by hand.
     if (!job.fromRecording && !allowed(config, job.streamer.id)) { store.fail(job.id); await rm(job.dir, { recursive: true, force: true }); continue; }
     const controller = new AbortController();
@@ -783,6 +786,63 @@ async function rerender(job) {
   }
 }
 
+// ---- Highlight videos ----
+// The clips' moments, cut from their unframed sources (this PC's copy, else the one the dashboard stored) and joined
+// into one 16:9 video (highlights-video.mjs), uploaded in parts like a recording's preview.
+const highlightsQueued = new Set();
+function queueHighlights(list) {
+  for (const h of list ?? []) {
+    if (highlightsQueued.has(h.id)) continue;
+    highlightsQueued.add(h.id);
+    jobs.push({ kind: "highlight", ...h });
+  }
+  if (jobs.length) void processJobs();
+}
+async function highlightJob(job) {
+  const controller = new AbortController(), scratch = join(dataDir, "highlights", job.id), base = "/api/worker/highlights/" + job.id;
+  processing = { job, controller };
+  try {
+    await rm(scratch, { recursive: true, force: true });
+    await mkdir(scratch, { recursive: true });
+    const pieces = [];
+    for (const [i, c] of job.clips.entries()) {
+      const local = store.get(c.id), mine = local && join(dirname(local.path), "source.mp4");
+      let source = mine && await access(mine).then(() => true, () => false) ? mine : null;
+      if (!source) {
+        const response = await api("/api/worker/clips/" + c.id + "/source", { timeout: 180_000 });
+        if (!response.ok) { console.warn("Highlight " + job.id.slice(0, 8) + ": skipping clip " + c.id + " (source HTTP " + response.status + ")"); continue; }
+        source = join(scratch, "source-" + i + ".mp4");
+        await writeFile(source, Buffer.from(await response.arrayBuffer()));
+      }
+      pieces.push({ source, start: c.start, end: c.end });
+    }
+    if (pieces.length < 2) throw new Error("fewer than 2 of its clips could be found");
+    const out = join(scratch, "highlights.mp4");
+    const { duration } = await makeHighlightVideo(pieces, out, { dir: scratch, signal: controller.signal });
+    const size = (await stat(out)).size, list = parts(size), handle = await open(out);
+    try {
+      for (const p of list) {
+        const body = Buffer.alloc(p.length);
+        await handle.read(body, 0, p.length, p.offset);
+        const response = await api(base, { method: "PUT", body, headers: { "content-type": "application/octet-stream", "x-part": String(p.number), "x-parts": String(list.length) }, timeout: 600_000 });
+        if (response.status === 404) return;  // deleted in the dashboard meanwhile
+        if (!response.ok) throw new Error("upload HTTP " + response.status + " (part " + p.number + " of " + list.length + ")");
+      }
+    } finally { await handle.close(); }
+    const done = await api(base, { method: "POST", body: JSON.stringify({ parts: list.length, size, duration }) });
+    if (!done.ok && done.status !== 404) throw new Error("completion HTTP " + done.status);
+    console.log("Made highlight video", job.id.slice(0, 8), "from", pieces.length, "clips (" + Math.round(duration) + "s)");
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      problem("Couldn't make highlight video " + job.id.slice(0, 8) + ": " + error.message);
+      await api(base, { method: "POST", body: JSON.stringify({ error: String(error.message).slice(0, 300) }) }).catch(() => {});
+    } else highlightsQueued.delete(job.id);
+  } finally {
+    processing = null;
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
 // ---- Clips in another language ----
 // An account set to post in Spanish, Portuguese or French gets its own version of each clip: the subtitles (sentence
 // by sentence, timed over the original speech), the hook and the post caption translated by the local AI model, then
@@ -902,6 +962,7 @@ async function tick() {
   await refresh();
   queueRenders(config?.renders);
   queueTranslations(config?.translations);
+  queueHighlights(config?.highlights);
   if (config) await takeRequests(config.clipRequests);
   // Stop disallowed recordings before the (slow) live checks rather than after them.
   for (const id of sessions.keys()) if (!allowed(config, id)) await stopSession(id, "paused, stopped or disabled");

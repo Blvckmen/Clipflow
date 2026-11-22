@@ -13,6 +13,7 @@ import { syncAnalytics } from "./analytics";
 import { expireRecordings } from "./recordings";
 import { readOptions, tiktokSettings, wantsDraft } from "./account-options";
 import { subtitleLanguages, translatable } from "./languages";
+import { weeklyHighlights } from "./highlights";
 import { planNext, tiktokBusy, TIKTOK_DAILY, bestHours, hoursLabel, nextOpenAt, windowHours } from "./posting-plan.mjs";
 import { applyRules, lengthProblem, readRules } from "./posting-rules.mjs";
 import { keyConnection, siteConnection, zernioApiUrl, type Connection } from "./zernio-keys";
@@ -73,6 +74,8 @@ export async function runPublisher(env: Env, now = Date.now()) {
   await syncAnalytics(env, now).catch(error => console.error("Analytics sync failed:", error));
   // Whole-stream recordings past their retention period.
   await expireRecordings(env, now).catch(error => console.error("Recording expiry failed:", error));
+  // Monday's highlight videos (one sync_state row read until a new week is due).
+  await weeklyHighlights(env.DB, now).catch(error => console.error("Weekly highlights failed:", error));
   if (!env.MEDIA_KEY || !env.PUBLIC_URL) return;
   const ig = instagramConfig(env);
   // Clips flagged before this point are looked at by every account below; flags set meanwhile (a trigger, real time)

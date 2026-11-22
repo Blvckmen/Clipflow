@@ -47,6 +47,8 @@ export const preferences=sqliteTable("preferences",{
  discordWebhookEnc:text("discord_webhook_enc"),alertAt:text("alert_at"),alertError:text("alert_error"),
  // Whether the worker uses what was learned from views (streamers.learned) when it picks moments.
  learn:integer("learn",{mode:"boolean"}).notNull().default(true),
+ // Make a highlight video of the past week every Monday (lib/highlights.ts).
+ weeklyHighlights:integer("weekly_highlights",{mode:"boolean"}).notNull().default(false),
  // No longer used: the single Zernio key setting, moved to zernio_keys by migration 0011.
  zernioKeyEnc:text("zernio_key_enc"),zernioLabel:text("zernio_label"),
 });
@@ -180,3 +182,12 @@ export const clipTranslations=sqliteTable("clip_translations",{
  state:text("state").notNull(),fileKey:text("file_key"),sourceCaption:text("source_caption"),caption:text("caption"),error:text("error"),
  createdAt:text("created_at").notNull(),updatedAt:text("updated_at").notNull(),
 },t=>[primaryKey({columns:[t.clipId,t.lang]}),index("clip_translations_owner_state").on(t.owner,t.state)]);
+
+// Highlight videos (lib/highlights.ts): the clips picked (JSON [{id,start,end}], in order), made into one 16:9 video
+// by the worker and uploaded in parts like a recording's preview. state: queued -> ready (file_key) | failed (error).
+export const highlights=sqliteTable("highlights",{
+ id:text("id").primaryKey(),owner:text("owner").notNull(),streamerId:text("streamer_id"),title:text("title").notNull(),
+ since:text("since").notNull(),until:text("until").notNull(),clips:text("clips").notNull(),state:text("state").notNull(),
+ fileKey:text("file_key"),size:integer("size"),duration:real("duration"),error:text("error"),auto:integer("auto").notNull().default(0),
+ uploadId:text("upload_id"),uploadParts:text("upload_parts"),createdAt:text("created_at").notNull(),updatedAt:text("updated_at").notNull(),
+},t=>[index("highlights_owner_state").on(t.owner,t.state)]);
