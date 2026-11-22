@@ -46,10 +46,17 @@ logs to `worker\data\worker.log`.
 - **Chat spikes (Twitch):** chat is read anonymously. When the last 10 seconds have at
   least 6 messages and `CHAT_SPIKE_FACTOR` times the channel's typical 10-second count
   (median of the last 5 minutes), the worker waits 20 seconds, then clips from the
-  window around it. At most one chat clip per `CHAT_CLIP_GAP_SECONDS`.
-- **Loudest moment (all platforms):** if no clip was made for `COOLDOWN_SECONDS`, the
-  loudest stretch of the recent buffer is clipped. Kick and YouTube rely on this alone,
-  since reading their chat requires registered API apps.
+  window around it. Spikes and `!clip`s wait in a queue rather than being dropped while
+  another clip is being cut; ones within 20 seconds become one clip, and ones inside a
+  stretch already clipped are skipped. A long burst counts again at most every
+  `CHAT_CLIP_GAP_SECONDS`.
+- **The rest of the stream (all platforms):** between those, the worker checks the stream
+  in back-to-back windows of about 3 minutes, each starting where the last clip or check
+  ended, so every part is looked at once. The AI rates each window's moments and drops it
+  when none reaches `AI_MIN_RATING` (6 of 10), so dull stretches don't become clips. While
+  two checks are already waiting to be processed, new ones are skipped so a busy PC isn't
+  buried. Kick and YouTube rely on this alone, since reading their chat requires
+  registered API apps.
 - Within a window, the clip is placed by loudness plus chat activity 4 seconds later
   (viewers react after the moment), then its start and end move to the nearest sentence
   boundary in the transcript (within 4 seconds). The transcript is made once and reused
@@ -97,8 +104,9 @@ logs to `worker\data\worker.log`.
 | `DATA_DIR` | `/data` | Clips and the local SQLite queue |
 | `AUTO_HOOKS` | `true` | Automatic opening titles on new clips; set `false` to disable, then restart the worker |
 | `POLL_SECONDS` | `60` | How often to read control and settings |
-| `COOLDOWN_SECONDS` | `600` | Quiet time before a "loudest moment" clip is taken |
-| `CHAT_CLIP_GAP_SECONDS` | `120` | Minimum time between chat-spike clips from one streamer |
+| `COOLDOWN_SECONDS` | `0` | Least time between checks of the rest of the stream (0: back to back) |
+| `CHAT_CLIP_GAP_SECONDS` | `25` | A long chat burst counts as a new moment at most this often |
+| `AI_MIN_RATING` | `6` | Checks of the rest of the stream become clips only if the AI rates a moment this high (0 to keep all) |
 | `CHAT_SPIKE_FACTOR` | `2.5` | How far above the typical chat rate counts as a spike |
 | `BUFFER_SECONDS` | `240` | How much recent stream is kept on disk while recording |
 | `RETENTION_HOURS` | `72` | How long clip files are kept |

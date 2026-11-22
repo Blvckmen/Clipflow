@@ -22,6 +22,7 @@ import { Twitch, clipUrl, pickClips, twitchLogin } from "./twitch.mjs";
 import { PLATFORM_NAMES, downloadVideo, findYtDlp, videoLink, videoTitle } from "./vod.mjs";
 import { stopTranscriber, transcribe as whisper } from "./whisper.mjs";
 import { AI_BATCH, autoClipPicks, mergeAiMoments, transcriptWindows } from "./stream-pass.mjs";
+import { coverageWindow, enqueueTrigger } from "./triggers.mjs";
 
 // Every log line starts with the time (HH:MM:SS), so how long things take can be read off worker.log.
 for (const level of ["log", "warn", "error"]) {
@@ -40,8 +41,9 @@ if (origin.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(origin.
 
 const dataDir = env.DATA_DIR || "/data";
 const pollMs = seconds(env.POLL_SECONDS, 60), retentionMs = seconds(env.RETENTION_HOURS, 72) * 3600;
-// Without a chat spike, a streamer gets one "loudest recent moment" clip per COOLDOWN_SECONDS.
-const fallbackMs = seconds(env.COOLDOWN_SECONDS, 600), chatGapMs = seconds(env.CHAT_CLIP_GAP_SECONDS, 120);
+// Triggers wait in a queue (triggers.mjs); a long chat burst counts as a new trigger at most every CHAT_CLIP_GAP_SECONDS.
+// Between triggers the stream is covered in back-to-back windows; COOLDOWN_SECONDS (default 0) spaces those checks out.
+const coverEveryMs = seconds(env.COOLDOWN_SECONDS, 0), spikeEveryMs = seconds(env.CHAT_CLIP_GAP_SECONDS, 25);
 const bufferSeconds = seconds(env.BUFFER_SECONDS, 240) / 1000, spikeFactor = Number(env.CHAT_SPIKE_FACTOR ?? 2.5);
 const maxSessions = Math.max(1, Math.floor(Number(env.MAX_CAPTURES ?? 1)));
 const liveCheckMs = seconds(env.LIVE_CHECK_SECONDS, 120), probeConcurrency = 3, probesPerCycle = 15;
@@ -56,7 +58,7 @@ const python = env.PYTHON || "python", highlightScript = fileURLToPath(new URL("
 // Footage kept either side of a moment cut from a recording (more than SOURCE_PAD, so the editor can widen it).
 const RECORDING_PAD = 15;
 const store = new Store(dataDir);
-// streamer id -> { streamer, recorder, chat, startedMs, lastClipMs, pending: { atMs, reason } | null, busy }
+// streamer id -> { streamer, recorder, chat, startedMs, lastClipMs, queue: [{ atMs, reason }], coveredUntil, lastSpikeMs, busy }
 const sessions = new Map(), blockedUntil = new Map(), failures = new Map();
 // streamer id -> { status: live|recording|offline|error, checkedAt (ms), title }; `unreported` holds ids changed since the last status post.
 const live = new Map(), unreported = new Set();
@@ -157,7 +159,7 @@ async function startSession(streamer) {
   const recording = keep ? { id: crypto.randomUUID(), chat: [], chatSeen: 0, startMs: 0, marks: [] } : null;
   if (recording) recording.dir = join(dataDir, "recordings", recording.id);
   const recorder = new Recorder(channelUrl(streamer.url), keep ? join(recording.dir, "segments") : join(dataDir, "buffer", streamer.id), { bufferSeconds, streamlink, keep });
-  const session = { streamer, mode, recording, recorder, chat: null, startedMs: Date.now(), lastClipMs: Date.now(), pending: null, busy: false, commandSeen: Date.now() };
+  const session = { streamer, mode, recording, recorder, chat: null, startedMs: Date.now(), lastClipMs: Date.now(), queue: [], coveredUntil: Date.now(), lastSpikeMs: 0, busy: false, commandSeen: Date.now() };
   sessions.set(streamer.id, session);
   try { await recorder.start(); }
   catch (error) { sessions.delete(streamer.id); problem("Could not start recording " + streamer.url + ": " + error.message); return; }
@@ -314,37 +316,39 @@ async function checkSessions() {
     // Record-only streams are clipped when they end, from the whole recording.
     if (session.busy || session.mode === "record" || limitReached) continue;
     const latest = session.recorder.latestMs(), preRollMs = Math.max(45, settings.duration + 15) * 1000;
+    // "!clip" and chat spikes queue up (triggers.mjs): none is lost to a cool-down, ones close together become one clip.
     if (command) {
-      // A clip already being cut around the same moment covers it; one for an earlier moment goes first.
-      if (session.pending && command.atMs - session.pending.atMs < 20_000) { session.commandSeen = command.atMs; session.pending.reason = "command"; }
-      else if (!session.pending) {
-        session.commandSeen = command.atMs;
-        console.log("!clip from", command.by, "on", name);
-        session.pending = { atMs: command.atMs, reason: "command" };
-        continue;
+      session.commandSeen = command.atMs;
+      const what = enqueueTrigger(session.queue, session.coveredUntil, { atMs: command.atMs, reason: "command" });
+      console.log("!clip from", command.by, "on", name + (what === "queued" ? "" : what === "merged" ? " (joins a moment already queued)" : " (already in a clip)"));
+    }
+    if (session.chat && now - session.lastSpikeMs >= spikeEveryMs) {
+      const spike = chatSpike(session.chat.times, now, { sinceMs: Math.max(session.chat.since, session.startedMs), factor: spikeFactor });
+      if (spike.spike) {
+        session.lastSpikeMs = now;
+        const what = enqueueTrigger(session.queue, session.coveredUntil, { atMs: now, reason: "chat" });
+        console.log("Chat spike on", name + ":", spike.recent, "messages in 10s vs typical", spike.baseline + (what === "queued" ? "" : what === "merged" ? " (same moment)" : " (already in a clip)"));
       }
     }
-    if (session.pending) {
-      if (latest >= session.pending.atMs + postRollMs) {
-        const { atMs, reason } = session.pending;
-        session.pending = null; session.lastClipMs = now;
-        void clipWindow(session, atMs - preRollMs, atMs + postRollMs, reason);
+    // The oldest queued moment, once there's footage after it.
+    const next = session.queue[0];
+    if (next) {
+      if (latest >= next.atMs + postRollMs) {
+        session.queue.shift();
+        session.lastClipMs = now;
+        session.coveredUntil = Math.max(session.coveredUntil, next.atMs + postRollMs);
+        void clipWindow(session, next.atMs - preRollMs, next.atMs + postRollMs, next.reason);
       }
       continue;
     }
-    if (session.chat && now - session.lastClipMs >= chatGapMs) {
-      const spike = chatSpike(session.chat.times, now, { sinceMs: Math.max(session.chat.since, session.startedMs), factor: spikeFactor });
-      if (spike.spike) {
-        console.log("Chat spike on", name + ":", spike.recent, "messages in 10s vs typical", spike.baseline);
-        session.pending = { atMs: now, reason: "chat" };
-        continue;
-      }
-    }
-    // With the AI picker, a longer look back gives it different moments to choose between, not just the loudest.
+    // Nothing triggered: check the next stretch nobody has looked at yet (the AI rating drops the dull ones).
     const lookbackS = Math.min(bufferSeconds - 20, Math.max(pickerEnabled() ? 180 : 90, settings.duration * 2));
-    if (now - session.lastClipMs >= fallbackMs && session.recorder.buffered() >= lookbackS) {
+    if (now - session.lastClipMs < coverEveryMs || session.recorder.buffered() < lookbackS * 0.8) continue;
+    const span = coverageWindow({ coveredUntil: session.coveredUntil, latest, lookbackMs: lookbackS * 1000, waiting: jobs.filter(j => j.reason === "audio").length + (processing?.job.reason === "audio" ? 1 : 0) });
+    if (span) {
       session.lastClipMs = now;
-      void clipWindow(session, latest - lookbackS * 1000, latest, "audio");
+      session.coveredUntil = span.toMs;
+      void clipWindow(session, span.fromMs, span.toMs, "audio");
     }
   }
 }
