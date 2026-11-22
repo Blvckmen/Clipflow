@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { Store, allowed, channelUrl, clipTextFor, dueForProbe, plan, retryDelay, shownStatus, validateControl } from "./core.mjs";
+import { Store, allowed, channelUrl, clipTextFor, dueForProbe, limitFor, plan, retryDelay, shownStatus, validateControl } from "./core.mjs";
 // A streamer's transcription, subtitles and automatic hook with these settings (its own choices, else the workspace's).
 const textOf = (settings, id) => clipTextFor(settings, settings.streamers.find(s => s.id === id));
 import { chatSpike, commandTrigger, perSecond } from "./highlights.mjs";
@@ -345,7 +345,7 @@ async function checkSessions() {
     }
     logChat(session);
     // The daily limit stops a clip-only capture; a recorded stream keeps recording and only stops being clipped.
-    const madeToday = store.countToday(id), limitReached = madeToday >= settings.dailyLimit;
+    const dailyLimit = limitFor(settings, id), madeToday = store.countToday(id), limitReached = madeToday >= dailyLimit;
     if (limitReached && session.mode === "clip") { blockedUntil.set(id, nextUtcMidnight()); await stopSession(id, "daily clip limit reached"); continue; }
     if (session.recorder.buffered() > 30) failures.delete(id);
     // "!clip" in Twitch chat (Settings → Chat command): clips the moment just before it, without waiting for the
@@ -384,7 +384,7 @@ async function checkSessions() {
     const lookbackS = Math.min(bufferSeconds - 20, Math.max(pickerEnabled() ? 180 : 90, settings.duration * 2));
     if (now - session.lastClipMs < coverEveryMs || session.recorder.buffered() < lookbackS * 0.8) continue;
     // The last part of the daily limit is kept for moments people react to.
-    if (!coverageRoom(madeToday, settings.dailyLimit, Number(env.COVERAGE_SHARE ?? COVERAGE_SHARE))) continue;
+    if (!coverageRoom(madeToday, dailyLimit, Number(env.COVERAGE_SHARE ?? COVERAGE_SHARE))) continue;
     const span = coverageWindow({ coveredUntil: session.coveredUntil, latest, lookbackMs: lookbackS * 1000, waiting: jobs.filter(j => j.reason === "audio" && !j.resumed).length + [...running].filter(r => r.job.reason === "audio" && !r.job.resumed).length });
     if (span) {
       session.lastClipMs = now;
@@ -626,12 +626,12 @@ async function recordingStep(row) {
   if (!row.clipped) {
     if (!config) throw new Error("waiting for the dashboard settings");
     // Moments marked with "!clip" first, then the best of the rest up to the daily limit.
-    const marks = (await readJson(join(row.dir, "marks.json"), [])).slice(0, config.dailyLimit);
+    const dailyLimit = limitFor(config, row.streamer), marks = (await readJson(join(row.dir, "marks.json"), [])).slice(0, dailyLimit);
     for (const m of marks) {
       try { await clipFromRecording(row, Math.max(0, m - config.duration), m + 5, { reason: "command", exact: false, tracker: null }); }
       catch (error) { problem("Could not cut a !clip moment from recording " + row.id.slice(0, 8) + ": " + error.message); }
     }
-    const made = marks.length + (marks.length < config.dailyLimit ? await clipBestMoments(row, config.dailyLimit - marks.length, null) : 0);
+    const made = marks.length + (marks.length < dailyLimit ? await clipBestMoments(row, dailyLimit - marks.length, null) : 0);
     store.setRecording(row.id, { clipped: 1 });
     console.log("Recording", row.id.slice(0, 8) + ":", made, "best moment(s) queued for clipping");
     return;
@@ -699,7 +699,7 @@ async function aiPass(row, signal) {
   // Record-only streams: the AI's best moments that nothing clipped yet (live captures of "both" streams aren't
   // tracked against the recording, so those only get the pick list).
   if (row.mode !== "record") return;
-  const room = Math.max(0, config.dailyLimit - store.countToday(row.streamer));
+  const room = Math.max(0, limitFor(config, row.streamer) - store.countToday(row.streamer));
   const clipped = await readJson(join(row.dir, "clipped.json"), []);
   for (const pick of autoClipPicks(state.rated, clipped, { max: Math.min(5, room) })) {
     try { await clipFromRecording(row, pick.start, pick.end, { reason: "best", exact: false, tracker: null }); }

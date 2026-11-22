@@ -8,8 +8,8 @@ import { DEFAULT_CREDIT, applyRules, parseBrief, readRules } from "../lib/postin
 import { StreamerViewerClips, type ViewerClipsOwn, type ViewerClipsWs } from "./viewer-clips";
 
 type Rules = { credit: boolean; creditText: string; label: string; hashtags: string[]; mentions: string[]; minSeconds: number | null; maxSeconds: number | null; brief: string };
-type Streamer = { id: string; name: string; url: string; status: string; accounts: string[]; capture_mode?: string; publish_mode?: string | null; clip_text?: string | null; posting_rules?: unknown; platform?: string; viewer_clips?: ViewerClipsOwn };
-export type StreamerChanges = { name: string; url: string; status: string; accounts: string[]; captureMode: string; publishMode: string; clipText: ClipText; postingRules: Rules; viewerClips?: ViewerClipsOwn };
+type Streamer = { id: string; name: string; url: string; status: string; accounts: string[]; capture_mode?: string; publish_mode?: string | null; clip_text?: string | null; posting_rules?: unknown; platform?: string; viewer_clips?: ViewerClipsOwn; daily_limit?: number | null };
+export type StreamerChanges = { name: string; url: string; status: string; accounts: string[]; captureMode: string; publishMode: string; clipText: ClipText; postingRules: Rules; viewerClips?: ViewerClipsOwn; dailyLimit: number | null };
 export type ClipText = { transcribe?: boolean; subtitles?: boolean; hook?: boolean };
 type Choice = "workspace" | "on" | "off";
 const TEXT_KEYS = ["transcribe", "subtitles", "hook"] as const;
@@ -78,8 +78,8 @@ export function PublishModeField({ value, onChange, ws }: { value: string; onCha
     <small>{note}</small></label>;
 }
 
-export function StreamerForm({ streamer, hasAccounts, busy, workspaceMode, workspaceText, workspaceViewer, picker, onSave }: {
-  streamer: Streamer; hasAccounts: boolean; busy: boolean; workspaceMode: string; workspaceText: { transcribe: boolean; subtitles: boolean }; workspaceViewer: { importClips: number } & ViewerClipsWs;
+export function StreamerForm({ streamer, hasAccounts, busy, workspaceMode, workspaceText, workspaceViewer, workspaceLimit, picker, onSave }: {
+  streamer: Streamer; hasAccounts: boolean; busy: boolean; workspaceMode: string; workspaceText: { transcribe: boolean; subtitles: boolean }; workspaceViewer: { importClips: number } & ViewerClipsWs; workspaceLimit: number;
   picker: (value: string[], onChange: (next: string[]) => void) => ReactNode; onSave: (changes: StreamerChanges) => void;
 }) {
   const [name, setName] = useState(streamer.name), [url, setUrl] = useState(streamer.url), [status, setStatus] = useState(streamer.status), [accounts, setAccounts] = useState(streamer.accounts), [mode, setMode] = useState(streamer.capture_mode ?? "clip"), [publish, setPublish] = useState(streamer.publish_mode ?? "workspace");
@@ -87,9 +87,11 @@ export function StreamerForm({ streamer, hasAccounts, busy, workspaceMode, works
   const clipText = Object.fromEntries(TEXT_KEYS.filter(k => text[k] !== "workspace").map(k => [k, text[k] === "on"])) as ClipText;
   const [rules, setRules] = useState<Rules>(() => readRules(streamer.posting_rules));
   const [viewer, setViewer] = useState<ViewerClipsOwn>(() => streamer.viewer_clips ?? {});
+  // Empty follows Settings → Daily limit.
+  const [limit, setLimit] = useState<number | null>(streamer.daily_limit ?? null);
   const twitch = /^https:\/\/(www\.)?twitch\.tv\//i.test(url.trim());
   const moved = url.trim() !== streamer.url;
-  return <form className="form-body" onSubmit={e => { e.preventDefault(); onSave({ name: name.trim(), url: url.trim(), status, accounts, captureMode: mode, publishMode: publish, clipText, postingRules: rules, ...(twitch && { viewerClips: viewer }) }); }}>
+  return <form className="form-body" onSubmit={e => { e.preventDefault(); onSave({ name: name.trim(), url: url.trim(), status, accounts, captureMode: mode, publishMode: publish, clipText, postingRules: rules, dailyLimit: limit, ...(twitch && { viewerClips: viewer }) }); }}>
     <label>Display name<input required maxLength={80} value={name} onChange={e => setName(e.target.value)} /></label>
     <label>Channel URL<input type="url" required value={url} onChange={e => setUrl(e.target.value)} placeholder="https://www.twitch.tv/channel" />
       <small>{moved ? "Changing it follows a different channel from the next check. Clips already captured stay with this streamer." : "Twitch, YouTube, Kick or TikTok LIVE."}</small></label>
@@ -100,6 +102,8 @@ export function StreamerForm({ streamer, hasAccounts, busy, workspaceMode, works
     </select></label>
     <label>When they go live<select value={mode} onChange={e => setMode(e.target.value)}>{Object.entries(captureModes).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
       <small>{mode === "clip" ? "Clips are cut while they stream." : mode === "record" ? "The whole stream is saved on your worker PC (about 1 to 3 GB an hour) and clipped when it ends. Pick your own clips under Streamers → Recordings." : "Clips are cut while they stream, and the whole stream is saved so you can pick more later."}{mode !== (streamer.capture_mode ?? "clip") ? " Applies from their next stream." : ""}</small></label>
+    <label>Daily clip limit<input type="number" min={1} max={100} placeholder={"Workspace setting (" + workspaceLimit + ")"} value={limit ?? ""} onChange={e => setLimit(e.target.value === "" ? null : Math.max(1, Math.min(100, Math.round(Number(e.target.value)))))} />
+      <small>Most clips a day from this streamer (resets at midnight UTC). Leave empty to use Settings → Daily limit. Viewers&apos; Twitch clips have their own limit.</small></label>
     <PublishModeField value={publish} onChange={setPublish} ws={workspaceMode} />
     <ClipTextFields value={text} onChange={setText} ws={workspaceText} />
     {twitch && <StreamerViewerClips value={viewer} onChange={setViewer} ws={workspaceViewer} />}

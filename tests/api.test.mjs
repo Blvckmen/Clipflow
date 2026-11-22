@@ -521,6 +521,24 @@ describe("editing a streamer", () => {
     assert.equal((await edit({ name: "" })).status, 400);
     await dash({ action: "remove", id: s.id });
   });
+  test("a streamer's own daily clip limit is saved, sent to the worker and can follow the workspace again", async () => {
+    const name = "limit" + Date.now().toString(36);
+    assert.equal((await dash({ action: "add", url: "https://twitch.tv/" + name })).status, 200);
+    const s = (await dash()).body.streamers.find(x => x.url === "https://twitch.tv/" + name);
+    const edit = body => dash({ action: "editStreamer", id: s.id, name: s.name, url: s.url, ...body });
+    const sent = async () => (await (await worker("/api/worker/config")).json()).streamers.find(x => x.id === s.id).dailyLimit;
+    assert.equal(s.daily_limit, null);
+    assert.equal(await sent(), null, "none: the worker uses the workspace's");
+    assert.equal((await edit({ dailyLimit: 12 })).status, 200);
+    assert.equal((await dash()).body.streamers.find(x => x.id === s.id).daily_limit, 12);
+    assert.equal(await sent(), 12);
+    assert.equal((await edit({})).status, 200);
+    assert.equal(await sent(), 12, "leaving it out keeps it");
+    for (const bad of [0, 101, 2.5]) assert.equal((await edit({ dailyLimit: bad })).status, 400, String(bad));
+    assert.equal((await edit({ dailyLimit: null })).status, 200);
+    assert.equal(await sent(), null);
+    await dash({ action: "remove", id: s.id });
+  });
   test("posting rules are saved with the streamer, keeping only known fields; leaving them out keeps them", async () => {
     const name = "rules" + Date.now().toString(36);
     assert.equal((await dash({ action: "add", url: "https://twitch.tv/" + name })).status, 200);

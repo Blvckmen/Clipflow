@@ -27,6 +27,8 @@ export const streamers = sqliteTable("streamers", {
  // Viewers' Twitch clips for this streamer (lib/viewer-clips.mjs): JSON {on,minViews,perDay,maxHours,ask}, each left
  // out to follow the workspace. Null follows the workspace for all.
  viewerClips:text("viewer_clips"),
+ // Most clips a day from this streamer (1-100); null follows the workspace's daily limit.
+ dailyLimit:integer("daily_limit"),
 },t=>[uniqueIndex("streamers_owner_url").on(t.owner,t.url)]);
 export const preferences=sqliteTable("preferences",{
  owner:text("owner").primaryKey(),mode:text("mode").notNull().default("automatic"),duration:integer("duration").notNull().default(45),dailyLimit:integer("daily_limit").notNull().default(5),captions:integer("captions",{mode:"boolean"}).notNull().default(true),destinations:text("destinations").notNull().default('[]'),control:text("control").notNull().default("paused"),framing:text("framing").notNull().default("blur"),

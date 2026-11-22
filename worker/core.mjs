@@ -66,6 +66,8 @@ export function validateControl(c) {
   // drops anything out of range); older dashboards send none.
   if (c.viewerClips !== undefined && (typeof c.viewerClips !== "object" || Array.isArray(c.viewerClips))) throw new Error("Invalid viewer clip settings");
   for (const s of c.streamers) if (s.viewerClips !== undefined && (typeof s.viewerClips !== "object" || Array.isArray(s.viewerClips))) throw new Error("Invalid streamer viewer clip settings");
+  // A streamer's own daily clip limit; none (null or missing) follows the workspace's.
+  for (const s of c.streamers) if (s.dailyLimit != null && (!Number.isInteger(s.dailyLimit) || s.dailyLimit < 1 || s.dailyLimit > 100)) throw new Error("Invalid streamer daily limit");
   // Viewers' clips picked in the dashboard ("ask me first") to make now.
   c.viewerClipPicks ??= [];
   if (!Array.isArray(c.viewerClipPicks) || c.viewerClipPicks.length > 20) throw new Error("Invalid viewer clip picks");
@@ -128,7 +130,7 @@ export function plan(c, { running, blockedUntil, countToday, now, maxCaptures, i
   let slots = maxCaptures - kept.length;
   for (const s of c.streamers) {
     // The daily limit only limits clipping: a streamer that is also recorded keeps being recorded.
-    if (s.status !== "armed" || running.has(s.id) || !isLive(s.id) || (blockedUntil.get(s.id) ?? 0) > now || ((s.captureMode ?? "clip") === "clip" && countToday(s.id) >= c.dailyLimit)) continue;
+    if (s.status !== "armed" || running.has(s.id) || !isLive(s.id) || (blockedUntil.get(s.id) ?? 0) > now || ((s.captureMode ?? "clip") === "clip" && countToday(s.id) >= limitFor(c, s.id))) continue;
     if (slots > 0) { start.push(s); slots--; continue; }
     const lower = kept.filter(id => !bump.includes(id) && rank.get(id) > rank.get(s.id)).sort((x, y) => rank.get(y) - rank.get(x));
     // Streamers further down the list rank lower still, so none of them can take a slot either.
@@ -142,7 +144,11 @@ export function plan(c, { running, blockedUntil, countToday, now, maxCaptures, i
 export function shownStatus(c, id, status, countToday) {
   if (status !== "live") return status;
   const s = c?.streamers?.find(x => x.id === id);
-  return s && (s.captureMode ?? "clip") === "clip" && countToday(id) >= c.dailyLimit ? "limit" : status;
+  return s && (s.captureMode ?? "clip") === "clip" && countToday(id) >= limitFor(c, id) ? "limit" : status;
+}
+// Clips a day for one streamer: its own limit if it has one, otherwise the workspace's.
+export function limitFor(c, id) {
+  return c?.streamers?.find(x => x.id === id)?.dailyLimit ?? c.dailyLimit;
 }
 export function retryDelay(attempt) { return Math.min(300_000, 30_000 * 2 ** Math.min(attempt, 4)); }
 export function clipHash(bytes) { return createHash("sha256").update(bytes).digest("hex"); }

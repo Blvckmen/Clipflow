@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { Store, allowed, channelUrl, dueForProbe, plan, probeResult, retryDelay, shownStatus, validateControl } from "../core.mjs";
+import { Store, allowed, channelUrl, dueForProbe, limitFor, plan, probeResult, retryDelay, shownStatus, validateControl } from "../core.mjs";
 import { sourceSignals, sourceWords } from "../media.mjs";
 
 const a = "11111111-1111-4111-8111-111111111111", b = "22222222-2222-4222-8222-222222222222", c = "33333333-3333-4333-8333-333333333333";
@@ -24,6 +24,20 @@ test("a live clipping streamer with today's clips used up is shown as at its dai
   const recorded = config({ streamers: [{ id: a, url: "https://twitch.tv/alpha", status: "armed", captureMode: "both" }] });
   assert.equal(shownStatus(recorded, a, "live", full), "live", "whole-stream recording isn't limited");
   assert.equal(shownStatus(null, a, "live", full), "live", "no settings yet");
+});
+
+test("a streamer's own daily limit replaces the workspace's", () => {
+  const own = config({ streamers: [{ id: a, url: "https://twitch.tv/alpha", status: "armed", dailyLimit: 5 }, { id: b, url: "https://kick.com/beta", status: "armed", dailyLimit: null }] });
+  assert.equal(limitFor(own, a), 5);
+  assert.equal(limitFor(own, b), 2, "null follows the workspace");
+  assert.equal(limitFor(own, c), 2, "unknown streamer");
+  // Three clips today: over the workspace's 2, under alpha's own 5.
+  const start = plan(own, ctx({ maxCaptures: 2, countToday: () => 3 })).start.map(s => s.id);
+  assert.deepEqual(start, [a]);
+  assert.equal(shownStatus(own, a, "live", () => 3), "live");
+  assert.equal(shownStatus(own, b, "live", () => 3), "limit");
+  assert.equal(validateControl(own).streamers[0].dailyLimit, 5);
+  for (const bad of [0, 101, 2.5, "5"]) assert.throws(() => validateControl(config({ streamers: [{ id: a, url: "https://twitch.tv/alpha", status: "armed", dailyLimit: bad }] })), String(bad));
 });
 
 test("probeResult distinguishes live, offline and failed checks", () => {

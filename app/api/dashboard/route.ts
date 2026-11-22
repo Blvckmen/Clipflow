@@ -78,7 +78,7 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("assign"),streamerId:z.string().uuid(),accounts:accountIds}),
  z.object({action:z.literal("assignAccount"),accountId:z.string().uuid(),streamers:z.array(z.string().uuid()).max(500).transform(x=>[...new Set(x)])}),
  // Edits a streamer: display name, channel URL, whether it is clipped, and (optionally) which accounts post its clips.
- z.object({action:z.literal("editStreamer"),id:z.string().uuid(),name:z.string().trim().min(1).max(80),url:z.string().max(500),status:z.enum(["armed","paused","stopped"]).optional(),accounts:accountIds.optional(),captureMode:captureMode.optional(),publishMode:publishMode.optional(),clipText:clipTextInput.optional(),postingRules:z.record(z.string(),z.unknown()).nullable().optional(),viewerClips:streamerViewerClipsSchema.optional()}),
+ z.object({action:z.literal("editStreamer"),id:z.string().uuid(),name:z.string().trim().min(1).max(80),url:z.string().max(500),status:z.enum(["armed","paused","stopped"]).optional(),accounts:accountIds.optional(),captureMode:captureMode.optional(),publishMode:publishMode.optional(),clipText:clipTextInput.optional(),postingRules:z.record(z.string(),z.unknown()).nullable().optional(),viewerClips:streamerViewerClipsSchema.optional(),dailyLimit:z.number().int().min(1).max(100).nullable().optional()}),
  // Viewers' Twitch clips waiting for a decision ("ask me first"): make them into clips, or dismiss them.
  z.object({action:z.literal("viewerClips"),op:z.enum(["make","dismiss"]),ids:z.array(z.string().regex(/^[A-Za-z0-9_-]{1,100}$/)).min(1).max(100).transform(x=>[...new Set(x)])}),
  // Clips from a whole-stream recording: one moment picked in the player (seconds into it), or the best few.
@@ -212,6 +212,8 @@ export async function POST(request:Request){
    // Posting rules (credit line, campaign) apply to posts made from now on; only known fields are kept.
    // Viewers' Twitch clips for this streamer: only the choices made are stored; none stores null (follow the workspace).
    if(payload.viewerClips!==undefined){const own=readStreamerViewerClips(payload.viewerClips);statements.push(db.prepare("UPDATE streamers SET viewer_clips=? WHERE id=? AND owner=?").bind(Object.keys(own).length?JSON.stringify(own):null,payload.id,owner));}
+   // The streamer's own daily clip limit; null follows the workspace's. It counts today's clips from now on.
+   if(payload.dailyLimit!==undefined)statements.push(db.prepare("UPDATE streamers SET daily_limit=? WHERE id=? AND owner=?").bind(payload.dailyLimit,payload.id,owner));
    if(payload.postingRules!==undefined){const rules=payload.postingRules&&readRules(payload.postingRules);statements.push(db.prepare("UPDATE streamers SET posting_rules=? WHERE id=? AND owner=?").bind(rules&&JSON.stringify(rules)!==JSON.stringify(emptyRules())?JSON.stringify(rules):null,payload.id,owner));}
    if(payload.accounts){
     const linked=await ownAccounts(payload.accounts);

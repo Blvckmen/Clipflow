@@ -13,7 +13,7 @@ export async function GET(request:Request){
   const db=database(),owner=await workerOwner(request,db);
   if(!owner)return Response.json({error:"Invalid worker token."},{status:401});
   const [s,p,r,,b,rec,req,tr,hl,vc]=await Promise.all([
-   db.prepare("SELECT id,url,status,style,capture_mode,clip_text,learned,viewer_clips FROM streamers WHERE owner=? ORDER BY priority IS NULL,priority,created_at").bind(owner).all<{id:string;url:string;status:string;style:string|null;capture_mode:string|null;clip_text:string|null;learned:string|null;viewer_clips:string|null}>(),
+   db.prepare("SELECT id,url,status,style,capture_mode,clip_text,learned,viewer_clips,daily_limit FROM streamers WHERE owner=? ORDER BY priority IS NULL,priority,created_at").bind(owner).all<{id:string;url:string;status:string;style:string|null;capture_mode:string|null;clip_text:string|null;learned:string|null;viewer_clips:string|null;daily_limit:number|null}>(),
    db.prepare("SELECT duration,daily_limit,captions,framing,control,style,transcribe,recording_days,import_clips,viewer_clips,clip_command,learn FROM preferences WHERE owner=?").bind(owner).first(),
    // Edits saved in the dashboard that still need rendering, oldest request first.
    // signals: the source's loudness, for jump cuts and punch-in zooms.
@@ -35,7 +35,7 @@ export async function GET(request:Request){
   return Response.json({
    control:p?.control??defaults.control,duration:p?.duration??defaults.duration,dailyLimit:p?.daily_limit??defaults.dailyLimit,captions:p?!!p.captions:defaults.captions,transcribe:p?!!p.transcribe:defaults.transcribe,framing:p?.framing??defaults.framing,
    style:parse(p?.style),
-   streamers:s.results.map(x=>({id:x.id,url:x.url,status:x.status,style:parse(x.style),captureMode:x.capture_mode??"clip",text:clipText(x.clip_text),viewerClips:readStreamerViewerClips(x.viewer_clips),...chatWeightOf(x.learned,p?.learn)})),
+   streamers:s.results.map(x=>({id:x.id,url:x.url,status:x.status,style:parse(x.style),captureMode:x.capture_mode??"clip",text:clipText(x.clip_text),viewerClips:readStreamerViewerClips(x.viewer_clips),dailyLimit:x.daily_limit??null,...chatWeightOf(x.learned,p?.learn)})),
    recordingDays:(p?.recording_days as number|undefined)??defaults.recordingDays,importClips:(p?.import_clips as number|undefined)??defaults.importClips,viewerClips:readViewerClips(p?.viewer_clips),
    viewerClipPicks:vc.results.map(x=>({id:x.clip_id,streamerId:x.streamer_id,title:x.title,duration:x.duration,views:x.views,createdAt:x.clip_created_at,videoId:x.video_id,vodOffset:x.vod_offset})),clipCommand:(p?.clip_command as string|undefined)??defaults.clipCommand,recordings:rec.results.map(x=>x.id),
    // Oldest first, so the worker downloads them in the order they were pasted.

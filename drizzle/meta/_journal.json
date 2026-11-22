@@ -253,6 +253,13 @@
       "when": 1795364001917,
       "tag": "0035_read_counts",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "6",
+      "when": 1795386153758,
+      "tag": "0036_streamer_daily_limit",
+      "breakpoints": true
     }
   ]
 }
