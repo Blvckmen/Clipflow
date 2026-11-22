@@ -579,3 +579,61 @@ button.account-streamers{max-width:none;justify-self:start}
 .viewer-clip-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:auto}
 .viewer-clip-actions .tag{gap:5px}
 @media (max-width:640px){.viewer-clips{grid-template-columns:1fr;padding:14px}.viewer-clip-thumb{width:104px}.viewer-clips-panel .panel-heading{flex-direction:column;align-items:stretch}}
+
+/* ---- Sections and their pages (five sections, pages as tabs) ---- */
+.page-heading h1{font-size:28px}
+.page-tabs{display:flex;gap:2px;border-bottom:1px solid var(--border);margin:-8px 0 24px;overflow-x:auto;scrollbar-width:none}
+.page-tabs::-webkit-scrollbar{display:none}
+.page-tabs button{position:relative;display:inline-flex;align-items:center;gap:7px;background:none;border:0;color:#97a2b0;font-size:14px;padding:10px 14px 12px;white-space:nowrap}
+.page-tabs button:hover{color:var(--text)}
+.page-tabs button.active{color:var(--text);font-weight:550}
+.page-tabs button.active::after{content:"";position:absolute;left:10px;right:10px;bottom:-1px;height:2px;border-radius:2px;background:var(--lime)}
+.tab-count{font-size:11px;line-height:1;padding:3px 6px;border-radius:999px;background:#f2b36b22;color:#f2b36b}
+.tab-count.bad,.nav-count.bad{background:#ff6b6b22;color:#ff9a9a}
+.tab-live{width:7px;height:7px;border-radius:50%;background:#ff5a5a;box-shadow:0 0 0 3px #ff5a5a33}
+.automation-state{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}
+.automation-state .small-dot{background:#7d8794}
+.automation-state.running .small-dot{background:var(--lime);box-shadow:0 0 0 3px #bcfa7622}
+.automation-state.paused .small-dot{background:#f2b36b}
+.automation-state.stopped .small-dot{background:#ff7b7e}
+.automation-controls{display:flex;gap:6px;margin-top:12px;padding-top:11px;border-top:1px solid #ffffff10}
+.engine-card .automation-controls button{flex:1;justify-content:center;margin:0;padding:6px 8px;border:1px solid #ffffff1a;border-radius:6px;color:#d9e0e8;background:#ffffff08}
+.engine-card .automation-controls button:hover:not(:disabled){background:#ffffff12}
+.more-controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:14px 4px 4px;margin-top:6px;border-top:1px solid var(--border)}
+.more-controls span{flex:1 1 100%;font-size:13px;color:var(--muted)}
+.more-controls button{display:inline-flex;align-items:center;gap:6px}
+/* Getting set up: three steps, shown until all are done. */
+.setup-steps{border:1px solid #33472a;background:linear-gradient(140deg,#18211a,#13171d 60%);border-radius:10px;padding:16px 18px;margin-bottom:22px}
+.setup-steps>strong{font-size:15px}
+.setup-steps ol{list-style:none;margin:12px 0 0;padding:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.setup-steps li{display:flex;align-items:flex-start;gap:11px;padding:12px;border:1px solid var(--border);border-radius:8px;background:#0f1317}
+.setup-steps li>div{flex:1;min-width:0}
+.setup-steps li b{display:block;font-size:14px;font-weight:550}
+.setup-steps li small{display:block;font-size:12px}
+.setup-steps li.done{opacity:.6}
+.setup-steps li.done b{text-decoration:line-through;text-decoration-color:#ffffff44}
+.step-mark{display:grid;place-items:center;flex-shrink:0;width:24px;height:24px;border-radius:50%;border:1px solid #3a4655;font-size:12px;color:#c7d0da}
+.setup-steps li.done .step-mark{background:var(--lime);border-color:var(--lime);color:#11180c}
+.setup-steps .text-button{color:var(--lime);font-size:13px;align-self:center;white-space:nowrap}
+/* Supported sources under the streamer list. */
+.source-strip-panel{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:14px 0 0;font-size:13px}
+.source-chip{display:inline-flex;align-items:center;gap:7px;padding:5px 10px;border:1px solid var(--border);border-radius:999px;background:var(--panel);color:#d5dce4;font-size:13px}
+.source-chip:hover{border-color:#3a4655}
+.source-chip small{font-size:11px;color:var(--muted)}
+.worker-panel{margin-top:20px}
+.worker-panel .worker-problem{margin:0 23px 14px;font-size:13px}
+.worker-actions{display:flex;gap:10px;flex-wrap:wrap}
+.worker-actions button{display:inline-flex;align-items:center;gap:6px}
+/* Clip library: state tabs on the left, filters on the right; smaller cards, more on screen. */
+.gallery-heading{align-items:center}
+.gallery-note{padding:0 23px 12px;font-size:13px}
+@media (min-width:901px){.gallery{grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:14px}}
+@media (min-width:1500px){.gallery{grid-template-columns:repeat(auto-fill,minmax(185px,1fr))}}
+@media (max-width:900px){
+ .setup-steps ol{grid-template-columns:1fr}
+ .page-tabs{margin:-4px -16px 18px;padding:0 10px}
+ .page-heading h1{font-size:24px}
+ .automation-state{display:none}
+}
+.lower-grid.single{grid-template-columns:1fr}
+@media (max-width:900px),(hover:none){.bulk-hint .muted{display:none}}

@@ -71,7 +71,7 @@ function PostingRulesFields({ value, onChange, streamer }: { value: Rules; onCha
 // "Review clips first / Post to social media directly / workspace setting" for one streamer. `ws` is the
 // workspace's current publishing mode (Settings), which "workspace" follows.
 export function PublishModeField({ value, onChange, ws }: { value: string; onChange: (v: string) => void; ws: string }) {
-  const note = value === "review" ? "New clips wait in Clip library → Needs review until you accept them."
+  const note = value === "review" ? "New clips wait in Clips → Library → Needs review until you accept them."
     : value === "automatic" ? "New clips are accepted straight away and post to this streamer's accounts."
     : "Follows Settings → Publishing mode (now: " + (ws === "review" ? "review first" : "post directly") + ").";
   return <label>New clips<select value={value} onChange={e => onChange(e.target.value)}>{Object.entries(publishModes).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
@@ -99,7 +99,7 @@ export function StreamerForm({ streamer, hasAccounts, busy, workspaceMode, works
       <option value="stopped">Stopped</option>
     </select></label>
     <label>When they go live<select value={mode} onChange={e => setMode(e.target.value)}>{Object.entries(captureModes).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
-      <small>{mode === "clip" ? "Clips are cut while they stream." : mode === "record" ? "The whole stream is saved on your worker PC (about 1 to 3 GB an hour) and clipped when it ends. Pick your own clips under Recordings." : "Clips are cut while they stream, and the whole stream is saved so you can pick more later."}{mode !== (streamer.capture_mode ?? "clip") ? " Applies from their next stream." : ""}</small></label>
+      <small>{mode === "clip" ? "Clips are cut while they stream." : mode === "record" ? "The whole stream is saved on your worker PC (about 1 to 3 GB an hour) and clipped when it ends. Pick your own clips under Streamers → Recordings." : "Clips are cut while they stream, and the whole stream is saved so you can pick more later."}{mode !== (streamer.capture_mode ?? "clip") ? " Applies from their next stream." : ""}</small></label>
     <PublishModeField value={publish} onChange={setPublish} ws={workspaceMode} />
     <ClipTextFields value={text} onChange={setText} ws={workspaceText} />
     {twitch && <StreamerViewerClips value={viewer} onChange={setViewer} ws={workspaceViewer} />}

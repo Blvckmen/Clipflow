@@ -17,7 +17,7 @@ export function PostClipForm({ accounts, posts, linked, rendering, busy, brand, 
   const [chosen, setChosen] = useState<string[]>(() => accounts.filter(a => linked.includes(a.id) && a.status === "connected" && !inFlight(a.id)).map(a => a.id));
   const when = (iso: string) => new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   const anyPosted = chosen.some(id => posts.some(p => p.account_id === id && p.state === "published"));
-  if (!accounts.length) return <div className="subtle-note">Connect an account under Connections to post clips.</div>;
+  if (!accounts.length) return <div className="subtle-note">Connect an account under Publishing → Accounts to post clips.</div>;
   const tiktokChosen = chosen.filter(id => accounts.find(a => a.id === id)?.platform === "tiktok").length;
   return <form className="form-body" onSubmit={e => { e.preventDefault(); onPost(chosen, false); }}>
     <div className="account-picker post-picker">{accounts.map(a => {
