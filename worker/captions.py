@@ -33,6 +33,11 @@ def load(name):
         # on a laptop CPU. WHISPER_MODEL=tiny brings back the fast, rough transcripts; WHISPER_THREADS sets the cores.
         MODELS[name]=WhisperModel(name,device="cpu",compute_type="int8",download_root=os.getenv("WHISPER_DIR","/data/models"),cpu_threads=int(os.getenv("WHISPER_THREADS","4")))
     return MODELS[name]
+def clean_hint(hint):
+    """The hint as text Whisper's tokenizer accepts: at most 200 characters, with any half of an emoji (a lone
+    surrogate, e.g. from a title cut mid-emoji) replaced. The tokenizer refuses those with "TextInputSequence must
+    be str"."""
+    return str(hint or "").encode("utf-8","replace").decode("utf-8").strip()[:200]
 def transcribe(source, target, hint="", model_name=None):
     """Writes {"segments": [{"start", "end", "words": [[start, end, text], ...]}]} for the whole file. `hint` (the
     streamer's name, the stream title) nudges Whisper towards spelling those words right."""
@@ -45,7 +50,7 @@ def transcribe(source, target, hint="", model_name=None):
     # Measured on a 4-core laptop: small with beam 1 runs faster than real time; beam 5 is slower than real time for
     # little gain. Keeping earlier text as context gives fuller punctuation (clip cuts snap to sentence ends);
     # WHISPER_CONTEXT=off trades that for fewer repeated lines in very noisy audio.
-    segments,_=model.transcribe(audio,beam_size=int(os.getenv("WHISPER_BEAM","1")),vad_filter=True,word_timestamps=True,condition_on_previous_text=os.getenv("WHISPER_CONTEXT","on")!="off",hotwords=hint.strip()[:200] or None)
+    segments,_=model.transcribe(audio,beam_size=int(os.getenv("WHISPER_BEAM","1")),vad_filter=True,word_timestamps=True,condition_on_previous_text=os.getenv("WHISPER_CONTEXT","on")!="off",hotwords=clean_hint(hint) or None)
     out=[{"start":s.start,"end":s.end,"words":[[w.start,w.end,w.word] for w in (s.words or [])]} for s in segments]
     with open(target,"w",encoding="utf-8") as f: json.dump({"segments":out},f)
 def window(segments, start, end):

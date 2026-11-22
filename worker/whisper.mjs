@@ -49,10 +49,15 @@ function startServer(python) {
   return s;
 }
 
+// The hint cut to 200 characters without splitting an emoji (slice() counts UTF-16 halves, and stream titles are full
+// of emoji), and with any half already on its own replaced: Whisper's tokenizer refuses a lone half.
+export const hintText = hint => [...String(hint ?? "")].slice(0, 200).join("").toWellFormed();
+
 // Writes Whisper's words for `source` to `target` (captions.py's {"segments": [...]} JSON).
 // model: a Whisper model name ("small" unless WHISPER_MODEL says otherwise); hint: names and titles to spell right.
 export async function transcribe(source, target, { hint = "", model = process.env.WHISPER_MODEL || "small", python = process.env.PYTHON || "python", signal, timeout = 600_000 } = {}) {
-  const oneShot = () => command(python, [script, "words", source, target, String(hint).slice(0, 200)], { signal, timeout, env: { ...process.env, WHISPER_MODEL: model } }).done;
+  hint = hintText(hint);
+  const oneShot = () => command(python, [script, "words", source, target, hint], { signal, timeout, env: { ...process.env, WHISPER_MODEL: model } }).done;
   if ((process.env.WHISPER_SERVER ?? "on").toLowerCase() === "off") return oneShot();
   if (signal?.aborted) throw new Error("Cancelled");
   server ??= startServer(python);
@@ -64,7 +69,7 @@ export async function transcribe(source, target, { hint = "", model = process.en
   const abort = () => { if (s.pending.has(id)) stopServer("Cancelled"); };
   signal?.addEventListener("abort", abort, { once: true });
   try {
-    s.child.stdin.write(JSON.stringify({ id, source, target, hint: String(hint).slice(0, 200), model }) + "\n");
+    s.child.stdin.write(JSON.stringify({ id, source, target, hint, model }) + "\n");
     await done;
   } catch (error) {
     if (signal?.aborted || /timed out/.test(error.message)) throw error;
