@@ -558,3 +558,24 @@ button.account-streamers{max-width:none;justify-self:start}
 .emoji-grid button:hover,.emoji-grid button:focus-visible{background:rgba(255,255,255,.08)}
 @media(pointer:coarse){.emoji-grid{grid-template-columns:repeat(auto-fill,minmax(42px,1fr))}.emoji-grid button{height:42px}}
 .highlights-panel{margin-top:18px}.highlight-form{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px}.highlight-form label{flex:1 1 160px}.highlight-list{display:flex;flex-direction:column;gap:8px;margin-top:6px}.highlight-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;border:1px solid #2c3642;border-radius:8px;padding:10px 12px}.highlight-info{display:flex;flex-direction:column;gap:2px;min-width:0}.highlight-row .row-actions a.secondary{display:inline-flex;align-items:center;gap:6px}.highlight-video{flex:1 1 100%;width:100%;max-height:420px;border-radius:8px;background:#000}
+/* Viewers' Twitch clips: settings (workspace and streamer) and the list to pick from. */
+.viewer-clip-settings{border:1px solid var(--border);border-radius:8px;padding:14px 16px 16px;margin:0;display:flex;flex-direction:column;gap:16px;min-width:0}
+.viewer-clip-settings legend{font-size:13px;font-weight:600;color:#d3dce7;padding:0 6px}
+.viewer-clip-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px}
+.viewer-clips-panel{margin-bottom:22px}
+.viewer-clips-panel .row-actions{gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.viewer-clips{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;padding:18px 22px 22px}
+.viewer-clip{display:flex;gap:12px;border:1px solid var(--border);border-radius:8px;background:#0e1217;padding:10px;min-width:0}
+.viewer-clip.picked{border-color:var(--lime)}.viewer-clip.making{opacity:.75}
+.viewer-clip-pick{position:relative;flex-shrink:0;cursor:pointer}
+.viewer-clip-pick input{position:absolute;top:6px;left:6px;z-index:1}
+.viewer-clip-thumb{display:block;position:relative;width:128px;aspect-ratio:16/9;border-radius:6px;overflow:hidden;background:#1b2128}
+.viewer-clip-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.viewer-clip-length{position:absolute;right:4px;bottom:4px;font-size:11px;background:#000b;color:#fff;padding:0 5px;border-radius:3px}
+.viewer-clip-body{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1}
+.viewer-clip-body strong{font-size:14px;font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.viewer-clip-body small{display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:12px}
+.viewer-clip-body .error-text{color:#f1bdc0}
+.viewer-clip-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:auto}
+.viewer-clip-actions .tag{gap:5px}
+@media (max-width:640px){.viewer-clips{grid-template-columns:1fr;padding:14px}.viewer-clip-thumb{width:104px}.viewer-clips-panel .panel-heading{flex-direction:column;align-items:stretch}}

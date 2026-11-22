@@ -5,10 +5,11 @@ import { useState, type ReactNode } from "react";
 import { Check, Loader2 } from "lucide-react";
 import { captureModes, publishModes } from "../lib/clipflow";
 import { DEFAULT_CREDIT, applyRules, parseBrief, readRules } from "../lib/posting-rules.mjs";
+import { StreamerViewerClips, type ViewerClipsOwn, type ViewerClipsWs } from "./viewer-clips";
 
 type Rules = { credit: boolean; creditText: string; label: string; hashtags: string[]; mentions: string[]; minSeconds: number | null; maxSeconds: number | null; brief: string };
-type Streamer = { id: string; name: string; url: string; status: string; accounts: string[]; capture_mode?: string; publish_mode?: string | null; clip_text?: string | null; posting_rules?: unknown; platform?: string };
-export type StreamerChanges = { name: string; url: string; status: string; accounts: string[]; captureMode: string; publishMode: string; clipText: ClipText; postingRules: Rules };
+type Streamer = { id: string; name: string; url: string; status: string; accounts: string[]; capture_mode?: string; publish_mode?: string | null; clip_text?: string | null; posting_rules?: unknown; platform?: string; viewer_clips?: ViewerClipsOwn };
+export type StreamerChanges = { name: string; url: string; status: string; accounts: string[]; captureMode: string; publishMode: string; clipText: ClipText; postingRules: Rules; viewerClips?: ViewerClipsOwn };
 export type ClipText = { transcribe?: boolean; subtitles?: boolean; hook?: boolean };
 type Choice = "workspace" | "on" | "off";
 const TEXT_KEYS = ["transcribe", "subtitles", "hook"] as const;
@@ -77,16 +78,18 @@ export function PublishModeField({ value, onChange, ws }: { value: string; onCha
     <small>{note}</small></label>;
 }
 
-export function StreamerForm({ streamer, hasAccounts, busy, workspaceMode, workspaceText, picker, onSave }: {
-  streamer: Streamer; hasAccounts: boolean; busy: boolean; workspaceMode: string; workspaceText: { transcribe: boolean; subtitles: boolean };
+export function StreamerForm({ streamer, hasAccounts, busy, workspaceMode, workspaceText, workspaceViewer, picker, onSave }: {
+  streamer: Streamer; hasAccounts: boolean; busy: boolean; workspaceMode: string; workspaceText: { transcribe: boolean; subtitles: boolean }; workspaceViewer: { importClips: number } & ViewerClipsWs;
   picker: (value: string[], onChange: (next: string[]) => void) => ReactNode; onSave: (changes: StreamerChanges) => void;
 }) {
   const [name, setName] = useState(streamer.name), [url, setUrl] = useState(streamer.url), [status, setStatus] = useState(streamer.status), [accounts, setAccounts] = useState(streamer.accounts), [mode, setMode] = useState(streamer.capture_mode ?? "clip"), [publish, setPublish] = useState(streamer.publish_mode ?? "workspace");
   const [text, setText] = useState(() => { const t = readText(streamer.clip_text); return { transcribe: choiceOf(t.transcribe), subtitles: choiceOf(t.subtitles), hook: choiceOf(t.hook) }; });
   const clipText = Object.fromEntries(TEXT_KEYS.filter(k => text[k] !== "workspace").map(k => [k, text[k] === "on"])) as ClipText;
   const [rules, setRules] = useState<Rules>(() => readRules(streamer.posting_rules));
+  const [viewer, setViewer] = useState<ViewerClipsOwn>(() => streamer.viewer_clips ?? {});
+  const twitch = /^https:\/\/(www\.)?twitch\.tv\//i.test(url.trim());
   const moved = url.trim() !== streamer.url;
-  return <form className="form-body" onSubmit={e => { e.preventDefault(); onSave({ name: name.trim(), url: url.trim(), status, accounts, captureMode: mode, publishMode: publish, clipText, postingRules: rules }); }}>
+  return <form className="form-body" onSubmit={e => { e.preventDefault(); onSave({ name: name.trim(), url: url.trim(), status, accounts, captureMode: mode, publishMode: publish, clipText, postingRules: rules, ...(twitch && { viewerClips: viewer }) }); }}>
     <label>Display name<input required maxLength={80} value={name} onChange={e => setName(e.target.value)} /></label>
     <label>Channel URL<input type="url" required value={url} onChange={e => setUrl(e.target.value)} placeholder="https://www.twitch.tv/channel" />
       <small>{moved ? "Changing it follows a different channel from the next check. Clips already captured stay with this streamer." : "Twitch, YouTube, Kick or TikTok LIVE."}</small></label>
@@ -99,6 +102,7 @@ export function StreamerForm({ streamer, hasAccounts, busy, workspaceMode, works
       <small>{mode === "clip" ? "Clips are cut while they stream." : mode === "record" ? "The whole stream is saved on your worker PC (about 1 to 3 GB an hour) and clipped when it ends. Pick your own clips under Recordings." : "Clips are cut while they stream, and the whole stream is saved so you can pick more later."}{mode !== (streamer.capture_mode ?? "clip") ? " Applies from their next stream." : ""}</small></label>
     <PublishModeField value={publish} onChange={setPublish} ws={workspaceMode} />
     <ClipTextFields value={text} onChange={setText} ws={workspaceText} />
+    {twitch && <StreamerViewerClips value={viewer} onChange={setViewer} ws={workspaceViewer} />}
     <PostingRulesFields value={rules} onChange={setRules} streamer={{ name: name.trim() || streamer.name, url: url.trim() || streamer.url, platform: streamer.platform }} />
     {hasAccounts && <div><span className="field-label">Post clips to</span>{picker(accounts, setAccounts)}<small className="field-note">Leave all unticked to keep this streamer&apos;s clips in your library only.</small></div>}
     <button className="primary" type="submit" disabled={busy || !name.trim() || !url.trim()}>{busy ? <Loader2 size={15} className="spin" /> : <Check size={15} />}Save changes</button>

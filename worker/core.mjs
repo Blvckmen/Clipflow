@@ -61,7 +61,15 @@ export function validateControl(c) {
   c.clipCommand ??= "mods";
   if (!["off","mods","everyone"].includes(c.clipCommand)) throw new Error("Invalid chat command setting");
   c.importClips ??= 0;
-  if (!Number.isInteger(c.importClips) || c.importClips < 0 || c.importClips > 1000) throw new Error("Invalid clip import setting");
+  if (!Number.isInteger(c.importClips) || c.importClips < 0 || c.importClips > 100000) throw new Error("Invalid clip import setting");
+  // The rest of the viewers' clips settings, the workspace's and each streamer's (see twitch.mjs viewerSettings, which
+  // drops anything out of range); older dashboards send none.
+  if (c.viewerClips !== undefined && (typeof c.viewerClips !== "object" || Array.isArray(c.viewerClips))) throw new Error("Invalid viewer clip settings");
+  for (const s of c.streamers) if (s.viewerClips !== undefined && (typeof s.viewerClips !== "object" || Array.isArray(s.viewerClips))) throw new Error("Invalid streamer viewer clip settings");
+  // Viewers' clips picked in the dashboard ("ask me first") to make now.
+  c.viewerClipPicks ??= [];
+  if (!Array.isArray(c.viewerClipPicks) || c.viewerClipPicks.length > 20) throw new Error("Invalid viewer clip picks");
+  for (const v of c.viewerClipPicks) if (!/^[A-Za-z0-9_-]{1,100}$/.test(v?.id) || !/^[0-9a-f-]{36}$/i.test(v.streamerId) || !Number.isFinite(v.duration)) throw new Error("Invalid viewer clip pick");
   c.recordingDays ??= 7;
   if (!Number.isInteger(c.recordingDays) || c.recordingDays < 1 || c.recordingDays > 30) throw new Error("Invalid recording retention");
   // Recordings the dashboard still has (null: a dashboard that predates recording, so nothing is pruned for it),
@@ -173,7 +181,9 @@ export class Store {
   // Clips cut but not finished when the worker last stopped (marked interrupted on start), newest first.
   interrupted(sinceIso, limit = 30) {return this.db.prepare("SELECT * FROM clips WHERE state='interrupted' AND created_at>=? ORDER BY created_at DESC LIMIT ?").all(sinceIso, limit);}
   resume(id) {this.db.prepare("UPDATE clips SET state='capturing' WHERE id=? AND state='interrupted'").run(id);}
-  countToday(streamer) {return this.db.prepare("SELECT count(*) AS n FROM clips WHERE streamer=? AND created_at>=? AND state IN ('capturing','ready','uploaded')").get(streamer,new Date().toISOString().slice(0,10)).n;}
+  // Today's clips toward the daily limit. Viewers' Twitch clips don't count: they have their own cap (countViewerToday).
+  countToday(streamer) {return this.db.prepare("SELECT count(*) AS n FROM clips WHERE streamer=? AND created_at>=? AND state IN ('capturing','ready','uploaded') AND coalesce(reason,'')<>'viewer'").get(streamer,new Date().toISOString().slice(0,10)).n;}
+  countViewerToday(streamer) {return this.db.prepare("SELECT count(*) AS n FROM clips WHERE streamer=? AND created_at>=? AND state IN ('capturing','ready','uploaded') AND reason='viewer'").get(streamer,new Date().toISOString().slice(0,10)).n;}
   old(before) {return this.db.prepare("SELECT * FROM clips WHERE created_at<? AND state!='capturing'").all(before);}
   remove(id) {this.db.prepare("DELETE FROM clips WHERE id=?").run(id);}
   close() {this.db.close();}

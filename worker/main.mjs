@@ -18,7 +18,7 @@ import { chatSample, LANGUAGE_NAMES, pickerEnabled, rateMoments, rateSegments, s
 import { command } from "./process.mjs";
 import { bucketSignals, encodePreview, extractRange, joinSegments, parts, pickMoments, scanRanges, suggestMoments } from "./recordings.mjs";
 import { screenText, screenTextAvailable } from "./screentext.mjs";
-import { Twitch, clipUrl, momentOf, pickClips, twitchLogin } from "./twitch.mjs";
+import { Twitch, clipUrl, momentOf, momentTime, pickClips, twitchLogin, viewerSettings } from "./twitch.mjs";
 import { PLATFORM_NAMES, downloadVideo, findYtDlp, videoLink, videoTitle } from "./vod.mjs";
 import { stopTranscriber, transcribe as whisper } from "./whisper.mjs";
 import { AI_BATCH, autoClipPicks, mergeAiMoments, transcriptWindows } from "./stream-pass.mjs";
@@ -372,44 +372,103 @@ async function checkSessions() {
 }
 
 // ---- Viewers' Twitch clips ----
-// With Settings → "Viewers' Twitch clips" on (config.importClips: the fewest views a clip needs), every
-// IMPORT_MINUTES (30) the most-viewed clips viewers made in the last day on each running Twitch streamer's channel
-// are downloaded and turned into clips, up to 2 a streamer at a time and within the daily clip limit. Needs this
-// worker's own Twitch app (TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET). Imported clip ids are remembered for a week in
-// viewer-clips.json, with their moment, so none is imported twice and no moment twice (see sameMoment).
+// With viewers' clips on (Settings, or a streamer's own setting; see twitch.mjs viewerSettings), every IMPORT_MINUTES
+// (30) the most-viewed clips viewers made on each running Twitch streamer's channel are looked at: at least minViews
+// views, a moment from the last maxHours hours, not a moment already taken. Up to 2 at a time and perDay a day become
+// clips (they don't use the daily clip limit), or with "ask me first" up to 5 at a time are listed in the dashboard,
+// where picked ones come back as config.viewerClipPicks. Needs this worker's own Twitch app (TWITCH_CLIENT_ID,
+// TWITCH_CLIENT_SECRET). Clips taken or offered are remembered for a week in viewer-clips.json, with their moment, so
+// none comes twice and no moment twice (see sameMoment).
 const twitch = Twitch.fromEnv(env), importEveryMs = seconds(env.IMPORT_MINUTES, 30) * 60, seenFile = join(dataDir, "viewer-clips.json");
-let lastImport = 0, importing = false, twitchWarned = false;
+let lastImport = 0, importing = false, twitchWarned = false, seenCache = null;
+// Each entry: when it was taken or offered and its moment ({ at, ...momentOf, offered?, clip? }); older entries are
+// just the time.
+async function seenClips() {
+  if (!seenCache) {
+    seenCache = await readJson(seenFile, {});
+    const weekAgo = Date.now() - 7 * 86_400_000;
+    for (const [clip, v] of Object.entries(seenCache)) if (!(Date.parse(typeof v === "string" ? v : v?.at) > weekAgo)) delete seenCache[clip];
+  }
+  return seenCache;
+}
+const saveSeen = () => writeFile(seenFile, JSON.stringify(seenCache ?? {}));
+async function viewerReport(body) {
+  const response = await api("/api/worker/viewer-clips", { method: "POST", body: JSON.stringify(body) });
+  if (!response.ok) throw new Error("HTTP " + response.status);
+}
 async function importViewerClips() {
-  if (importing || stopping || !config || !(config.importClips > 0) || Date.now() - lastImport < importEveryMs) return;
+  if (importing || stopping || !config || Date.now() - lastImport < importEveryMs) return;
+  const settings = config;
+  const wanted = settings.streamers.map(s => [s, viewerSettings(settings, s)]).filter(([s, v]) => v.on && twitchLogin(s.url) && allowed(settings, s.id));
+  if (!wanted.length) return;
   if (!twitch) {
     if (!twitchWarned) { twitchWarned = true; problem("Viewers' Twitch clips are switched on, but this worker has no Twitch app: set TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET (see the worker README) and restart it."); }
     return;
   }
   importing = true; lastImport = Date.now();
   try {
-    // Each entry: when it was imported and its moment ({ at, ...momentOf }); older entries are just the time.
-    const seen = await readJson(seenFile, {}), weekAgo = Date.now() - 7 * 86_400_000, settings = config;
-    const when = v => Date.parse(typeof v === "string" ? v : v?.at);
-    for (const [clip, v] of Object.entries(seen)) if (!(when(v) > weekAgo)) delete seen[clip];
-    for (const streamer of settings.streamers) {
-      const login = twitchLogin(streamer.url), room = settings.dailyLimit - store.countToday(streamer.id);
-      if (!login || !allowed(settings, streamer.id) || room <= 0 || stopping) continue;
-      let list;
-      try { list = await twitch.clips(login, new Date(Date.now() - 86_400_000)); }
+    const seen = await seenClips();
+    for (const [streamer, v] of wanted) {
+      const login = twitchLogin(streamer.url), room = v.ask ? 5 : Math.min(2, v.perDay - store.countViewerToday(streamer.id));
+      if (room <= 0 || stopping) continue;
+      let list, starts;
+      try { list = await twitch.clips(login, new Date(Date.now() - v.maxHours * 3_600_000)); starts = await twitch.startsOf(list); }
       catch (error) { problem("Couldn't list viewers' Twitch clips for " + login + ": " + error.message); continue; }
-      // The moments already imported: as Twitch lists them now (their place in the broadcast may have been filled in
-      // since), else as remembered.
-      const listed = new Map(list.map(c => [c.id, c]));
-      const taken = Object.entries(seen).map(([clip, v]) => listed.get(clip) ?? (typeof v === "object" ? v : null)).filter(Boolean);
-      for (const clip of pickClips(list, { minViews: settings.importClips, seen: new Set(Object.keys(seen)), max: Math.min(2, room), taken })) {
+      // The moments already taken: as Twitch lists them now (their place in the broadcast may have been filled in
+      // since), else as remembered. Fresh: the moment itself is within maxHours, not just the clipping.
+      const listed = new Map(list.map(c => [c.id, c])), now = Date.now();
+      const taken = Object.entries(seen).map(([clip, x]) => listed.get(clip) ?? (typeof x === "object" ? x : null)).filter(Boolean);
+      const fresh = c => now - momentTime(c, starts) <= v.maxHours * 3_600_000;
+      const picks = pickClips(list, { minViews: v.minViews, seen: new Set(Object.keys(seen)), max: room, taken, keep: fresh });
+      if (v.ask) {
+        if (!picks.length) continue;
+        const at = c => { const t = momentTime(c, starts); return Number.isFinite(t) ? new Date(t).toISOString() : null; };
+        try {
+          await viewerReport({ offer: picks.map(c => ({ id: c.id, streamerId: streamer.id, title: String(c.title ?? "").slice(0, 300), views: Number(c.view_count) || 0, duration: Number(c.duration) || 0,
+            creator: c.creator_name ? String(c.creator_name).slice(0, 100) : null, thumbnail: c.thumbnail_url ?? null, createdAt: c.created_at, momentAt: at(c), videoId: c.video_id || null, vodOffset: Number.isFinite(c.vod_offset) ? c.vod_offset : null })) });
+        } catch (error) { problem("Couldn't list viewers' Twitch clips in the dashboard: " + error.message); continue; }
+        for (const c of picks) seen[c.id] = { at: new Date().toISOString(), ...momentOf(c), offered: true };
+        await saveSeen();
+        console.log("Listed", picks.length, "viewer clip(s) from", streamer.url, "for you to pick");
+        continue;
+      }
+      for (const clip of picks) {
         seen[clip.id] = { at: new Date().toISOString(), ...momentOf(clip) };
-        await writeFile(seenFile, JSON.stringify(seen));
+        await saveSeen();
         await importClip(streamer, clip, settings);
       }
     }
   } catch (error) { problem("Importing viewers' Twitch clips failed: " + error.message); }
   finally { importing = false; }
 }
+// Viewers' clips picked in the dashboard: made one at a time, each reported imported (with its clip) or failed. A
+// report that doesn't get through is sent again on the next check.
+const pickReports = [], picking = new Set();
+async function sendPickReports() {
+  if (!pickReports.length) return;
+  const batch = pickReports.splice(0);
+  try { await viewerReport({ done: batch }); } catch { pickReports.unshift(...batch); }
+}
+async function makeViewerPicks() {
+  await sendPickReports();
+  if (!config || stopping) return;
+  const picks = config.viewerClipPicks.filter(p => !picking.has(p.id) && !pickReports.some(r => r.id === p.id));
+  if (!picks.length) return;
+  const seen = await seenClips(), settings = config;
+  for (const p of picks) picking.add(p.id);
+  try {
+    for (const p of picks) {
+      if (stopping) break;
+      const streamer = settings.streamers.find(s => s.id === p.streamerId), before = typeof seen[p.id] === "object" ? seen[p.id] : {};
+      // Already made (its report was lost): report it again.
+      const made = before.clip ? { id: before.clip } : streamer ? await importClip(streamer, { id: p.id, duration: p.duration, view_count: p.views, title: p.title }, settings) : { error: "The streamer was removed." };
+      if (made.id) { seen[p.id] = { ...before, at: new Date().toISOString(), clip: made.id }; await saveSeen(); }
+      pickReports.push(made.id ? { id: p.id, state: "imported", clip: made.id } : { id: p.id, state: "failed", error: String(made.error).slice(0, 300) });
+    }
+    await sendPickReports();
+  } finally { for (const p of picks) picking.delete(p.id); }
+}
+// Downloads a viewer's clip and queues it like any other clip. Returns { id } (the new clip) or { error }.
 async function importClip(streamer, clip, settings) {
   const id = crypto.randomUUID(), dir = join(dataDir, "clips", streamer.id, id), raw = join(dir, "window.mp4");
   try {
@@ -421,9 +480,11 @@ async function importClip(streamer, clip, settings) {
     jobs.push({ queuedAt: Date.now(), id, dir, raw, streamer, settings, style, reason: "viewer", exact: true, focusFrom: 0, focusTo: Infinity, chat: [], title: String(clip.title ?? "").trim().slice(0, 140) || null });
     console.log("Imported a viewer's Twitch clip from", streamer.url, "(" + clip.view_count + " views):", clip.id);
     void processJobs();
+    return { id };
   } catch (error) {
     await rm(dir, { recursive: true, force: true });
     problem("Couldn't download the viewer's Twitch clip " + clip.id + ": " + error.message);
+    return { error: "Couldn't download it from Twitch: " + error.message };
   }
 }
 
@@ -1082,6 +1143,7 @@ async function tick() {
   for (const id of bump) await stopSession(id, "a higher-priority streamer went live");
   for (const streamer of start) await startSession(streamer);
   await importViewerClips();
+  void makeViewerPicks().catch(error => problem("Making picked viewer clips failed: " + error.message));
   if (config) takeImports(config.imports);
   await reportStatus();
   await report();

@@ -1,7 +1,7 @@
 // Viewers' Twitch clips: finding them through Helix (with a fake Twitch here) and picking which to import.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Twitch, clipUrl, momentOf, pickClips, sameMoment, twitchLogin } from "../twitch.mjs";
+import { Twitch, clipUrl, momentOf, momentTime, pickClips, sameMoment, twitchLogin, viewerSettings } from "../twitch.mjs";
 import { validateControl } from "../core.mjs";
 
 test("only Twitch channels have viewer clips to import", () => {
@@ -87,4 +87,47 @@ test("the import setting comes from the dashboard: off for older dashboards, che
   assert.equal(validateControl(config({ importClips: 10 })).importClips, 10);
   assert.throws(() => validateControl(config({ importClips: -1 })), /clip import/);
   assert.throws(() => validateControl(config({ importClips: "lots" })), /clip import/);
+});
+
+test("each streamer can have viewer clips on or off, its own views, daily cap, freshness and ask-first", () => {
+  const ws = { importClips: 50, viewerClips: { perDay: 3, maxHours: 12, ask: false } };
+  assert.deepEqual(viewerSettings(ws, {}), { on: true, minViews: 50, perDay: 3, maxHours: 12, ask: false }, "the workspace's");
+  assert.deepEqual(viewerSettings(ws, { viewerClips: { minViews: 2000, perDay: 1, ask: true } }), { on: true, minViews: 2000, perDay: 1, maxHours: 12, ask: true });
+  assert.equal(viewerSettings(ws, { viewerClips: { on: false } }).on, false, "off for one streamer");
+  assert.deepEqual(viewerSettings({ importClips: 0 }, { viewerClips: { on: true } }), { on: true, minViews: 10, perDay: 2, maxHours: 24, ask: false }, "on for one streamer while the workspace is off");
+  assert.equal(viewerSettings({ importClips: 0 }, {}).on, false);
+  assert.deepEqual(viewerSettings({ importClips: 5, viewerClips: { perDay: 99, maxHours: 0 } }, { viewerClips: { minViews: -3 } }), { on: true, minViews: 5, perDay: 2, maxHours: 24, ask: false }, "out of range is ignored");
+});
+
+test("a clip's moment is when it happened in the broadcast, so old moments clipped today are not fresh", () => {
+  const starts = new Map([["v1", Date.parse("2026-11-20T10:00:00Z")]]);
+  assert.equal(momentTime({ video_id: "v1", vod_offset: 3600, created_at: "2026-11-22T09:00:00Z" }, starts), Date.parse("2026-11-20T11:00:00Z"));
+  assert.equal(momentTime({ video_id: "", vod_offset: null, created_at: "2026-11-22T09:00:00Z" }, starts), Date.parse("2026-11-22T09:00:00Z"), "live clip: when it was made");
+  assert.equal(momentTime({ video_id: "gone", vod_offset: 10, created_at: "2026-11-22T09:00:00Z" }, starts), Date.parse("2026-11-22T09:00:00Z"));
+  const now = Date.parse("2026-11-22T10:00:00Z"), fresh = c => now - momentTime(c, starts) <= 24 * 3_600_000;
+  const list = [{ id: "old", view_count: 500, duration: 30, video_id: "v1", vod_offset: 3600, created_at: "2026-11-22T09:00:00Z", broadcaster_id: "b" },
+    { id: "new", view_count: 20, duration: 30, video_id: "", vod_offset: null, created_at: "2026-11-22T09:30:00Z", broadcaster_id: "b" }];
+  assert.deepEqual(pickClips(list, { minViews: 10, seen: new Set(), max: 5, keep: fresh }).map(c => c.id), ["new"]);
+});
+
+test("broadcast start times are looked up once, a hundred at a time", async () => {
+  const calls = [];
+  const fetch = async (url) => {
+    const u = new URL(url); calls.push(u.pathname);
+    if (u.pathname === "/oauth2/token") return Response.json({ access_token: "t", expires_in: 3600 });
+    return Response.json({ data: u.searchParams.getAll("id").map(id => ({ id, created_at: "2026-11-20T10:00:00Z" })) });
+  };
+  const twitch = new Twitch({ clientId: "app", clientSecret: "s", fetch });
+  const starts = await twitch.startsOf([{ video_id: "111" }, { video_id: "222" }, { video_id: "" }, { video_id: "111" }]);
+  assert.equal(starts.get("222"), Date.parse("2026-11-20T10:00:00Z"));
+  await twitch.startsOf([{ video_id: "111" }]);
+  assert.equal(calls.filter(p => p === "/helix/videos").length, 1, "remembered");
+});
+
+test("picked viewer clips come from the dashboard and are checked", () => {
+  const config = over => ({ control: "running", streamers: [], duration: 45, captions: true, dailyLimit: 5, ...over });
+  assert.deepEqual(validateControl(config()).viewerClipPicks, []);
+  assert.equal(validateControl(config({ importClips: 5000 })).importClips, 5000);
+  assert.throws(() => validateControl(config({ viewerClipPicks: [{ id: "../x", streamerId: "00000000-0000-0000-0000-000000000000", duration: 30 }] })), /viewer clip pick/);
+  assert.throws(() => validateControl(config({ viewerClips: [] })), /viewer clip settings/);
 });

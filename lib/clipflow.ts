@@ -1,6 +1,10 @@
 import { z } from "zod";
 export const destinations=["TikTok","Instagram","YouTube","Facebook","X"] as const;
 export const framings={blur:"Blurred background",crop:"Centre crop",fit:"Fit with black bars",split:"Split screen (background video below)",cam:"Facecam on top, gameplay below",pip:"Gameplay with the facecam in a corner",phone:"Phone stream (upright picture fills the frame)"} as const;
+// Viewers' Twitch clips: the workspace's per-day cap, freshness and "ask me first" (lib/viewer-clips.mjs).
+export const viewerClipsSchema=z.object({perDay:z.number().int().min(1).max(20),maxHours:z.number().int().min(1).max(72),ask:z.boolean()}).strict();
+// A streamer's own: each left out to follow the workspace.
+export const streamerViewerClipsSchema=z.object({on:z.boolean().optional(),minViews:z.number().int().min(1).max(100000).optional(),perDay:z.number().int().min(1).max(20).optional(),maxHours:z.number().int().min(1).max(72).optional(),ask:z.boolean().optional()}).strict();
 export const settingsSchema=z.object({mode:z.enum(["automatic","review"]),duration:z.number().int().min(15).max(90),dailyLimit:z.number().int().min(1).max(100),captions:z.boolean(),framing:z.enum(["blur","crop","fit","split","cam","pip","phone"]),destinations:z.array(z.enum(destinations)).max(5).transform(x=>[...new Set(x)]),captionTemplate:z.string().trim().min(1).max(500).optional(),
  // Omitted by older clients: the saved values are kept.
  aiCaptions:z.boolean().optional(),captionNotes:z.string().trim().max(1000).optional(),
@@ -9,7 +13,9 @@ export const settingsSchema=z.object({mode:z.enum(["automatic","review"]),durati
  // Days whole-stream recordings are kept.
  recordingDays:z.number().int().min(1).max(30).optional(),
  // Viewers' Twitch clips: the fewest views a clip needs for the worker to import it; 0 is off.
- importClips:z.number().int().min(0).max(1000).optional(),
+ importClips:z.number().int().min(0).max(100000).optional(),
+ // The rest of the viewers' clips settings (lib/viewer-clips.mjs).
+ viewerClips:viewerClipsSchema.optional(),
  // Who can clip with "!clip" in Twitch chat.
  clipCommand:z.enum(["off","mods","everyone"]).optional(),
  // Whether the worker uses what was learned from views when it picks moments.
@@ -19,7 +25,7 @@ export const settingsSchema=z.object({mode:z.enum(["automatic","review"]),durati
 // A streamer's own publishing mode; "workspace" follows Settings → Publishing mode.
 export const publishModes={workspace:"Use the workspace setting",review:"Review clips first",automatic:"Post to social media directly"} as const;
 export const defaultCaption="{streamer} on {platform} #clips #{platform}";
-export const defaults={mode:"automatic",duration:45,dailyLimit:5,captions:true,framing:"blur",destinations:[] as string[],control:"paused",captionTemplate:defaultCaption,aiCaptions:true,captionNotes:"",transcribe:true,recordingDays:7,importClips:0,clipCommand:"mods" as "off"|"mods"|"everyone",learn:true,weeklyHighlights:false};
+export const defaults={mode:"automatic",duration:45,dailyLimit:5,captions:true,framing:"blur",destinations:[] as string[],control:"paused",captionTemplate:defaultCaption,aiCaptions:true,captionNotes:"",transcribe:true,recordingDays:7,importClips:0,viewerClips:{perDay:2,maxHours:24,ask:false},clipCommand:"mods" as "off"|"mods"|"everyone",learn:true,weeklyHighlights:false};
 export const captureModes={clip:"Clip live",record:"Record the whole stream, clip it afterwards",both:"Clip live and record the whole stream"} as const;
 // Platforms this build can actually publish to once an account is connected.
 export const publishable=["Instagram"] as const;

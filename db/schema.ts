@@ -23,6 +23,9 @@ export const streamers = sqliteTable("streamers", {
  // Learned from how this streamer's posted clips did (lib/insights.mjs), refreshed with the analytics: JSON
  // {chatWeight} (how much the worker weighs chat against loudness when picking a moment). Null: nothing learned yet.
  learned:text("learned"),
+ // Viewers' Twitch clips for this streamer (lib/viewer-clips.mjs): JSON {on,minViews,perDay,maxHours,ask}, each left
+ // out to follow the workspace. Null follows the workspace for all.
+ viewerClips:text("viewer_clips"),
 },t=>[uniqueIndex("streamers_owner_url").on(t.owner,t.url)]);
 export const preferences=sqliteTable("preferences",{
  owner:text("owner").primaryKey(),mode:text("mode").notNull().default("automatic"),duration:integer("duration").notNull().default(45),dailyLimit:integer("daily_limit").notNull().default(5),captions:integer("captions",{mode:"boolean"}).notNull().default(true),destinations:text("destinations").notNull().default('[]'),control:text("control").notNull().default("paused"),framing:text("framing").notNull().default("blur"),
@@ -39,6 +42,8 @@ export const preferences=sqliteTable("preferences",{
  recordingDays:integer("recording_days").notNull().default(7),
  // Viewers' Twitch clips: the fewest views a clip needs for the worker to import it (0: off).
  importClips:integer("import_clips").notNull().default(0),
+ // The rest of the viewers' clips settings (lib/viewer-clips.mjs): JSON {perDay,maxHours,ask}; null: the defaults.
+ viewerClips:text("viewer_clips"),
  // Who can clip with "!clip" in Twitch chat: "mods" (the streamer, moderators and VIPs), "everyone" (also 3 viewers
  // within 30 seconds), or "off".
  clipCommand:text("clip_command").notNull().default("mods"),
@@ -191,3 +196,13 @@ export const highlights=sqliteTable("highlights",{
  fileKey:text("file_key"),size:integer("size"),duration:real("duration"),error:text("error"),auto:integer("auto").notNull().default(0),
  uploadId:text("upload_id"),uploadParts:text("upload_parts"),createdAt:text("created_at").notNull(),updatedAt:text("updated_at").notNull(),
 },t=>[index("highlights_owner_state").on(t.owner,t.state)]);
+
+// Viewers' Twitch clips found by the worker while a streamer is set to "ask me first": they wait here until the owner
+// picks them (state waiting -> wanted, then imported or failed when the worker has made them) or dismisses them.
+// clip_id is Twitch's. moment_at: when it happened in the stream, as far as known.
+export const viewerClipCandidates=sqliteTable("viewer_clip_candidates",{
+ owner:text("owner").notNull(),clipId:text("clip_id").notNull(),streamerId:text("streamer_id").notNull(),
+ title:text("title").notNull(),views:integer("views").notNull(),duration:real("duration").notNull(),creator:text("creator"),thumbnail:text("thumbnail"),
+ clipCreatedAt:text("clip_created_at").notNull(),momentAt:text("moment_at"),videoId:text("video_id"),vodOffset:integer("vod_offset"),
+ state:text("state").notNull(),error:text("error"),madeClip:text("made_clip"),createdAt:text("created_at").notNull(),updatedAt:text("updated_at").notNull(),
+},t=>[primaryKey({columns:[t.owner,t.clipId]}),index("viewer_clip_candidates_owner_state").on(t.owner,t.state)]);

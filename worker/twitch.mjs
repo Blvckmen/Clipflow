@@ -32,13 +32,35 @@ export function sameMoment(a, b) {
 // What to remember of an imported clip, to know its moment once Twitch stops listing it.
 export const momentOf = c => ({ broadcaster_id: c.broadcaster_id || null, video_id: c.video_id || null, vod_offset: Number.isFinite(c.vod_offset) ? c.vod_offset : null, duration: Number(c.duration) || 0, created_at: c.created_at ?? null });
 
+// What applies to one streamer's viewer clips: { on, minViews, perDay, maxHours, ask }. config.importClips is the
+// workspace's fewest views (0: off), config.viewerClips its other settings, streamer.viewerClips the streamer's own
+// (each left out follows the workspace). Out-of-range values are ignored. Same rules as lib/viewer-clips.mjs.
+export const VIEWER_DEFAULTS = { perDay: 2, maxHours: 24, ask: false };
+const LIMITS = { minViews: [1, 100000], perDay: [1, 20], maxHours: [1, 72] };
+const inRange = (v, [lo, hi]) => Number.isInteger(v) && v >= lo && v <= hi ? v : undefined;
+export function viewerSettings(config, streamer) {
+  const ws = config?.viewerClips ?? {}, own = streamer?.viewerClips ?? {}, importClips = Number(config?.importClips) || 0;
+  const pick = k => inRange(own[k], LIMITS[k]) ?? inRange(ws[k], LIMITS[k]) ?? VIEWER_DEFAULTS[k];
+  const flag = k => typeof own[k] === "boolean" ? own[k] : typeof ws[k] === "boolean" ? ws[k] : VIEWER_DEFAULTS[k];
+  return { on: typeof own.on === "boolean" ? own.on : importClips > 0, minViews: inRange(own.minViews, LIMITS.minViews) ?? (importClips > 0 ? importClips : 10), perDay: pick("perDay"), maxHours: pick("maxHours"), ask: flag("ask") };
+}
+
+// When a clip's moment happened (ms): its broadcast's start (`starts`: video id -> ms) plus its place in it, else when
+// it was clipped. A viewer clipping yesterday's broadcast today clips an old moment.
+export function momentTime(clip, starts) {
+  const start = clip?.video_id ? starts?.get(clip.video_id) : undefined;
+  if (Number.isFinite(start) && Number.isFinite(clip.vod_offset)) return start + clip.vod_offset * 1000;
+  const made = Date.parse(clip?.created_at);
+  return Number.isFinite(made) ? made : NaN;
+}
+
 // The clips worth importing, best first: at least `minViews` views, at least `minSeconds` long (shorter ones are
 // too short to post), not imported before, not the same moment as one imported before (`taken`: their moments) or
-// as a better one picked now, at most `max`.
-export function pickClips(list, { minViews, seen, max, minSeconds = 15, taken = [] }) {
+// as a better one picked now, passing `keep` (e.g. fresh enough), at most `max`.
+export function pickClips(list, { minViews, seen, max, minSeconds = 15, taken = [], keep = () => true }) {
   const have = [...taken], out = [];
   const ranked = (list ?? [])
-    .filter(c => c && typeof c.id === "string" && Number(c.view_count) >= minViews && Number(c.duration) >= minSeconds && !seen.has(c.id))
+    .filter(c => c && typeof c.id === "string" && Number(c.view_count) >= minViews && Number(c.duration) >= minSeconds && !seen.has(c.id) && keep(c))
     .sort((a, b) => b.view_count - a.view_count || String(a.created_at).localeCompare(String(b.created_at)));
   for (const c of ranked) {
     if (out.length >= max) break;
@@ -51,7 +73,7 @@ export function pickClips(list, { minViews, seen, max, minSeconds = 15, taken = 
 export class Twitch {
   constructor({ clientId, clientSecret, fetch = globalThis.fetch }) {
     this.clientId = clientId; this.clientSecret = clientSecret; this.fetch = fetch;
-    this.access = null; this.users = new Map();
+    this.access = null; this.users = new Map(); this.videoStarts = new Map();
   }
   static fromEnv(env = process.env) {
     return env.TWITCH_CLIENT_ID && env.TWITCH_CLIENT_SECRET ? new Twitch({ clientId: env.TWITCH_CLIENT_ID, clientSecret: env.TWITCH_CLIENT_SECRET }) : null;
@@ -89,5 +111,19 @@ export class Twitch {
   // Clips made on the channel since `since` (a Date), up to 20, as Helix returns them (most viewed first).
   async clips(login, since) {
     return this.get("clips", { broadcaster_id: await this.userId(login), started_at: since.toISOString(), ended_at: new Date().toISOString(), first: 20 });
+  }
+  // When the broadcasts these clips come from started (video id -> ms), for momentTime. Remembered, since a
+  // broadcast's start doesn't change. A broadcast Twitch no longer has is left out.
+  async startsOf(clips) {
+    const ids = [...new Set((clips ?? []).map(c => c?.video_id).filter(id => typeof id === "string" && /^\d{1,20}$/.test(id) && !this.videoStarts.has(id)))];
+    for (let i = 0; i < ids.length; i += 100) {
+      const url = new URL("https://api.twitch.tv/helix/videos");
+      for (const id of ids.slice(i, i + 100)) url.searchParams.append("id", id);
+      const response = await this.fetch(url, { headers: { "Client-Id": this.clientId, Authorization: "Bearer " + await this.token() }, signal: AbortSignal.timeout(20_000) });
+      // 404: none of them exist any more.
+      if (!response.ok) { if (response.status === 404) continue; throw new Error("Twitch videos failed (HTTP " + response.status + ")"); }
+      for (const v of (await response.json()).data ?? []) { const t = Date.parse(v.created_at); if (Number.isFinite(t)) this.videoStarts.set(v.id, t); }
+    }
+    return this.videoStarts;
   }
 }

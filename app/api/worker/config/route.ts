@@ -1,6 +1,7 @@
 import { database } from "../../../../db/raw";
 import { defaults } from "../../../../lib/clipflow";
 import { workerOwner } from "../../../../lib/worker-auth";
+import { readStreamerViewerClips, readViewerClips } from "../../../../lib/viewer-clips.mjs";
 export const dynamic="force-dynamic";
 const parse=(json:unknown)=>{try{return typeof json==="string"?JSON.parse(json):null;}catch{return null;}};
 // A streamer's own transcription, subtitles and hook choices (only true/false values; anything else follows the workspace).
@@ -11,9 +12,9 @@ export async function GET(request:Request){
  try{
   const db=database(),owner=await workerOwner(request,db);
   if(!owner)return Response.json({error:"Invalid worker token."},{status:401});
-  const [s,p,r,,b,rec,req,tr,hl]=await Promise.all([
-   db.prepare("SELECT id,url,status,style,capture_mode,clip_text,learned FROM streamers WHERE owner=? ORDER BY priority IS NULL,priority,created_at").bind(owner).all<{id:string;url:string;status:string;style:string|null;capture_mode:string|null;clip_text:string|null;learned:string|null}>(),
-   db.prepare("SELECT duration,daily_limit,captions,framing,control,style,transcribe,recording_days,import_clips,clip_command,learn FROM preferences WHERE owner=?").bind(owner).first(),
+  const [s,p,r,,b,rec,req,tr,hl,vc]=await Promise.all([
+   db.prepare("SELECT id,url,status,style,capture_mode,clip_text,learned,viewer_clips FROM streamers WHERE owner=? ORDER BY priority IS NULL,priority,created_at").bind(owner).all<{id:string;url:string;status:string;style:string|null;capture_mode:string|null;clip_text:string|null;learned:string|null;viewer_clips:string|null}>(),
+   db.prepare("SELECT duration,daily_limit,captions,framing,control,style,transcribe,recording_days,import_clips,viewer_clips,clip_command,learn FROM preferences WHERE owner=?").bind(owner).first(),
    // Edits saved in the dashboard that still need rendering, oldest request first.
    // signals: the source's loudness, for jump cuts and punch-in zooms.
    db.prepare("SELECT id,edit,edit_rev,transcript,source_meta,signals FROM clips WHERE owner=? AND render_state='queued' AND edit IS NOT NULL ORDER BY coalesce(rendered_at,created_at) LIMIT 5").bind(owner).all<{id:string;edit:string;edit_rev:number;transcript:string|null;source_meta:string|null;signals:string|null}>(),
@@ -27,13 +28,16 @@ export async function GET(request:Request){
    db.prepare("SELECT t.clip_id,t.lang,t.rev,t.source_caption,c.edit,c.transcript,c.source_meta,c.signals,s.name AS streamer FROM clip_translations t INDEXED BY clip_translations_owner_state JOIN clips c ON c.id=t.clip_id LEFT JOIN streamers s ON s.id=c.streamer_id WHERE t.owner=? AND t.state='queued' AND c.edit IS NOT NULL ORDER BY t.created_at LIMIT 3").bind(owner).all<{clip_id:string;lang:string;rev:number;source_caption:string|null;edit:string;transcript:string|null;source_meta:string|null;signals:string|null;streamer:string|null}>(),
    // Highlight videos to make (lib/highlights.ts).
    db.prepare("SELECT id,clips FROM highlights INDEXED BY highlights_owner_state WHERE owner=? AND state='queued' ORDER BY created_at LIMIT 2").bind(owner).all<{id:string;clips:string}>(),
+   // Viewers' Twitch clips picked in the dashboard ("ask me first") for the worker to make.
+   db.prepare("SELECT clip_id,streamer_id,title,duration,views,clip_created_at,video_id,vod_offset FROM viewer_clip_candidates INDEXED BY viewer_clip_candidates_owner_state WHERE owner=? AND state='wanted' ORDER BY updated_at LIMIT 10").bind(owner).all<{clip_id:string;streamer_id:string;title:string;duration:number;views:number;clip_created_at:string;video_id:string|null;vod_offset:number|null}>(),
   ]);
   // streamers is in recording-priority order: the worker gives full capture slots to the first live ones.
   return Response.json({
    control:p?.control??defaults.control,duration:p?.duration??defaults.duration,dailyLimit:p?.daily_limit??defaults.dailyLimit,captions:p?!!p.captions:defaults.captions,transcribe:p?!!p.transcribe:defaults.transcribe,framing:p?.framing??defaults.framing,
    style:parse(p?.style),
-   streamers:s.results.map(x=>({id:x.id,url:x.url,status:x.status,style:parse(x.style),captureMode:x.capture_mode??"clip",text:clipText(x.clip_text),...chatWeightOf(x.learned,p?.learn)})),
-   recordingDays:(p?.recording_days as number|undefined)??defaults.recordingDays,importClips:(p?.import_clips as number|undefined)??defaults.importClips,clipCommand:(p?.clip_command as string|undefined)??defaults.clipCommand,recordings:rec.results.map(x=>x.id),
+   streamers:s.results.map(x=>({id:x.id,url:x.url,status:x.status,style:parse(x.style),captureMode:x.capture_mode??"clip",text:clipText(x.clip_text),viewerClips:readStreamerViewerClips(x.viewer_clips),...chatWeightOf(x.learned,p?.learn)})),
+   recordingDays:(p?.recording_days as number|undefined)??defaults.recordingDays,importClips:(p?.import_clips as number|undefined)??defaults.importClips,viewerClips:readViewerClips(p?.viewer_clips),
+   viewerClipPicks:vc.results.map(x=>({id:x.clip_id,streamerId:x.streamer_id,title:x.title,duration:x.duration,views:x.views,createdAt:x.clip_created_at,videoId:x.video_id,vodOffset:x.vod_offset})),clipCommand:(p?.clip_command as string|undefined)??defaults.clipCommand,recordings:rec.results.map(x=>x.id),
    // Oldest first, so the worker downloads them in the order they were pasted.
    imports:rec.results.filter(x=>x.source_url&&(x.state==="queued"||x.state==="importing")).reverse().slice(0,20).map(x=>({id:x.id,streamerId:x.streamer_id,url:x.source_url})),
    clipRequests:req.results.map(x=>x.kind==="moment"?{id:x.id,recordingId:x.recording_id,kind:x.kind,start:x.start,end:x.end}:{id:x.id,recordingId:x.recording_id,kind:x.kind,count:x.count}),

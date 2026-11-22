@@ -1,6 +1,7 @@
 import { currentUser, signInPath } from "../../auth";
 import { bucket, database, clipKey, sourceKey, highlightKey } from "../../../db/raw";
-import { defaultCaption, defaults, parseStreamer, settingsSchema } from "../../../lib/clipflow";
+import { defaultCaption, defaults, parseStreamer, settingsSchema, streamerViewerClipsSchema } from "../../../lib/clipflow";
+import { readStreamerViewerClips, readViewerClips } from "../../../lib/viewer-clips.mjs";
 import { instagramConfig } from "../../../lib/publisher";
 import { connectionFor, connections, hashKey, listKeys, siteConnection, zernioApiUrl } from "../../../lib/zernio-keys";
 import { deleteAccount, deletePost, verifyKey, VIDEO_PLATFORMS, ZernioError } from "../../../lib/zernio";
@@ -76,7 +77,9 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("assign"),streamerId:z.string().uuid(),accounts:accountIds}),
  z.object({action:z.literal("assignAccount"),accountId:z.string().uuid(),streamers:z.array(z.string().uuid()).max(500).transform(x=>[...new Set(x)])}),
  // Edits a streamer: display name, channel URL, whether it is clipped, and (optionally) which accounts post its clips.
- z.object({action:z.literal("editStreamer"),id:z.string().uuid(),name:z.string().trim().min(1).max(80),url:z.string().max(500),status:z.enum(["armed","paused","stopped"]).optional(),accounts:accountIds.optional(),captureMode:captureMode.optional(),publishMode:publishMode.optional(),clipText:clipTextInput.optional(),postingRules:z.record(z.string(),z.unknown()).nullable().optional()}),
+ z.object({action:z.literal("editStreamer"),id:z.string().uuid(),name:z.string().trim().min(1).max(80),url:z.string().max(500),status:z.enum(["armed","paused","stopped"]).optional(),accounts:accountIds.optional(),captureMode:captureMode.optional(),publishMode:publishMode.optional(),clipText:clipTextInput.optional(),postingRules:z.record(z.string(),z.unknown()).nullable().optional(),viewerClips:streamerViewerClipsSchema.optional()}),
+ // Viewers' Twitch clips waiting for a decision ("ask me first"): make them into clips, or dismiss them.
+ z.object({action:z.literal("viewerClips"),op:z.enum(["make","dismiss"]),ids:z.array(z.string().regex(/^[A-Za-z0-9_-]{1,100}$/)).min(1).max(100).transform(x=>[...new Set(x)])}),
  // Clips from a whole-stream recording: one moment picked in the player (seconds into it), or the best few.
  z.object({action:z.literal("makeClip"),recordingId:z.string().uuid(),start:z.number().int().min(0),end:z.number().int().min(1)}),
  z.object({action:z.literal("findMoments"),recordingId:z.string().uuid(),count:z.number().int().min(1).max(20)}),
@@ -104,17 +107,19 @@ export async function GET(){
   const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(owner).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(owner).all(),db.prepare("SELECT c.id,c.streamer_id,c.created_at,c.duration,c.captions,c.size,c.file_key IS NOT NULL AS stored,c.review,c.reason,(c.edit IS NOT NULL OR c.file_key IS NOT NULL) AS editable,c.edit IS NULL AS legacy,c.post_caption,c.caption_source,c.source_key IS NOT NULL AS source_stored,c.render_state,c.render_error,c.rendered_at,c.edit_rev,c.thumb_rev,s.name AS streamer,(SELECT json_group_object(p.account_id,p.state) FROM posts p WHERE p.clip_id=c.id AND p.round=(SELECT MAX(q.round) FROM posts q WHERE q.clip_id=p.clip_id AND q.account_id=p.account_id)) AS targets FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.owner=? ORDER BY c.created_at DESC LIMIT 200").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at FROM worker_tokens WHERE owner=?").bind(owner).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null}>()]);
   const lastSeen=w?.last_seen??null,connected=!!lastSeen&&Date.now()-Date.parse(lastSeen)<ENGINE_FRESH_MS;
   const engine={connected,lastSeen,tokenCreated:w?.created_at??null,lastError:w?.last_error??null,lastErrorAt:w?.last_error_at??null,status:connected?"Worker connected":w?(lastSeen?"Worker offline":"Waiting for worker"):"Setup required"};
-  const streamers=s.results.map(x=>({...x,style:parse(x.style),posting_rules:readRules(x.posting_rules),accounts:l.results.filter(k=>k.streamer_id===x.id).map(k=>k.account_id)}));
+  const streamers=s.results.map(x=>({...x,style:parse(x.style),posting_rules:readRules(x.posting_rules),viewer_clips:readStreamerViewerClips(x.viewer_clips),accounts:l.results.filter(k=>k.streamer_id===x.id).map(k=>k.account_id)}));
   // Stored Zernio keys never leave the server: only their labels and how many accounts each holds.
   const prefs=Object.fromEntries(Object.entries((p??{}) as Record<string,unknown>).filter(([k])=>k!=="zernio_key_enc"&&k!=="zernio_label"&&k!=="discord_webhook_enc"));
   const keys=(await listKeys(db,owner)).map(k=>({id:k.id,label:k.label,created_at:k.created_at,last_error:k.last_error,accounts:a.results.filter(x=>x.zernio_key_id===k.id).length}));
   const site=!keys.length&&!!siteConnection(env);
-  const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,importClips:Number(p.import_clips??0),clipCommand:p.clip_command??defaults.clipCommand,learn:p.learn===undefined?true:!!p.learn,weeklyHighlights:!!p.weekly_highlights,discordAlerts:!!p.discord_webhook_enc,alertError:p.alert_error??null,style:parse(p.style)}:{...defaults,style:null};
+  const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,importClips:Number(p.import_clips??0),viewerClips:readViewerClips(p.viewer_clips),clipCommand:p.clip_command??defaults.clipCommand,learn:p.learn===undefined?true:!!p.learn,weeklyHighlights:!!p.weekly_highlights,discordAlerts:!!p.discord_webhook_enc,alertError:p.alert_error??null,style:parse(p.style)}:{...defaults,style:null};
   return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(x=>({...x,targets:parse(x.targets)??{},captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored})),storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,duration,content_type,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,
    // Whole-stream recordings (their heat strips load with GET /api/recordings/<id>) and clips asked for from them.
    recordings:(await db.prepare("SELECT r.id,r.streamer_id,s.name AS streamer,r.title,r.started_at,r.ended_at,r.duration,r.size,r.state,r.error,r.preview_key IS NOT NULL AS preview,r.transcript_at IS NOT NULL AS transcript,r.upload_id IS NOT NULL AS uploading,r.expires_at,r.source_url FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.owner=? ORDER BY r.started_at DESC LIMIT 100").bind(owner).all<Record<string,unknown>>()).results.map(x=>({...x,preview:!!x.preview,uploading:!!x.uploading,transcript:!!x.transcript})),
    highlights:(await db.prepare("SELECT id,title,state,size,duration,error,auto,clips,created_at FROM highlights WHERE owner=? ORDER BY created_at DESC LIMIT 20").bind(owner).all<{clips:string}>()).results.map(({clips,...h})=>({...h,clips:(JSON.parse(clips) as unknown[]).length})),
    recordingRequests:(await db.prepare("SELECT id,recording_id,kind,start,end,count,state,error,clips,created_at,updated_at FROM recording_requests WHERE owner=? ORDER BY created_at DESC LIMIT 200").bind(owner).all()).results,
+   // Viewers' Twitch clips waiting for a decision, being made, or that failed (the last 3 days), most viewed first.
+   viewerClipCandidates:(await db.prepare("SELECT clip_id,streamer_id,title,views,duration,creator,thumbnail,clip_created_at,moment_at,state,error,updated_at FROM viewer_clip_candidates INDEXED BY viewer_clip_candidates_owner_state WHERE owner=? AND state IN ('waiting','wanted','failed') AND created_at>=? ORDER BY views DESC LIMIT 100").bind(owner,new Date(Date.now()-3*86_400_000).toISOString()).all()).results,
   },{headers:{"Cache-Control":"private, no-store"}});
  }catch(error){console.error("Dashboard load failed",error);return Response.json({error:"We couldn't load your workspace. Please retry."},{status:503});}
 }
@@ -193,6 +198,8 @@ export async function POST(request:Request){
    const text=payload.clipText===undefined?current.clip_text:Object.keys(payload.clipText).length?JSON.stringify(payload.clipText):null;
    statements.push(db.prepare("UPDATE streamers SET name=?,url=?,platform=?,status=?,capture_mode=?,publish_mode=?,clip_text=?"+(moved?",live_status=NULL,live_checked_at=NULL,live_title=NULL":"")+" WHERE id=? AND owner=?").bind(payload.name,channel.url,channel.platform,payload.status??current.status,payload.captureMode??current.capture_mode,mode,text,payload.id,owner));
    // Posting rules (credit line, campaign) apply to posts made from now on; only known fields are kept.
+   // Viewers' Twitch clips for this streamer: only the choices made are stored; none stores null (follow the workspace).
+   if(payload.viewerClips!==undefined){const own=readStreamerViewerClips(payload.viewerClips);statements.push(db.prepare("UPDATE streamers SET viewer_clips=? WHERE id=? AND owner=?").bind(Object.keys(own).length?JSON.stringify(own):null,payload.id,owner));}
    if(payload.postingRules!==undefined){const rules=payload.postingRules&&readRules(payload.postingRules);statements.push(db.prepare("UPDATE streamers SET posting_rules=? WHERE id=? AND owner=?").bind(rules&&JSON.stringify(rules)!==JSON.stringify(emptyRules())?JSON.stringify(rules):null,payload.id,owner));}
    if(payload.accounts){
     const linked=await ownAccounts(payload.accounts);
@@ -226,6 +233,7 @@ export async function POST(request:Request){
    statements.push(db.prepare("INSERT INTO preferences (owner,mode,duration,daily_limit,captions,framing,destinations,control,caption_template,ai_captions,caption_notes,transcribe) VALUES (?,?,?,?,?,?,?,'paused',?,?,?,?) ON CONFLICT(owner) DO UPDATE SET mode=excluded.mode,duration=excluded.duration,daily_limit=excluded.daily_limit,captions=excluded.captions,framing=excluded.framing,destinations=excluded.destinations,caption_template=coalesce(?,preferences.caption_template),ai_captions=coalesce(?,preferences.ai_captions),caption_notes=coalesce(?,preferences.caption_notes),transcribe=coalesce(?,preferences.transcribe)").bind(owner,s.mode,s.duration,s.dailyLimit,Number(s.captions),s.framing,JSON.stringify(s.destinations),s.captionTemplate??defaultCaption,ai??1,notes??"",transcribe??1,s.captionTemplate??null,ai,notes,transcribe));
    if(s.recordingDays!==undefined)statements.push(db.prepare("UPDATE preferences SET recording_days=? WHERE owner=?").bind(s.recordingDays,owner));
    if(s.importClips!==undefined)statements.push(db.prepare("UPDATE preferences SET import_clips=? WHERE owner=?").bind(s.importClips,owner));
+   if(s.viewerClips!==undefined)statements.push(db.prepare("UPDATE preferences SET viewer_clips=? WHERE owner=?").bind(JSON.stringify(readViewerClips(s.viewerClips)),owner));
    if(s.clipCommand!==undefined)statements.push(db.prepare("UPDATE preferences SET clip_command=? WHERE owner=?").bind(s.clipCommand,owner));
    if(s.learn!==undefined)statements.push(db.prepare("UPDATE preferences SET learn=? WHERE owner=?").bind(Number(s.learn),owner));
    if(s.weeklyHighlights!==undefined)statements.push(db.prepare("UPDATE preferences SET weekly_highlights=? WHERE owner=?").bind(Number(s.weeklyHighlights),owner));
@@ -576,6 +584,15 @@ export async function POST(request:Request){
    await removeRecordingFiles(payload.id,rec);
    statements.push(db.prepare("DELETE FROM recording_requests WHERE recording_id=? AND owner=?").bind(payload.id,owner),db.prepare("DELETE FROM recordings WHERE id=? AND owner=?").bind(payload.id,owner));
    message="Deleted "+(rec.name?rec.name+"'s":"a")+" recording. The worker PC removes its copy on its next check; clips already made from it stay in the library.";
+  }
+  if(payload.action==="viewerClips"){
+   // make: waiting (or failed, to try again) -> wanted, which the worker picks up on its next check. dismiss: gone
+   // from the list for good (the worker won't offer that clip again).
+   const ids=payload.ids,marks=ids.map(()=>"?").join(","),from=payload.op==="make"?"('waiting','failed')":"('waiting','failed','wanted')";
+   const found=(await db.prepare("SELECT clip_id FROM viewer_clip_candidates WHERE owner=? AND state IN "+from+" AND clip_id IN ("+marks+")").bind(owner,...ids).all<{clip_id:string}>()).results.length;
+   if(!found)return Response.json({error:payload.op==="make"?"Those viewer clips are already being made or were dismissed.":"Those viewer clips are no longer waiting."},{status:409});
+   statements.push(db.prepare("UPDATE viewer_clip_candidates SET state=?,error=NULL,updated_at=? WHERE owner=? AND state IN "+from+" AND clip_id IN ("+marks+")").bind(payload.op==="make"?"wanted":"dismissed",iso,owner,...ids));
+   message=payload.op==="make"?"Making "+found+" viewer clip"+(found===1?"":"s")+". The worker PC downloads "+(found===1?"it":"them")+" on its next check (within a minute).":"Dismissed "+found+" viewer clip"+(found===1?"":"s")+".";
   }
   let token:string|undefined;
   if(payload.action==="token"){

@@ -130,11 +130,15 @@ Only capture channels you have permission to record and repost.
 
 ## Viewers' Twitch clips (optional)
 
-With Settings → "Viewers' Twitch clips" switched on, the worker looks every `IMPORT_MINUTES` for the most-viewed
-clips viewers made in the last day on each running Twitch streamer's channel. It downloads them with streamlink and
-turns them into clips in the streamer's look, the same way as clips it captures itself: transcribed, framed, and
-sent for review or posting. It takes up to 2 a streamer at a time, within the daily clip limit, only clips at least
-15 seconds long, and never the same one twice. Kick clips aren't imported.
+With Settings → "Viewers' Twitch clips" switched on (or a streamer's own setting, in its Edit dialog), the worker
+looks every `IMPORT_MINUTES` for the most-viewed clips viewers made on each running Twitch streamer's channel. It
+downloads them with streamlink and turns them into clips in the streamer's look, the same way as clips it captures
+itself: transcribed, framed, and sent for review or posting. Only clips at least 15 seconds long with the fewest views
+set, of a moment from the last few hours set ("Only moments from the last…": when it happened on stream, so a viewer
+clipping yesterday's broadcast today doesn't count), never the same clip or moment twice. Up to 2 a streamer at a
+time and "Most a day" a day; these don't use the daily clip limit. With "Ask me first", up to 5 at a time are listed
+at the top of the Clip library instead, and only the ones you pick are made (within a minute). Kick clips aren't
+imported.
 
 It uses Twitch's official API with your own Twitch app (free, about 5 minutes to set up):
 

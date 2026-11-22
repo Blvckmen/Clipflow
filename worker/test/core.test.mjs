@@ -205,3 +205,14 @@ test("transcription, subtitles and hooks: the streamer's own choice, else the wo
   assert.throws(() => validateControl(config({ streamers: [{ ...config().streamers[0], text: { hook: "no" } }] })), /text settings/);
   assert.throws(() => validateControl(config({ streamers: [{ ...config().streamers[0], text: { captions: true } }] })), /text settings/);
 });
+
+test("viewers' Twitch clips have their own daily count, apart from the daily clip limit", () => {
+  const dir = mkdtempSync(join(tmpdir(), "store-")), store = new Store(dir);
+  try {
+    store.add("a", "s1", "/x/a/clip.mp4", 45, true, "chat");
+    store.add("v1", "s1", "/x/v1/clip.mp4", 30, true, "viewer");
+    store.add("v2", "s1", "/x/v2/clip.mp4", 30, true, "viewer");
+    assert.equal(store.countToday("s1"), 1);
+    assert.equal(store.countViewerToday("s1"), 2);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
