@@ -55,8 +55,12 @@ logs to `worker\data\worker.log`.
   ended, so every part is looked at once. The AI rates each window's moments and drops it
   when none reaches `AI_MIN_RATING` (6 of 10), so dull stretches don't become clips. While
   two checks are already waiting to be processed, new ones are skipped so a busy PC isn't
-  buried. Kick and YouTube rely on this alone, since reading their chat requires
-  registered API apps.
+  buried. These checks stop for the day once a streamer has `COVERAGE_SHARE` (70%) of
+  the daily limit, so the rest is kept for chat spikes, `!clip` and viewers' clips, and
+  those are always processed before checks. Kick and YouTube rely on this alone, since
+  reading their chat requires registered API apps.
+- Up to `CLIP_WORKERS` (2) clips are made at the same time: while one is transcribed,
+  another is written or rendered.
 - Within a window, the clip is placed by loudness plus chat activity 4 seconds later
   (viewers react after the moment), then its start and end move to the nearest sentence
   boundary in the transcript (within 4 seconds). The transcript is made once and reused
@@ -107,6 +111,8 @@ logs to `worker\data\worker.log`.
 | `COOLDOWN_SECONDS` | `0` | Least time between checks of the rest of the stream (0: back to back) |
 | `CHAT_CLIP_GAP_SECONDS` | `25` | A long chat burst counts as a new moment at most this often |
 | `AI_MIN_RATING` | `6` | Checks of the rest of the stream become clips only if the AI rates a moment this high (0 to keep all) |
+| `COVERAGE_SHARE` | `0.7` | Share of the daily limit checks of the rest of the stream may use (1 for all of it) |
+| `CLIP_WORKERS` | `2` | Clips made at the same time (1 to 4; 1 is one at a time) |
 | `CHAT_SPIKE_FACTOR` | `2.5` | How far above the typical chat rate counts as a spike |
 | `BUFFER_SECONDS` | `240` | How much recent stream is kept on disk while recording |
 | `RETENTION_HOURS` | `72` | How long clip files are kept |

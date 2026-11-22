@@ -22,7 +22,7 @@ import { Twitch, clipUrl, momentOf, momentTime, pickClips, twitchLogin, viewerSe
 import { PLATFORM_NAMES, downloadVideo, findYtDlp, videoLink, videoTitle } from "./vod.mjs";
 import { stopTranscriber, transcribe as whisper } from "./whisper.mjs";
 import { AI_BATCH, autoClipPicks, mergeAiMoments, transcriptWindows } from "./stream-pass.mjs";
-import { coverageWindow, enqueueTrigger } from "./triggers.mjs";
+import { COVERAGE_SHARE, coverageRoom, coverageWindow, enqueueTrigger, jobRank } from "./triggers.mjs";
 
 // Every log line starts with the time (HH:MM:SS), so how long things take can be read off worker.log.
 for (const level of ["log", "warn", "error"]) {
@@ -268,10 +268,10 @@ function processJobs() {
 const startable = j => ![...running].some(r => r.job.id === j.id || (j.kind === "highlight" && r.job.kind === "highlight"));
 async function lane() {
   while (!stopping) {
-    // Fresh clips first, then clips resumed after a stop, then highlight videos (long and never urgent).
-    const rank = j => j.kind === "highlight" ? 2 : j.resumed ? 1 : 0, ready = jobs.filter(startable);
+    // Moments people reacted to before coverage checks, fresh before resumed, highlight videos last (triggers.mjs).
+    const ready = jobs.filter(startable);
     if (!ready.length) return;
-    const best = Math.min(...ready.map(rank)), job = ready.find(j => rank(j) === best);
+    const best = Math.min(...ready.map(jobRank)), job = ready.find(j => jobRank(j) === best);
     jobs.splice(jobs.indexOf(job), 1);
     if (job.kind === "render") await rerender(job);
     else if (job.kind === "translate") await translateJob(job);
@@ -345,7 +345,7 @@ async function checkSessions() {
     }
     logChat(session);
     // The daily limit stops a clip-only capture; a recorded stream keeps recording and only stops being clipped.
-    const limitReached = store.countToday(id) >= settings.dailyLimit;
+    const madeToday = store.countToday(id), limitReached = madeToday >= settings.dailyLimit;
     if (limitReached && session.mode === "clip") { blockedUntil.set(id, nextUtcMidnight()); await stopSession(id, "daily clip limit reached"); continue; }
     if (session.recorder.buffered() > 30) failures.delete(id);
     // "!clip" in Twitch chat (Settings → Chat command): clips the moment just before it, without waiting for the
@@ -383,6 +383,8 @@ async function checkSessions() {
     // Nothing triggered: check the next stretch nobody has looked at yet (the AI rating drops the dull ones).
     const lookbackS = Math.min(bufferSeconds - 20, Math.max(pickerEnabled() ? 180 : 90, settings.duration * 2));
     if (now - session.lastClipMs < coverEveryMs || session.recorder.buffered() < lookbackS * 0.8) continue;
+    // The last part of the daily limit is kept for moments people react to.
+    if (!coverageRoom(madeToday, settings.dailyLimit, Number(env.COVERAGE_SHARE ?? COVERAGE_SHARE))) continue;
     const span = coverageWindow({ coveredUntil: session.coveredUntil, latest, lookbackMs: lookbackS * 1000, waiting: jobs.filter(j => j.reason === "audio" && !j.resumed).length + [...running].filter(r => r.job.reason === "audio" && !r.job.resumed).length });
     if (span) {
       session.lastClipMs = now;

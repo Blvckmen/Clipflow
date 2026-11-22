@@ -21,3 +21,22 @@ test("coverageWindow checks back-to-back stretches, never the same footage twice
   assert.deepEqual(coverageWindow({ coveredUntil: 970_000, latest: 1_100_000, lookbackMs: look, readyShare: 0.5 }), { fromMs: 970_000, toMs: 1_100_000 }, "starts where the last check ended");
   assert.equal(coverageWindow({ coveredUntil: 0, latest: 1_000_000, lookbackMs: look, waiting: 2 }), null, "two checks already waiting");
 });
+
+test("coverage checks keep the last 30% of the daily limit for moments people react to", async () => {
+  const { coverageRoom } = await import("../triggers.mjs");
+  assert.equal(coverageRoom(34, 50), true);
+  assert.equal(coverageRoom(35, 50), false, "35 of 50: the rest is for chat spikes, !clip and viewers' clips");
+  assert.equal(coverageRoom(0, 1), true, "a limit of 1 still allows one");
+  assert.equal(coverageRoom(5, 10, 1), true, "COVERAGE_SHARE=1: the whole limit");
+  assert.equal(coverageRoom(7, 10, Number("nonsense")), false, "an unreadable share falls back to 0.7");
+});
+
+test("chat spikes, !clip and viewers' clips go before coverage checks, even resumed ones", async () => {
+  const { jobRank } = await import("../triggers.mjs");
+  const order = [
+    { name: "coverage", reason: "audio" }, { name: "resumed coverage", reason: "audio", resumed: true },
+    { name: "highlight", kind: "highlight" }, { name: "resumed chat", reason: "chat", resumed: true },
+    { name: "chat", reason: "chat" }, { name: "render", kind: "render" }, { name: "viewer", reason: "viewer" },
+  ].sort((a, b) => jobRank(a) - jobRank(b)).map(j => j.name);
+  assert.deepEqual(order, ["chat", "render", "viewer", "resumed chat", "coverage", "resumed coverage", "highlight"]);
+});

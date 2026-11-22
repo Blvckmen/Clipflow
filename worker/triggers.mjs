@@ -31,3 +31,24 @@ export function coverageWindow({ coveredUntil, latest, lookbackMs, readyShare = 
   const fromMs = Math.max(coveredUntil, latest - lookbackMs);
   return latest - fromMs >= lookbackMs * readyShare ? { fromMs, toMs: latest } : null;
 }
+
+// Coverage checks stop once a streamer's clips today reach this share of the daily limit (COVERAGE_SHARE, 0.7), so
+// the rest is kept for chat spikes, "!clip" and viewers' clips. Every check passed the AI rating (it rates nearly
+// everything 7-8 of 10), so coverage alone used up the limit and stopped the recording mid-stream.
+export const COVERAGE_SHARE = 0.7;
+export function coverageRoom(countToday, dailyLimit, share = COVERAGE_SHARE) {
+  const s = Number.isFinite(share) && share > 0 && share <= 1 ? share : COVERAGE_SHARE;
+  return countToday < Math.max(1, Math.floor(dailyLimit * s));
+}
+
+/**
+ * Which job the worker takes next (lowest first): moments people reacted to (chat spikes, "!clip", viewers' clips,
+ * clips asked for by hand) and the owner's re-renders and translations, then coverage checks; a clip resumed after a
+ * stop just after its fresh kind; highlight videos (long and never urgent) last. Coverage checks used to go first in
+ * turn with everything else and kept the resumed chat-spike clips waiting until the next restart.
+ */
+export function jobRank(job) {
+  if (job.kind === "highlight") return 4;
+  const coverage = !job.kind && job.reason === "audio";
+  return (coverage ? 2 : 0) + (job.resumed ? 1 : 0);
+}
