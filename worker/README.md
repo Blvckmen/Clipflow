@@ -163,6 +163,21 @@ sends the suggestions again with them; a banner counts as much as the loudest st
 [RapidOCR](https://github.com/RapidAI/RapidOCR) on the CPU (`py -m pip install rapidocr_onnxruntime`); about 15 to
 20 minutes for a stream on a busy PC, whatever its length. Without it, suggestions use loudness and chat only.
 
+## Background music (optional)
+
+A clip's look can turn background music down ("Turn music down") or keep only the voice ("Voice only"), so
+copyrighted music doesn't get clips muted or taken down (editor -> Extras -> Background music). The worker splits the
+voice from everything else with [Demucs](https://github.com/adefossez/demucs) before rendering, once per clip (the
+result is kept next to the clip's source). It needs PyTorch and Demucs, about 1 GB (CPU builds):
+
+```sh
+py -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+py -m pip install demucs
+```
+
+The first run downloads the model (about 80 MB). A 60-second clip takes 1 to 4 minutes on a laptop CPU. Without
+Demucs, clips set to turn music down fail to render with a message saying so; clips that keep their sound don't need it.
+
 ## AI writer (optional)
 
 With [Ollama](https://ollama.com) installed and a model pulled (`ollama pull qwen2.5:7b`), the worker asks it to write

@@ -7,6 +7,7 @@ import { readFile, rm, stat, writeFile } from "node:fs/promises";
 import { command } from "./process.mjs";
 import { clipHash } from "./core.mjs";
 import { buildAss, filterGraph, needsSubtitles, timeline } from "./edit.mjs";
+import { sourceForMusic } from "./music.mjs";
 const run = promisify(execFile);
 
 export const MAX_CLIP_BYTES = 32 * 1024 * 1024;
@@ -58,6 +59,8 @@ export async function hasAudio(file, signal) {
 // blurred fill. `energy` is the source's per-second loudness (the clip's signals), for jump cuts and punch-ins.
 // `messages` is the clip's Twitch chat (signals.messages), shown when the look has chat on.
 export async function renderClip(source, { edit, words, width, height, background = null, energy = null, messages = [] }, out, signal) {
+  // Background music turned down or off (the look's audio.music): render from a copy of the source with that sound.
+  source = await sourceForMusic(source, edit.audio?.music, { signal });
   const dir = dirname(out), ass = basename(out).replace(/\.mp4$/, "") + ".ass";
   const tl = timeline(edit, words, energy);
   const subtitles = needsSubtitles(edit, words, messages) ? ass : null;
