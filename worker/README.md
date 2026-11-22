@@ -178,6 +178,14 @@ py -m pip install demucs
 The first run downloads the model (about 80 MB). A 60-second clip takes 1 to 4 minutes on a laptop CPU. Without
 Demucs, clips set to turn music down fail to render with a message saying so; clips that keep their sound don't need it.
 
+## Colour emoji (optional)
+
+ffmpeg's subtitle renderer draws emoji as one-colour outlines. With two small packages
+(`py -m pip install uharfbuzz freetype-py`, about 3 MB), emoji in the hook, captions and chat come out in colour, from
+the system's colour emoji font (Segoe UI Emoji on Windows; set `EMOJI_FONT` to use another). The subtitles still
+place them; `emoji.py` draws them on a layer over the video. This adds a second or two per clip. Emoji the font
+can't draw (flags on Windows) stay as they were. Without the packages, emoji render plain, as before.
+
 ## AI writer (optional)
 
 With [Ollama](https://ollama.com) installed and a model pulled (`ollama pull qwen2.5:7b`), the worker asks it to write

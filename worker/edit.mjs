@@ -498,7 +498,8 @@ const fmt = n => String(Math.round(n * 1000) / 1000);
 // frame.split.volume when it has some and the volume is above 0, ending with the clip. `tl` (see timeline): jump cuts
 // are taken out of the picture and the stream's sound (audio.source must say whether it has sound), and punch-ins
 // zoom the whole picture (not the captions).
-export function filterGraph(edit, { width, height }, subtitles, { background = false, audio = null, tl = plain(edit) } = {}) {
+// `emoji`: the input number of the colour emoji layer (see emoji.mjs), laid over the subtitles, or null.
+export function filterGraph(edit, { width, height }, subtitles, { background = false, audio = null, tl = plain(edit), emoji = null } = {}) {
   const split = edit.frame.mode === "split" && background;
   // Split screen without a background, or a facecam layout without a webcam box, falls back to the blurred fill.
   const noCam = (edit.frame.mode === "cam" || edit.frame.mode === "pip") && !edit.frame.facecam?.box;
@@ -546,6 +547,7 @@ export function filterGraph(edit, { width, height }, subtitles, { background = f
     last = "vz";
   }
   if (subtitles) { parts.push(`[${last}]subtitles=${subtitles}[v1]`); last = "v1"; }
+  if (subtitles && emoji != null) { parts.push(`[${last}][${emoji}:v]overlay=0:0:eof_action=pass[ve]`); last = "ve"; }
   if (edit.progress.on) {
     const len = fmt(tl.length);
     parts.push(`color=c=${hex6(edit.progress.color)}:s=${W}x10:r=30[bar]`, `[${last}][bar]overlay=x='-w+w*t/${len}':y=main_h-10:eval=frame:shortest=1[v2]`);

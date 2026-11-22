@@ -6,7 +6,8 @@ import { basename, dirname, join } from "node:path";
 import { readFile, rm, stat, writeFile } from "node:fs/promises";
 import { command } from "./process.mjs";
 import { clipHash } from "./core.mjs";
-import { buildAss, filterGraph, needsSubtitles, timeline } from "./edit.mjs";
+import { buildAss, canvas, filterGraph, needsSubtitles, timeline } from "./edit.mjs";
+import { colourEmoji } from "./emoji.mjs";
 import { sourceForMusic } from "./music.mjs";
 const run = promisify(execFile);
 
@@ -64,21 +65,40 @@ export async function renderClip(source, { edit, words, width, height, backgroun
   const dir = dirname(out), ass = basename(out).replace(/\.mp4$/, "") + ".ass";
   const tl = timeline(edit, words, energy);
   const subtitles = needsSubtitles(edit, words, messages) ? ass : null;
-  if (subtitles) await writeFile(join(dir, ass), buildAss(edit, words, tl, messages), "utf8");
   const length = edit.trim.end - edit.trim.start, split = edit.frame.mode === "split" && !!background;
+  // Emoji in colour: drawn on a layer over the subtitles, which then leave them out (see emoji.mjs). Without the
+  // emoji tools they stay plain, as libass draws them.
+  const emojiDir = join(dir, basename(out).replace(/\.mp4$/, "") + "-emoji");
+  let text = subtitles ? buildAss(edit, words, tl, messages) : null, layer = null;
+  if (text) {
+    try {
+      const { W, H } = canvas(edit.frame);
+      layer = await colourEmoji(text, emojiDir, { width: W, height: H, signal });
+      if (layer) text = layer.ass;
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      console.log("Colour emoji skipped, they stay plain: " + error.message);
+      layer = null;
+    }
+  }
+  if (subtitles) await writeFile(join(dir, ass), text, "utf8");
   // The background video's sound, when it is turned up and the video has some; the stream's, when cuts are taken
   // out of it.
   const mixing = split && !background.image && (edit.frame.split?.volume ?? 0) > 0;
   const audio = mixing || tl.cuts.length ? { source: await hasAudio(source, signal), background: mixing && await hasAudio(background.path, signal) } : null;
-  const graph = filterGraph(edit, { width, height }, subtitles, { background: split, audio, tl });
+  const graph = filterGraph(edit, { width, height }, subtitles, { background: split, audio, tl, emoji: layer ? (split ? 2 : 1) : null });
   try {
     await command("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-ss", String(edit.trim.start), "-t", String(length), "-i", source,
       // A video background loops from its start point; an image is repeated as a 30 fps stream.
       ...(split ? (background.image ? ["-loop", "1", "-framerate", "30", "-i", background.path] : ["-stream_loop", "-1", "-ss", String(background.start ?? 0), "-i", background.path]) : []),
+      ...(layer ? ["-f", "concat", "-safe", "0", "-i", layer.list] : []),
       "-filter_complex", graph, "-map", "[vout]", ...(graph.includes("[aout]") ? ["-map", "[aout]"] : ["-map", "0:a?"]),
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-maxrate", "2500k", "-bufsize", "5000k", "-r", "30",
       "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", basename(out)], { signal, cwd: dir, timeout: encodeTimeout(length) }).done;
-  } finally { if (subtitles) await rm(join(dir, ass), { force: true }); }
+  } finally {
+    if (subtitles) await rm(join(dir, ass), { force: true });
+    await rm(emojiDir, { recursive: true, force: true });
+  }
   const size = (await stat(out)).size;
   if (size < 1024 || size > MAX_CLIP_BYTES) throw new Error("Rendered clip size outside allowed range (" + size + " bytes)");
   return { sha: clipHash(await readFile(out)), size, duration: Math.round(tl.length) };
