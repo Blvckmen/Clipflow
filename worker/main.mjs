@@ -43,7 +43,8 @@ const dataDir = env.DATA_DIR || "/data";
 const pollMs = seconds(env.POLL_SECONDS, 60), retentionMs = seconds(env.RETENTION_HOURS, 72) * 3600;
 // Triggers wait in a queue (triggers.mjs); a long chat burst counts as a new trigger at most every CHAT_CLIP_GAP_SECONDS.
 // Between triggers the stream is covered in back-to-back windows; COOLDOWN_SECONDS (default 0) spaces those checks out.
-const coverEveryMs = seconds(env.COOLDOWN_SECONDS, 0), spikeEveryMs = seconds(env.CHAT_CLIP_GAP_SECONDS, 25);
+// (seconds() refuses 0, which is a valid choice here: back-to-back checks.)
+const coverEveryMs = Math.max(0, Number(env.COOLDOWN_SECONDS ?? 0) || 0) * 1000, spikeEveryMs = seconds(env.CHAT_CLIP_GAP_SECONDS, 25);
 const bufferSeconds = seconds(env.BUFFER_SECONDS, 240) / 1000, spikeFactor = Number(env.CHAT_SPIKE_FACTOR ?? 2.5);
 const maxSessions = Math.max(1, Math.floor(Number(env.MAX_CAPTURES ?? 1)));
 const liveCheckMs = seconds(env.LIVE_CHECK_SECONDS, 120), probeConcurrency = 3, probesPerCycle = 15;
