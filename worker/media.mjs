@@ -68,7 +68,7 @@ export function sourceSignals(energy,chat,from,to) {
 // the editor, and fills in the webcam box when the clip's look uses a facecam layout and has none yet.
 // `rater(texts)` (rateMoments in writer.mjs) scores candidate moments by what was said in them, 0..10 each; with it and
 // a transcript, the clip is the candidate that's best on loudness, chat and what was said together.
-export async function processWindow(raw,{settings,text=null,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false,hint="",writer=null,rater=null,findFacecam=null,messages=[],chatWeight=0.5},dir,signal) {
+export async function processWindow(raw,{settings,text=null,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false,hint="",writer=null,rater=null,findFacecam=null,messages=[],chatWeight=0.5,minRating=null},dir,signal) {
   const source=join(dir,"source.mp4"), energyFile=join(dir,"energy.json"), wordsFile=join(dir,"words.json");
   await mkdir(dir,{recursive:true});
   try {
@@ -106,15 +106,15 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
         took("transcription");
         const ratings=await rater(texts).catch(()=>null);
         took("rating");
+        // Nothing here worth a clip (every moment rated below minRating, e.g. a quiet stretch caught by the every-10-minutes
+        // check): stop before encoding, writing and rendering. Without ratings (no AI) the clip is made as before.
+        if(ratings&&minRating&&Math.max(...ratings)<minRating)throw Object.assign(new Error("nothing worth a clip (best moment rated "+Math.max(...ratings)+"/10)"),{skip:true});
         const pick=chooseMoment(candidates,ratings);
         if(ratings&&pick){({start,end}=pick);console.log("Moment ratings",ratings.join(", ")+": picked",candidates.indexOf(candidates.find(c=>c.start===pick.start))+1,"of",candidates.length);}
       }
     }
     const from=Math.max(0,start-SOURCE_PAD), to=Math.min(total,end+SOURCE_PAD);
-    // Frequent keyframes keep seeking in the editor responsive.
     if(timings.transcription===undefined)took("transcription");
-    await command("ffmpeg",["-hide_banner","-loglevel","error","-y","-ss",String(from),"-i",raw,"-t",String(to-from),"-vf","scale=1280:1280:force_original_aspect_ratio=decrease:force_divisible_by=2","-c:v","libx264","-preset","veryfast","-crf","23","-maxrate","3000k","-bufsize","6000k","-g","30","-c:a","aac","-b:a","128k","-movflags","+faststart",source],{signal,timeout:encodeTimeout(to-from)}).done;
-    const info=await videoInfo(source,signal);
     const words=sourceWords(segments,from,to);
     let base=null;
     try { if(style)base=normalizeStyle(style); } catch { /* an unreadable saved style falls back to the defaults */ }
@@ -125,13 +125,16 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
     // Build the title before the first render; the saved edit and dashboard preview share it. The AI writer's hook
     // comes first when it has one; otherwise (or with AUTO_HOOKS=false off) the transcript-based one.
     const hooks=transcribe && (text?text.hook:true) && process.env.AUTO_HOOKS!=="false";
-    let ai=null;
-    if(writer&&!signal.aborted){
-      const said=words.filter(w=>w[0]>=initialEdit.trim.start-.05&&w[1]<=initialEdit.trim.end+.05).map(w=>w[2]).join(" ");
-      took("source");
-      ai=await writer({transcript:said,from,to:to}).catch(()=>null);
-      took("writing");
-    }
+    // The AI writer only needs what was said, so it works while the source is encoded (the two longest steps).
+    const said=words.filter(w=>w[0]>=initialEdit.trim.start-.05&&w[1]<=initialEdit.trim.end+.05).map(w=>w[2]).join(" ");
+    const writing=writer&&!signal.aborted?writer({transcript:said,from,to:to}).catch(()=>null):Promise.resolve(null);
+    // Frequent keyframes keep seeking in the editor responsive.
+    await command("ffmpeg",["-hide_banner","-loglevel","error","-y","-ss",String(from),"-i",raw,"-t",String(to-from),"-vf","scale=1280:1280:force_original_aspect_ratio=decrease:force_divisible_by=2","-c:v","libx264","-preset","veryfast","-crf","23","-maxrate","3000k","-bufsize","6000k","-g","30","-c:a","aac","-b:a","128k","-movflags","+faststart",source],{signal,timeout:encodeTimeout(to-from)}).done;
+    took("source");
+    const info=await videoInfo(source,signal);
+    // "writing": how much longer the writer took than the encode.
+    const ai=await writing;
+    if(writer)took("writing");
     let withAi=initialEdit;
     if(hooks&&ai?.hook&&!initialEdit.hook.text?.trim()){
       const text=initialEdit.captions.mask?ai.hook.split(" ").map(maskWord).join(" "):ai.hook;
@@ -139,7 +142,6 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
       withAi={...initialEdit,hook:{...initialEdit.hook,text,seconds}};
     }
     let edit=applyAutomaticHook(withAi,words,{enabled:hooks});
-    if(timings.source===undefined)took("source");
     const face=findFacecam?await findFacecam(source,signal).catch(()=>null):null;
     // A stream filmed on a phone: keep where its picture is, and frame it as a phone stream instead of a small
     // picture on a blurred fill (or between black bars).

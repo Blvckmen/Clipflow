@@ -262,6 +262,9 @@ async function processJobs() {
         chatWeight: job.settings.streamers.find(s => s.id === job.streamer.id)?.chatWeight ?? 0.5,
         // Twitch chat during the window, kept with the clip so it can be shown on it.
         messages: (job.chatLines ?? []).map(l => [(l.t - job.rawStartMs) / 1000, l.name ?? "", l.text, l.color ?? null]),
+        // Clips with no other sign of a moment (the every-10-minutes check on streams without chat) are skipped when the
+        // AI rates every candidate below AI_MIN_RATING (default 6 of 10); chat spikes, !clip and viewers' clips never are.
+        minRating: job.reason === "audio" ? Number(env.AI_MIN_RATING ?? 6) || null : null,
         rater: pickerEnabled() && !job.exact ? texts => rateMoments(texts, { streamer: who.name, title, chat: job.chatLines?.length ? chatSample(job.chatLines, job.rawStartMs, job.rawStartMs + 120_000, 15) : [] }, { signal: controller.signal }) : null, findFacecam, background: edit => backgroundFor(edit, job.id, title ?? "") }, job.dir, controller.signal);
       store.ready(job.id, result.sha, Math.min(90, Math.max(15, Math.round(result.end - result.start))));
       made = true;
@@ -273,7 +276,9 @@ async function processJobs() {
       store.fail(job.id);
       why = error.message;
       await rm(job.dir, { recursive: true, force: true });
-      if (!controller.signal.aborted) problem("Clip processing failed for " + job.streamer.url + ": " + error.message);
+      // Skipped on purpose (nothing worth a clip): not a problem, and it doesn't count towards the daily limit.
+      if (error.skip) console.log("Skipped a", reasonLabel[job.reason], "on", job.streamer.url + ":", error.message, "(after " + Math.round((Date.now() - startedAt) / 1000) + "s)");
+      else if (!controller.signal.aborted) problem("Clip processing failed for " + job.streamer.url + ": " + error.message);
     } finally { processing = null; }
     if (job.tracker) settleRequest(job.tracker, made, why);
     void report();
