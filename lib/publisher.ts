@@ -37,6 +37,11 @@ type Adapter = {
 };
 
 const CHECK_EVERY_MS = 60_000;   // Instagram recommends checking a container about once a minute
+// An account's posts sent since a time (bind: account, since, account, since): published ones by when they went out,
+// ones still processing by when they were sent. Two ranges on posts_account_published, so it reads only that day's
+// posts rather than the account's whole history (it runs every minute for every account).
+const LAST_DAY = `(SELECT draft,state,published_at AS at FROM posts WHERE account_id=? AND state='published' AND published_at>=?
+  UNION ALL SELECT draft,state,updated_at AS at FROM posts WHERE account_id=? AND state='processing' AND updated_at>=?)`;
 const MAX_ATTEMPTS = 3;
 const REFRESH_WITHIN_MS = 10 * 24 * 3600_000;
 
@@ -193,7 +198,7 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   const since = new Date(now - 24 * 3600_000).toISOString(), options = readOptions(account.options);
   const ownLimit = options.dailyLimit ?? account.daily_limit ?? 5, tiktokCap = account.platform === "tiktok" && TIKTOK_DAILY < ownLimit;
   const cap = tiktokCap ? TIKTOK_DAILY : ownLimit;
-  const sentToday = options.whenFull === "review" ? (await db.prepare("SELECT count(*) AS n FROM posts WHERE account_id=? AND state IN ('published','processing') AND coalesce(published_at,updated_at)>=?").bind(account.id, since).first<{ n: number }>())?.n ?? 0 : 0;
+  const sentToday = options.whenFull === "review" ? (await db.prepare("SELECT count(*) AS n FROM " + LAST_DAY).bind(account.id, since, account.id, since).first<{ n: number }>())?.n ?? 0 : 0;
   const full = options.whenFull === "review" && sentToday >= cap;
   const fullNote = heldNote(tiktokCap ? "TikTok's " + TIKTOK_DAILY + " posts a day were used up" : "this account's daily limit of " + ownLimit + " was reached");
 
@@ -274,10 +279,8 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   }
   // What the last day looks like for this account, for the planner (lib/posting-plan.mjs): direct posts and drafts
   // sent, when the last one went, and when the oldest of each leaves the 24-hour window.
-  const day = await db.prepare(`SELECT sum(draft=0 AND state='published') AS direct, sum(draft=1) AS drafts,
-      max(coalesce(published_at,updated_at)) AS last, min(coalesce(published_at,updated_at)) AS oldest
-    FROM posts WHERE account_id=? AND state IN ('published','processing') AND coalesce(published_at,updated_at)>=?`).bind(account.id, since)
-    .first<{ direct: number | null; drafts: number | null; last: string | null; oldest: string | null }>();
+  const day = await db.prepare("SELECT sum(draft=0 AND state='published') AS direct, sum(draft=1) AS drafts, max(at) AS last, min(at) AS oldest FROM " + LAST_DAY)
+    .bind(account.id, since, account.id, since).first<{ direct: number | null; drafts: number | null; last: string | null; oldest: string | null }>();
   const at = (v: string | null | undefined) => v ? Date.parse(v) : null;
   const plan = planNext({
     platform: account.platform, wantsDraft: account.platform === "tiktok" && (!!queued.draft || wantsDraft(options, !!clip.reviewed_at)), queuedByHand: !!queued.queued_by_hand, holdWhenFull: options.whenFull === "review",

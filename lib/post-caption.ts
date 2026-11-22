@@ -44,12 +44,22 @@ export async function captionClip(env: Env, row: CaptionRow, replace = false): P
 export const CLIP_FACTS_SQL = "SELECT c.id,c.owner,c.reason,c.transcript,c.edit,c.post_caption,c.edit_rev,s.name AS streamer,s.platform,s.live_title,p.caption_notes FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner LEFT JOIN preferences p ON p.owner=c.owner";
 
 // Runs with the publisher: writes captions for a few recent clips that don't have one, so they can be read and
-// edited before they post.
+// edited before they post. A clip that can't get one (no speech in its trim) is set aside (caption_tries reaches
+// MAX_TRIES) so it isn't picked again every minute, holding up the clips behind it; saving a new edit resets it.
+// Only clips still waiting are read, through the partial index clips_caption_due.
+const MAX_TRIES = 3;
 export async function fillCaptions(env: Env, now = Date.now()) {
-  if (!env.DB) return;
+  const db = env.DB;
+  if (!db) return;
   const since = new Date(now - ADVANCE_WINDOW_MS).toISOString();
-  const { results } = await env.DB.prepare(CLIP_FACTS_SQL + " WHERE c.post_caption IS NULL AND c.transcript IS NOT NULL AND c.transcript!='[]' AND c.review!='rejected' AND c.created_at>=? AND coalesce(p.ai_captions,1)=1 ORDER BY c.created_at DESC LIMIT ?").bind(since, BATCH_PER_RUN).all<CaptionRow>();
-  for (const row of results) await captionClip(env, row);
+  const { results } = await db.prepare(CLIP_FACTS_SQL.replace("FROM clips c", "FROM clips c INDEXED BY clips_caption_due") + " WHERE c.post_caption IS NULL AND c.caption_tries<" + MAX_TRIES + " AND c.transcript IS NOT NULL AND c.transcript!='[]' AND c.review!='rejected' AND c.created_at>=? AND coalesce(p.ai_captions,1)=1 ORDER BY c.created_at DESC LIMIT ?").bind(since, BATCH_PER_RUN).all<CaptionRow>();
+  const setAside = (row: CaptionRow, tries: string, error: string) => db.prepare("UPDATE clips SET caption_tries=" + tries + ",caption_error=? WHERE id=? AND edit_rev=? AND post_caption IS NULL").bind(error.slice(0, 300), row.id, row.edit_rev).run();
+  for (const row of results) {
+    const facts = factsFromRow(row);
+    if (!spokenText(facts.words, facts.trim)) { await setAside(row, String(MAX_TRIES), "Nothing is said in this clip's trim, so no caption was written. Write one, or the account's caption template is used."); continue; }
+    try { await captionClip(env, row); }
+    catch (error) { await setAside(row, "caption_tries+1", "Couldn't write a caption: " + (error as Error).message); }
+  }
 }
 
 // The text to post: the stored caption, else a freshly written one, else null (the caller uses the template).

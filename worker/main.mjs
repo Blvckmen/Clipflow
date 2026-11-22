@@ -1091,8 +1091,22 @@ async function readMeta(path) {
   try { return JSON.parse(await readFile(join(dirname(path), "meta.json"), "utf8")); } catch { return null; }
 }
 
-async function report() {
+// Sends finished clips in the background, one pass at a time: uploads can take minutes each on a slow connection,
+// and the cycle (live checks, starting recordings) must not wait for them. A call during a pass asks for another
+// pass after it, so a clip finished meanwhile goes out without waiting for the next cycle; two passes never run at
+// once (both would send the same pending clips).
+let reporting = null, reportAgain = false;
+function report() {
+  if (reporting) { reportAgain = true; return reporting; }
+  reporting = (async () => {
+    do { reportAgain = false; await reportPass(); } while (reportAgain && !stopping);
+  })().catch(error => problem("Sending clips failed: " + error.message)).finally(() => { reporting = null; });
+  return reporting;
+}
+
+async function reportPass() {
   for (const row of store.pending()) {
+    if (stopping) return;
     let size;
     try { size = (await stat(row.path)).size; } catch { store.fail(row.id); continue; }
     try {
@@ -1169,7 +1183,7 @@ async function tick() {
   void makeViewerPicks().catch(error => problem("Making picked viewer clips failed: " + error.message));
   if (config) takeImports(config.imports);
   await reportStatus();
-  await report();
+  void report();
   await syncRecordings();
   await prune();
   await pruneRecordings();

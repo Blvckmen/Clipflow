@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { integer, primaryKey, real, sqliteTable, text, uniqueIndex, index } from "drizzle-orm/sqlite-core";
 export const streamers = sqliteTable("streamers", {
  id:text("id").primaryKey(),owner:text("owner").notNull(),name:text("name").notNull(),url:text("url").notNull(),platform:text("platform").notNull(),status:text("status").notNull().default("armed"),createdAt:text("created_at").notNull(),
@@ -91,7 +92,9 @@ export const clips=sqliteTable("clips",{
  // Indexes for the frequent reads (the once-a-minute publisher, the worker's config poll, the dashboard's analytics):
  // without them each of those reads every clip, which runs past D1's daily row-read allowance.
  index("clips_streamer_review").on(t.streamerId,t.review),index("clips_owner_render").on(t.owner,t.renderState),
- index("clips_created").on(t.createdAt),index("clips_owner_reviewed").on(t.owner,t.reviewedAt)]);
+ index("clips_created").on(t.createdAt),index("clips_owner_reviewed").on(t.owner,t.reviewedAt),
+ // Clips still waiting for a written caption (lib/post-caption.ts fillCaptions, every minute): only those are read.
+ index("clips_caption_due").on(t.createdAt).where(sql`${t.postCaption} IS NULL AND ${t.captionTries} < 3`)]);
 // Connected publishing accounts; an owner can connect several per platform. The access token is AES-GCM
 // encrypted with the TOKEN_KEY secret.
 // provider "instagram": connected directly with Instagram Login, token stored here. provider "zernio": connected on
@@ -137,6 +140,8 @@ export const posts=sqliteTable("posts",{
 },t=>[uniqueIndex("posts_clip_account_round").on(t.clipId,t.accountId,t.round),index("posts_owner_state").on(t.owner,t.state),
  // The publisher's per-account lookups, and the dashboard's newest posts.
  index("posts_account_state").on(t.accountId,t.state,t.nextAttemptAt),index("posts_owner_created").on(t.owner,t.createdAt),
+ // The publisher's every-minute count of an account's posts in the last day (its daily limit): reads that day only.
+ index("posts_account_published").on(t.accountId,t.state,t.publishedAt),
  // The hourly analytics sync matches each post by the platform's post id or the Zernio post id.
  index("posts_media").on(t.mediaId),index("posts_container").on(t.containerId)]);
 // When each periodic job last ran (e.g. "analytics:<owner>:<zernio key id or site>"), so the once-a-minute cron

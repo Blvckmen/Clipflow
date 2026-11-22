@@ -1,0 +1,2 @@
+CREATE INDEX `clips_caption_due` ON `clips` (`created_at`) WHERE `post_caption` IS NULL AND `caption_tries` < 3;--> statement-breakpoint
+CREATE INDEX `posts_account_published` ON `posts` (`account_id`,`state`,`published_at`);
