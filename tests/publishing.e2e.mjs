@@ -302,6 +302,32 @@ test("a revoked Instagram token marks the account for reconnection without losin
   assert.ok(body.posts.some(p => expired.some(a => a.id === p.account_id) && (p.state === "queued" || p.state === "processing")), "its post is kept for after reconnecting");
 });
 
+test("editable sources older than 10 days are removed once a day; the finished clip stays", async () => {
+  const withSource = async createdAt => {
+    const src = randomBytes(3000), edit = defaultEdit(defaultStyle(), { trimStart: 2, trimEnd: 32 });
+    const { clip } = await addClip(streamer.id, { createdAt, edit, transcript: [], source: { width: 1920, height: 1080, duration: 40, sha: createHash("sha256").update(src).digest("hex"), size: src.length } });
+    assert.equal((await worker("/api/worker/clips/" + clip.id + "/source", { method: "PUT", headers: { "content-type": "video/mp4" }, body: src })).status, 200);
+    return clip;
+  };
+  const day = 86_400_000;
+  // The next run is a day on (earlier runs already did today's cleanup).
+  const old = await withSource(new Date(clock + day - 20 * day).toISOString()), recent = await withSource(new Date(clock + day - 2 * day).toISOString());
+  const opened = async id => (await fetch(base + "/api/clips/" + id + "/edit", { headers: who })).json();
+  assert.equal((await opened(old.id)).sourceStored, true);
+  await cron(day);
+  const gone = await opened(old.id), kept = await opened(recent.id);
+  assert.equal(gone.sourceStored, false, "the old clip's source was removed");
+  assert.match(gone.pruned ?? "", /^\d{4}-\d{2}-\d{2}$/, "the editor is told when");
+  assert.equal(kept.sourceStored, true, "a two-day-old clip keeps its source");
+  assert.equal((await fetch(base + "/api/clips/" + old.id + "/source", { headers: who })).status, 404, "nothing left in storage");
+  assert.equal((await fetch(base + "/api/clips/" + old.id + "/file", { headers: who })).status, 200, "the finished clip is still there");
+  const save = await fetch(base + "/api/clips/" + old.id + "/edit", { method: "POST", headers: { ...who, "content-type": "application/json" }, body: JSON.stringify({ edit: gone.edit, rev: gone.rev }) });
+  assert.equal(save.status, 409, "it can't be re-edited");
+  assert.match((await save.json()).error, /removed to save storage/);
+  // The worker can't put it back either.
+  assert.equal((await worker("/api/worker/clips/" + old.id + "/source", { method: "PUT", headers: { "content-type": "video/mp4" }, body: randomBytes(3000) })).status, 409);
+});
+
 test("disconnecting removes the account and its links, and drops unsent posts", async () => {
   for (const a of (await dash()).body.accounts) assert.equal((await dash({ action: "disconnect", id: a.id })).status, 200);
   const { body } = await dash();

@@ -38,7 +38,7 @@ export async function GET(_request:Request,{params}:{params:Promise<{id:string}>
   clip=(await load(db,id,user.userId))!;
  }
  const source=parse(clip.source_meta);
- return Response.json({id:clip.id,streamerId:clip.streamer_id,streamer:clip.streamer,streamerStyle:parse(clip.streamer_style),edit:parse(clip.edit),rev:clip.edit_rev,words:parse(clip.transcript)??[],signals:parse(clip.signals),source,legacy:!!source?.legacy,sourceStored:!!clip.source_key,render:{state:clip.render_state,error:clip.render_error,at:clip.rendered_at},review:clip.review,reason:clip.reason,createdAt:clip.created_at,
+ return Response.json({id:clip.id,streamerId:clip.streamer_id,streamer:clip.streamer,streamerStyle:parse(clip.streamer_style),edit:parse(clip.edit),rev:clip.edit_rev,words:parse(clip.transcript)??[],signals:parse(clip.signals),source,legacy:!!source?.legacy,sourceStored:!!clip.source_key,pruned:typeof source?.pruned==="string"?source.pruned:null,render:{state:clip.render_state,error:clip.render_error,at:clip.rendered_at},review:clip.review,reason:clip.reason,createdAt:clip.created_at,
   caption:{text:clip.post_caption,source:clip.caption_source,error:clip.caption_error,ai:aiCaptionsAvailable(env)&&clip.ai_captions!==0}},{headers:{"Cache-Control":"private, no-store"}});
 }
 // Saves an edit and queues the re-render. `saveStyle` also makes this edit's look the default for the clip's
@@ -50,8 +50,10 @@ export async function POST(request:Request,{params}:{params:Promise<{id:string}>
  let body;try{body=bodySchema.parse(await request.json());}catch{return Response.json({error:"Check the edit and try again."},{status:400});}
  const db=database(),owner=user.userId,{id}=await params,clip=await load(db,id,owner);
  if(!clip)return Response.json({error:"Clip not found."},{status:404});
- const source=parse(clip.source_meta) as {duration:number}|null;
+ const source=parse(clip.source_meta) as {duration:number;pruned?:string}|null;
  if(!clip.edit||!source)return Response.json({error:"This clip has no editable source."},{status:409});
+ // Its editable copy was removed after SOURCE_KEEP_DAYS (lib/sources.ts): nothing left to re-render from.
+ if(source.pruned&&!clip.source_key)return Response.json({error:"This clip's editable copy was removed to save storage, so it can't be re-edited. The finished clip is unchanged."},{status:409});
  let edit;try{edit=normalizeEdit(body.edit,{duration:source.duration});}catch(error){return Response.json({error:(error as Error).message+"."},{status:400});}
  // Two tabs editing one clip: the later save must have seen the earlier one.
  if(body.rev!==clip.edit_rev)return Response.json({error:"This clip was edited somewhere else. Reopen it to see the latest version."},{status:409});

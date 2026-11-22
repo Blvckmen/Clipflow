@@ -19,7 +19,7 @@ type ChatLook = { on: boolean; y: number };
 // [seconds into the source, name, text, colour]: the Twitch chat sent during the clip's source.
 type ChatMessage = [number, string, string, string | null];
 type Pace = { cuts: "off" | "gentle" | "tight"; zooms: boolean };
-type Bundle = { id: string; streamerId: string; streamer: string | null; edit: Edit; rev: number; words: Word[]; signals: { energy: number[]; chat: number[]; messages?: ChatMessage[] } | null; source: { width: number; height: number; duration: number; face?: CamBox | null; content?: CamBox | null }; legacy: boolean; sourceStored: boolean; render: { state: string | null; error: string | null; at: string | null }; createdAt: string; caption: { text: string | null; source: string | null; error: string | null; ai: boolean } };
+type Bundle = { id: string; streamerId: string; streamer: string | null; edit: Edit; rev: number; words: Word[]; signals: { energy: number[]; chat: number[]; messages?: ChatMessage[] } | null; source: { width: number; height: number; duration: number; face?: CamBox | null; content?: CamBox | null }; legacy: boolean; sourceStored: boolean; pruned?: string | null; render: { state: string | null; error: string | null; at: string | null }; createdAt: string; caption: { text: string | null; source: string | null; error: string | null; ai: boolean } };
 type Tab = "frame" | "captions" | "extras" | "transcript" | "post";
 
 const animationLabels: Record<string, string> = { none: "Static", pop: "Pop in", karaoke: "Karaoke", word: "One word at a time" };
@@ -389,7 +389,8 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
     </header>
     {error && <div className="error editor-error" role="alert">{error}</div>}
     {bundle.render.state === "failed" && bundle.render.error && <div className="error editor-error" role="status">The last render failed: {bundle.render.error}. Saving again retries it.</div>}
-    {!bundle.sourceStored && <div className="notice editor-error"><p>The editable source isn&apos;t in clip storage yet, so the preview can&apos;t play. The worker still re-renders your edits while it keeps this clip.</p></div>}
+    {!bundle.sourceStored && bundle.pruned && <div className="notice editor-error"><p>This clip&apos;s editable copy was removed on {bundle.pruned} to save storage (editable copies are kept for 10 days), so it can&apos;t be re-edited. The finished clip is unchanged and still posts.</p></div>}
+    {!bundle.sourceStored && !bundle.pruned && <div className="notice editor-error"><p>The editable source isn&apos;t in clip storage yet, so the preview can&apos;t play. The worker still re-renders your edits while it keeps this clip.</p></div>}
     <div className="editor-body">
       <section className="editor-stage">
         <div className={"phone" + (stacks(edit.frame) ? "" : " landscape")} style={{ aspectRatio: frameSize(edit.frame).W + " / " + frameSize(edit.frame).H }}>
