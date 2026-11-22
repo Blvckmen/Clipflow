@@ -70,7 +70,12 @@ const probeErrors = new Map(), PROBE_ERRORS_SHOWN = 3;
 // dashboard editor ({ kind: "render", id, rev, edit, words, source }).
 const jobs = [];
 const renderRevs = new Map();  // clip id -> newest edit revision already queued or rendered
-let config = null, stopping = false, timer, sessionTimer, processing = null;
+let config = null, stopping = false, timer, sessionTimer;
+// The jobs being worked on ({ job, controller }), at most CLIP_WORKERS (2) at once: while one clip is transcribed
+// another can be written or rendered. With one at a time clips queued for minutes while most of the PC's cores sat
+// idle (Whisper, the AI writer and ffmpeg each use only some of them). CLIP_WORKERS=1 is the old one-at-a-time.
+const running = new Set(), clipWorkers = Math.max(1, Math.min(4, Math.floor(Number(env.CLIP_WORKERS ?? 2)) || 1));
+const track = (job, controller) => { const slot = { job, controller }; running.add(slot); return () => running.delete(slot); };
 // When the settings were last loaded. A dashboard that doesn't answer (a deploy, an outage) leaves the worker on its last
 // settings for up to CONFIG_GRACE_MS: dropping them stopped every recording and threw away every queued clip, which
 // lost about a quarter of the moments viewers clipped (115 such stops in 2.5 days).
@@ -251,23 +256,39 @@ async function clipWindow(session, fromMs, toMs, reason) {
   } finally { session.busy = false; }
 }
 
-async function processJobs() {
-  if (processing) return;
-  while (jobs.length && !stopping) {
+// Starts lanes (up to clipWorkers) that each take the next job until none can be started.
+let lanes = 0;
+function processJobs() {
+  while (lanes < clipWorkers && !stopping && jobs.some(startable)) {
+    lanes += 1;
+    void lane().finally(() => { lanes -= 1; if (!stopping && jobs.length) processJobs(); });
+  }
+}
+// Not alongside another job for the same clip (a re-render while its translation renders) or a second highlight video.
+const startable = j => ![...running].some(r => r.job.id === j.id || (j.kind === "highlight" && r.job.kind === "highlight"));
+async function lane() {
+  while (!stopping) {
     // Fresh clips first, then clips resumed after a stop, then highlight videos (long and never urgent).
-    const rank = j => j.kind === "highlight" ? 2 : j.resumed ? 1 : 0;
-    const best = Math.min(...jobs.map(rank)), next = jobs.findIndex(j => rank(j) === best), job = jobs.splice(next, 1)[0], startedAt = Date.now();
-    if (job.kind === "render") { await rerender(job); continue; }
-    if (job.kind === "translate") { await translateJob(job); continue; }
-    if (job.kind === "highlight") { await highlightJob(job); continue; }
+    const rank = j => j.kind === "highlight" ? 2 : j.resumed ? 1 : 0, ready = jobs.filter(startable);
+    if (!ready.length) return;
+    const best = Math.min(...ready.map(rank)), job = ready.find(j => rank(j) === best);
+    jobs.splice(jobs.indexOf(job), 1);
+    if (job.kind === "render") await rerender(job);
+    else if (job.kind === "translate") await translateJob(job);
+    else if (job.kind === "highlight") await highlightJob(job);
+    else await clipJob(job);
+  }
+}
+async function clipJob(job) {
+  const startedAt = Date.now();
+  {
     // Live captures stop with their streamer; clips asked for from a recording were asked for by hand.
     if (!job.fromRecording && !allowed(config, job.streamer.id)) {
       store.fail(job.id); await rm(job.dir, { recursive: true, force: true });
       console.log("Dropped a queued", reasonLabel[job.reason] ?? job.reason, "clip from", job.streamer.url + ":", config ? "the streamer is paused, stopped or disabled" : "no settings from the dashboard");
-      continue;
+      return;
     }
-    const controller = new AbortController();
-    processing = { job, controller };
+    const controller = new AbortController(), untrack = track(job, controller);
     let made = false, why = null;
     try {
       // The streamer's name and stream title help Whisper spell them and give the AI writer context.
@@ -300,7 +321,7 @@ async function processJobs() {
       if (error.skip) console.log("Skipped a", reasonLabel[job.reason], "on", job.streamer.url + ":", error.message, "(after " + Math.round((Date.now() - startedAt) / 1000) + "s)");
       else if (!controller.signal.aborted) problem("Clip processing failed for " + job.streamer.url + ": " + error.message);
       else console.log("Cancelled a", reasonLabel[job.reason] ?? job.reason, "clip from", job.streamer.url, stopping ? "(worker stopping; it resumes on start)" : "(streamer paused, stopped or disabled)");
-    } finally { processing = null; }
+    } finally { untrack(); }
     if (job.tracker) settleRequest(job.tracker, made, why);
     void report();
   }
@@ -310,7 +331,7 @@ async function processJobs() {
 async function checkSessions() {
   const now = Date.now();
   // Re-renders were asked for by hand and run regardless of automation; captures stop with their streamer.
-  if (processing?.job.streamer && !allowed(config, processing.job.streamer.id)) processing.controller.abort();
+  for (const r of running) if (r.job.streamer && !allowed(config, r.job.streamer.id)) r.controller.abort();
   for (const [id, session] of sessions) {
     const settings = config, name = session.streamer.url;
     if (!allowed(settings, id)) { await stopSession(id, "paused, stopped or disabled"); continue; }
@@ -362,7 +383,7 @@ async function checkSessions() {
     // Nothing triggered: check the next stretch nobody has looked at yet (the AI rating drops the dull ones).
     const lookbackS = Math.min(bufferSeconds - 20, Math.max(pickerEnabled() ? 180 : 90, settings.duration * 2));
     if (now - session.lastClipMs < coverEveryMs || session.recorder.buffered() < lookbackS * 0.8) continue;
-    const span = coverageWindow({ coveredUntil: session.coveredUntil, latest, lookbackMs: lookbackS * 1000, waiting: jobs.filter(j => j.reason === "audio" && !j.resumed).length + (processing?.job.reason === "audio" && !processing.job.resumed ? 1 : 0) });
+    const span = coverageWindow({ coveredUntil: session.coveredUntil, latest, lookbackMs: lookbackS * 1000, waiting: jobs.filter(j => j.reason === "audio" && !j.resumed).length + [...running].filter(r => r.job.reason === "audio" && !r.job.resumed).length });
     if (span) {
       session.lastClipMs = now;
       session.coveredUntil = span.toMs;
@@ -565,7 +586,7 @@ async function runBackground() {
       const due = r => (recordingRetry.get(r.id) ?? 0) <= now;
       // Transcribing for search comes last: after every other recording's steps, and only while no clip is being made.
       const row = store.recordings().find(r => due(r) && (r.state === "ended" || (r.state === "ready" && (!r.clipped || !r.previewed || !r.scanned))))
-        ?? (!processing && !jobs.length ? store.recordings().find(r => due(r) && r.state === "ready" && (!r.transcribed || !r.rated)) : undefined);
+        ?? (!running.size && !jobs.length ? store.recordings().find(r => due(r) && r.state === "ready" && (!r.transcribed || !r.rated)) : undefined);
       if (!row || stopping) break;
       backgroundRow = row.id;
       try { await recordingStep(row); recordingRetry.delete(row.id); }
@@ -902,7 +923,7 @@ async function backgroundFor(edit, clipId, title = "") {
 // Re-renders a clip with an edit saved in the dashboard editor and uploads the result in place of the old file.
 async function rerender(job) {
   const controller = new AbortController();
-  processing = { job, controller };
+  const untrack = track(job, controller);
   const local = store.get(job.id), localSource = local && join(dirname(local.path), "source.mp4");
   const scratch = join(dataDir, "renders", job.id);
   try {
@@ -931,7 +952,7 @@ async function rerender(job) {
       await api("/api/worker/clips/" + job.id + "/render", { method: "POST", body: JSON.stringify({ rev: job.rev, error: String(error.message).slice(0, 300) }) }).catch(() => {});
     } else renderRevs.delete(job.id);
   } finally {
-    processing = null;
+    untrack();
     await rm(scratch, { recursive: true, force: true });
   }
 }
@@ -950,7 +971,7 @@ function queueHighlights(list) {
 }
 async function highlightJob(job) {
   const controller = new AbortController(), scratch = join(dataDir, "highlights", job.id), base = "/api/worker/highlights/" + job.id;
-  processing = { job, controller };
+  const untrack = track(job, controller);
   try {
     await rm(scratch, { recursive: true, force: true });
     await mkdir(scratch, { recursive: true });
@@ -988,7 +1009,7 @@ async function highlightJob(job) {
       await api(base, { method: "POST", body: JSON.stringify({ error: String(error.message).slice(0, 300) }) }).catch(() => {});
     } else highlightsQueued.delete(job.id);
   } finally {
-    processing = null;
+    untrack();
     await rm(scratch, { recursive: true, force: true });
   }
 }
@@ -1010,7 +1031,7 @@ function queueTranslations(list) {
 }
 async function translateJob(job) {
   const controller = new AbortController(), name = LANGUAGE_NAMES[job.lang];
-  processing = { job, controller };
+  const untrack = track(job, controller);
   const local = store.get(job.id), localSource = local && join(dirname(local.path), "source.mp4");
   const scratch = join(dataDir, "renders", job.id + "-" + job.lang);
   try {
@@ -1047,7 +1068,7 @@ async function translateJob(job) {
       await api("/api/worker/clips/" + job.id + "/translation", { method: "POST", body: JSON.stringify({ lang: job.lang, rev: job.rev, error: String(error.message).slice(0, 300) }) }).catch(() => {});
     } else translateRevs.delete(job.id + ":" + job.lang);
   } finally {
-    processing = null;
+    untrack();
     await rm(scratch, { recursive: true, force: true });
   }
 }
@@ -1163,7 +1184,7 @@ async function shutdown() {
   if (stopping) return;
   stopping = true; clearTimeout(timer); clearInterval(sessionTimer);
   setTimeout(() => process.exit(1), 15_000).unref();
-  processing?.controller.abort();
+  for (const r of running) r.controller.abort();
   stopTranscriber();
   backgroundController.abort();
   await Promise.all([...sessions.keys()].map(id => stopSession(id, "worker shutting down")));

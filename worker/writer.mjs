@@ -6,6 +6,15 @@
 const URL_DEFAULT = "http://127.0.0.1:11434", MODEL_DEFAULT = "qwen2.5:7b", PICKER_MODEL_DEFAULT = "qwen2.5:3b";
 // A number of seconds from the environment as milliseconds, or the default.
 const seconds = (value, fallback) => (Number(value) > 0 ? Number(value) : fallback) * 1000;
+// One request to the local model at a time (it works through them one by one anyway), so with two clips being made at
+// once a request's deadline starts when its turn comes, not while it waits behind the other clip's. A request whose
+// clip was cancelled while it waited is never sent.
+let turn = Promise.resolve();
+export function inTurn(signal, send) {
+  const mine = turn.then(() => { if (signal?.aborted) throw new Error("Cancelled"); return send(); });
+  turn = mine.catch(() => {});
+  return mine;
+}
 export const writerEnabled = () => (process.env.AI_WRITER ?? "on").toLowerCase() !== "off";
 
 const schema = {
@@ -65,7 +74,7 @@ export async function writeClipText(input, { signal, timeoutMs = seconds(process
   if (!writerEnabled()) return null;
   const base = (process.env.OLLAMA_URL || URL_DEFAULT).replace(/\/$/, "");
   try {
-    const response = await fetch(base + "/api/chat", {
+    const response = await inTurn(signal, () => fetch(base + "/api/chat", {
       method: "POST", headers: { "content-type": "application/json" },
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({
@@ -76,7 +85,7 @@ export async function writeClipText(input, { signal, timeoutMs = seconds(process
           { role: "user", content: buildPrompt(input) },
         ],
       }),
-    });
+    }));
     if (!response.ok) return null;
     const body = await response.json();
     return tidy(JSON.parse(body?.message?.content ?? "null"), input);
@@ -113,7 +122,7 @@ export async function rateMoments(texts, context = {}, { signal, timeoutMs = sec
   if (!pickerEnabled() || texts.length < 2 || texts.every(t => !clean(t))) return null;
   const base = (process.env.OLLAMA_URL || URL_DEFAULT).replace(/\/$/, "");
   try {
-    const response = await fetch(base + "/api/chat", {
+    const response = await inTurn(signal, () => fetch(base + "/api/chat", {
       method: "POST", headers: { "content-type": "application/json" },
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({
@@ -124,7 +133,7 @@ export async function rateMoments(texts, context = {}, { signal, timeoutMs = sec
           { role: "user", content: buildRatePrompt(texts, context) },
         ],
       }),
-    });
+    }));
     if (!response.ok) return null;
     const scores = JSON.parse((await response.json())?.message?.content ?? "null")?.scores;
     return Array.isArray(scores) && scores.length === texts.length && scores.every(s => Number.isFinite(s)) ? scores.map(s => Math.max(0, Math.min(10, s))) : null;
@@ -184,7 +193,7 @@ export async function translateClip(input, lang, { signal, timeoutMs = 240_000 }
   if (!LANGUAGE_NAMES[lang] || !writerEnabled()) return null;
   const base = (process.env.OLLAMA_URL || URL_DEFAULT).replace(/\/$/, "");
   try {
-    const response = await fetch(base + "/api/chat", {
+    const response = await inTurn(signal, () => fetch(base + "/api/chat", {
       method: "POST", headers: { "content-type": "application/json" },
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({
@@ -195,7 +204,7 @@ export async function translateClip(input, lang, { signal, timeoutMs = 240_000 }
           { role: "user", content: buildTranslatePrompt(input, lang) },
         ],
       }),
-    });
+    }));
     if (!response.ok) return null;
     const out = JSON.parse((await response.json())?.message?.content ?? "null");
     if (!out || !Array.isArray(out.sentences) || out.sentences.length !== input.sentences.length || out.sentences.some(s => typeof s !== "string")) return null;
@@ -228,7 +237,7 @@ export async function rateSegments(texts, context = {}, { signal, timeoutMs = 18
   if (!pickerEnabled() || !texts.length) return null;
   const base = (process.env.OLLAMA_URL || URL_DEFAULT).replace(/\/$/, "");
   try {
-    const response = await fetch(base + "/api/chat", {
+    const response = await inTurn(signal, () => fetch(base + "/api/chat", {
       method: "POST", headers: { "content-type": "application/json" },
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({
@@ -239,7 +248,7 @@ export async function rateSegments(texts, context = {}, { signal, timeoutMs = 18
           { role: "user", content: buildSegmentPrompt(texts, context) },
         ],
       }),
-    });
+    }));
     if (!response.ok) return null;
     const out = JSON.parse((await response.json())?.message?.content ?? "null")?.segments;
     if (!Array.isArray(out) || out.length !== texts.length) return null;

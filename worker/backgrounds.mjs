@@ -2,7 +2,7 @@
 // first time a clip needs it and keeps it in DATA_DIR/backgrounds. A background can also be another clip from the
 // gallery (edit.frame.background "clip:<id>"), used through that clip's unframed source.
 import { createHash } from "node:crypto";
-import { mkdir, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 // A number from 0 to 1 that is always the same for this text.
@@ -63,7 +63,9 @@ export async function localBackground(dataDir, entry, fetchFile) {
   const bytes = await fetchFile(entry);
   if (entry.size !== null && bytes.length !== entry.size) throw new Error("Background " + entry.id + " downloaded incompletely");
   if (!bytes.length) throw new Error("Background " + entry.id + " is empty");
-  await writeFile(file + ".part", bytes);
-  await rename(file + ".part", file);
+  // A part file of its own: two clips being made at once can fetch the same background.
+  const part = file + "." + process.pid + "-" + Math.random().toString(36).slice(2) + ".part";
+  await writeFile(part, bytes);
+  await rename(part, file).catch(async error => { await rm(part, { force: true }); if (!(await stat(file).catch(() => null))?.size) throw error; });
   return file;
 }
