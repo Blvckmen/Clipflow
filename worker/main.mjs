@@ -71,6 +71,11 @@ const probeErrors = new Map(), PROBE_ERRORS_SHOWN = 3;
 const jobs = [];
 const renderRevs = new Map();  // clip id -> newest edit revision already queued or rendered
 let config = null, stopping = false, timer, sessionTimer, processing = null;
+// When the settings were last loaded. A dashboard that doesn't answer (a deploy, an outage) leaves the worker on its last
+// settings for up to CONFIG_GRACE_MS: dropping them stopped every recording and threw away every queued clip, which
+// lost about a quarter of the moments viewers clipped (115 such stops in 2.5 days).
+let configAt = 0, configMissing = false;
+const CONFIG_GRACE_MS = seconds(env.CONFIG_GRACE_SECONDS, 1800);
 let pendingError = null;  // latest problem not yet delivered to the dashboard
 
 // Logs a problem and queues it for the dashboard, which shows the most recent one.
@@ -146,8 +151,14 @@ async function refresh() {
     const response = await api("/api/worker/config");
     if (!response.ok) throw new Error("HTTP " + response.status);
     config = validateControl(await response.json());
+    configAt = Date.now();
+    if (configMissing) { configMissing = false; console.log("Dashboard reachable again"); }
   } catch (error) {
-    if (config) console.warn("Config unavailable; stopping recordings:", error.message);
+    if (config && Date.now() - configAt < CONFIG_GRACE_MS) {
+      if (!configMissing) { configMissing = true; console.warn("Dashboard unavailable (" + error.message + "); carrying on with the last settings for up to " + Math.round(CONFIG_GRACE_MS / 60_000) + " minutes"); }
+      return;
+    }
+    if (config) console.warn("Dashboard unavailable for " + Math.round((Date.now() - configAt) / 60_000) + " minutes; stopping recordings:", error.message);
     else console.warn("Config unavailable:", error.message);
     config = null;
   }
@@ -243,13 +254,18 @@ async function clipWindow(session, fromMs, toMs, reason) {
 async function processJobs() {
   if (processing) return;
   while (jobs.length && !stopping) {
-    // Highlight videos are long and never urgent: everything else goes first.
-    const next = jobs.findIndex(j => j.kind !== "highlight"), job = jobs.splice(next >= 0 ? next : 0, 1)[0], startedAt = Date.now();
+    // Fresh clips first, then clips resumed after a stop, then highlight videos (long and never urgent).
+    const rank = j => j.kind === "highlight" ? 2 : j.resumed ? 1 : 0;
+    const best = Math.min(...jobs.map(rank)), next = jobs.findIndex(j => rank(j) === best), job = jobs.splice(next, 1)[0], startedAt = Date.now();
     if (job.kind === "render") { await rerender(job); continue; }
     if (job.kind === "translate") { await translateJob(job); continue; }
     if (job.kind === "highlight") { await highlightJob(job); continue; }
     // Live captures stop with their streamer; clips asked for from a recording were asked for by hand.
-    if (!job.fromRecording && !allowed(config, job.streamer.id)) { store.fail(job.id); await rm(job.dir, { recursive: true, force: true }); continue; }
+    if (!job.fromRecording && !allowed(config, job.streamer.id)) {
+      store.fail(job.id); await rm(job.dir, { recursive: true, force: true });
+      console.log("Dropped a queued", reasonLabel[job.reason] ?? job.reason, "clip from", job.streamer.url + ":", config ? "the streamer is paused, stopped or disabled" : "no settings from the dashboard");
+      continue;
+    }
     const controller = new AbortController();
     processing = { job, controller };
     let made = false, why = null;
@@ -283,6 +299,7 @@ async function processJobs() {
       // Skipped on purpose (nothing worth a clip): not a problem, and it doesn't count towards the daily limit.
       if (error.skip) console.log("Skipped a", reasonLabel[job.reason], "on", job.streamer.url + ":", error.message, "(after " + Math.round((Date.now() - startedAt) / 1000) + "s)");
       else if (!controller.signal.aborted) problem("Clip processing failed for " + job.streamer.url + ": " + error.message);
+      else console.log("Cancelled a", reasonLabel[job.reason] ?? job.reason, "clip from", job.streamer.url, stopping ? "(worker stopping; it resumes on start)" : "(streamer paused, stopped or disabled)");
     } finally { processing = null; }
     if (job.tracker) settleRequest(job.tracker, made, why);
     void report();
@@ -345,7 +362,7 @@ async function checkSessions() {
     // Nothing triggered: check the next stretch nobody has looked at yet (the AI rating drops the dull ones).
     const lookbackS = Math.min(bufferSeconds - 20, Math.max(pickerEnabled() ? 180 : 90, settings.duration * 2));
     if (now - session.lastClipMs < coverEveryMs || session.recorder.buffered() < lookbackS * 0.8) continue;
-    const span = coverageWindow({ coveredUntil: session.coveredUntil, latest, lookbackMs: lookbackS * 1000, waiting: jobs.filter(j => j.reason === "audio").length + (processing?.job.reason === "audio" ? 1 : 0) });
+    const span = coverageWindow({ coveredUntil: session.coveredUntil, latest, lookbackMs: lookbackS * 1000, waiting: jobs.filter(j => j.reason === "audio" && !j.resumed).length + (processing?.job.reason === "audio" && !processing.job.resumed ? 1 : 0) });
     if (span) {
       session.lastClipMs = now;
       session.coveredUntil = span.toMs;
@@ -1025,8 +1042,28 @@ async function prune() {
   }
 }
 
+// Clips cut in the last day but not finished when the worker stopped (a restart, a crash) are processed now, from the
+// raw window still on disk. Their chat isn't known any more, so they're placed by loudness and what was said.
+let resumed = false;
+async function resumeInterrupted() {
+  if (resumed || !config) return;
+  resumed = true;
+  let count = 0;
+  for (const row of store.interrupted(new Date(Date.now() - 86_400_000).toISOString())) {
+    const dir = dirname(row.path), raw = join(dir, "window.m2t"), streamer = config.streamers.find(s => s.id === row.streamer);
+    if (!streamer || !await access(raw).then(() => true, () => false)) continue;
+    const exact = row.reason === "viewer" || row.reason === "manual";
+    store.resume(row.id);
+    jobs.push({ queuedAt: Date.now(), id: row.id, dir, raw, streamer, settings: config, style: streamer.style ?? config.style ?? null, reason: row.reason ?? "audio",
+      exact, fromRecording: ["best", "manual"].includes(row.reason), focusFrom: 0, focusTo: Infinity, chat: [], chatLines: [], resumed: true });
+    count++;
+  }
+  if (count) { console.log("Resuming", count, "clip(s) interrupted by the last stop"); void processJobs(); }
+}
+
 async function tick() {
   await refresh();
+  await resumeInterrupted();
   queueRenders(config?.renders);
   queueTranslations(config?.translations);
   queueHighlights(config?.highlights);

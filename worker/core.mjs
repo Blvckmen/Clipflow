@@ -170,6 +170,9 @@ export class Store {
   retry(id,attempt) {this.db.prepare("UPDATE clips SET attempts=?,next_try=? WHERE id=?").run(attempt,Date.now()+retryDelay(attempt),id);}
   get(id) {return this.db.prepare("SELECT * FROM clips WHERE id=?").get(id)??null;}
   pending() {return this.db.prepare("SELECT * FROM clips WHERE state='ready' AND next_try<=? ORDER BY created_at LIMIT 10").all(Date.now());}
+  // Clips cut but not finished when the worker last stopped (marked interrupted on start), newest first.
+  interrupted(sinceIso, limit = 30) {return this.db.prepare("SELECT * FROM clips WHERE state='interrupted' AND created_at>=? ORDER BY created_at DESC LIMIT ?").all(sinceIso, limit);}
+  resume(id) {this.db.prepare("UPDATE clips SET state='capturing' WHERE id=? AND state='interrupted'").run(id);}
   countToday(streamer) {return this.db.prepare("SELECT count(*) AS n FROM clips WHERE streamer=? AND created_at>=? AND state IN ('capturing','ready','uploaded')").get(streamer,new Date().toISOString().slice(0,10)).n;}
   old(before) {return this.db.prepare("SELECT * FROM clips WHERE created_at<? AND state!='capturing'").all(before);}
   remove(id) {this.db.prepare("DELETE FROM clips WHERE id=?").run(id);}

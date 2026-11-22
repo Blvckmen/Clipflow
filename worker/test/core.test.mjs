@@ -123,6 +123,21 @@ test("plan gives full slots to higher-priority streamers first", () => {
   assert.deepEqual([p.start.map(s => s.id), p.bump], [[c], [d]]);
 });
 
+test("Store finds clips interrupted by a stop and resumes them", () => {
+  const dir = mkdtempSync(join(tmpdir(), "store-")), store = new Store(dir);
+  try {
+    store.add("a", "s1", "/x/a/clip.mp4", 45, true, "chat");
+    store.add("b", "s1", "/x/b/clip.mp4", 45, true, "audio");
+    store.db.prepare("UPDATE clips SET state='interrupted'").run();
+    store.db.prepare("UPDATE clips SET created_at=? WHERE id='b'").run("2000-01-01T00:00:00.000Z");
+    assert.deepEqual(store.interrupted(new Date(Date.now() - 86_400_000).toISOString()).map(r => r.id), ["a"], "only the last day's");
+    assert.equal(store.countToday("s1"), 0, "interrupted clips don't count towards the limit");
+    store.resume("a");
+    assert.equal(store.db.prepare("SELECT state FROM clips WHERE id='a'").get().state, "capturing");
+    assert.equal(store.countToday("s1"), 1, "resumed ones do");
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("retryDelay backs off to a five minute cap", () => {
   assert.equal(retryDelay(0), 30_000);
   assert.equal(retryDelay(1), 60_000);
