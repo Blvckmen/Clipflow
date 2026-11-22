@@ -40,6 +40,11 @@ test("several viewers' clips of one moment are imported once", () => {
   // No place in the broadcast yet: clips made within a clip's length of each other are one moment.
   const live = (id, at) => ({ id, view_count: 20, duration: 30, created_at: at, video_id: "", vod_offset: null });
   assert.deepEqual(pickClips([live("x", "2026-11-22T10:00:00Z"), live("y", "2026-11-22T10:00:20Z"), live("z", "2026-11-22T10:05:00Z")], { minViews: 10, seen: new Set(), max: 5 }).map(c => c.id), ["x", "z"]);
+  // The same time on another channel is another moment.
+  const on = (c, broadcaster_id) => ({ ...c, broadcaster_id });
+  assert.equal(sameMoment(on(live("p", "2026-11-22T10:00:00Z"), "kai"), on(live("q", "2026-11-22T10:00:10Z"), "agent")), false);
+  assert.equal(sameMoment(on(live("p", "2026-11-22T10:00:00Z"), "kai"), on(live("q", "2026-11-22T10:00:10Z"), "kai")), true);
+  assert.equal(momentOf(on(list[0], "kai")).broadcaster_id, "kai");
 });
 
 test("signs in once with the app's keys, looks the channel up once, and signs in again when the token expires", async () => {

@@ -22,13 +22,15 @@ export const clipUrl = id => { if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,
 const GAP = 5;
 export function sameMoment(a, b) {
   const len = x => Math.max(0, Number(x.duration) || 0);
+  // Other channels' clips are other moments (older remembered entries don't know their channel).
+  if (a.broadcaster_id && b.broadcaster_id && a.broadcaster_id !== b.broadcaster_id) return false;
   if (a.video_id && b.video_id && Number.isFinite(a.vod_offset) && Number.isFinite(b.vod_offset))
     return a.video_id === b.video_id && a.vod_offset < b.vod_offset + len(b) + GAP && b.vod_offset < a.vod_offset + len(a) + GAP;
   const ta = Date.parse(a.created_at), tb = Date.parse(b.created_at);
   return Number.isFinite(ta) && Number.isFinite(tb) && Math.abs(ta - tb) < Math.max(len(a), len(b), 30) * 1000;
 }
 // What to remember of an imported clip, to know its moment once Twitch stops listing it.
-export const momentOf = c => ({ video_id: c.video_id || null, vod_offset: Number.isFinite(c.vod_offset) ? c.vod_offset : null, duration: Number(c.duration) || 0, created_at: c.created_at ?? null });
+export const momentOf = c => ({ broadcaster_id: c.broadcaster_id || null, video_id: c.video_id || null, vod_offset: Number.isFinite(c.vod_offset) ? c.vod_offset : null, duration: Number(c.duration) || 0, created_at: c.created_at ?? null });
 
 // The clips worth importing, best first: at least `minViews` views, at least `minSeconds` long (shorter ones are
 // too short to post), not imported before, not the same moment as one imported before (`taken`: their moments) or
