@@ -28,7 +28,7 @@ export function ViewerClipsSettings({ importClips, value, onChange }: { importCl
       <label>Only moments from the last<select value={value.maxHours} onChange={e => set({ maxHours: Number(e.target.value) })}>{HOURS.map(([n, l]) => <option key={n} value={n}>{l}</option>)}</select>
         <small>When it happened on stream, not when it was clipped.</small></label>
     </div>}
-    {on && <label className="check-row"><input type="checkbox" checked={value.ask} onChange={e => set({ ask: e.target.checked })} /><span>Ask me first<small>The clips found are listed in the Clip library for you to pick; only the ones you pick are made.</small></span></label>}
+    {on && <label className="check-row"><input type="checkbox" checked={value.ask} onChange={e => set({ ask: e.target.checked })} /><span>Ask me first<small>The clips found are listed under Clips → Library for you to pick; only the ones you pick are made.</small></span></label>}
   </fieldset>;
 }
 
