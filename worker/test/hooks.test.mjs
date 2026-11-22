@@ -59,3 +59,17 @@ test('a hook can drop its background and gets a contrasting outline instead', ()
   assert.match(buildAss(edit(), []), /,0,0,3,14,0,8,/, 'the box stays the default');
   assert.throws(() => normalizeEdit({ ...edit(), hook: { text: 'x', bg: 'red' } }, { duration: 20 }), /Hook background/);
 });
+
+test('the hook can be moved and resized, kept inside the frame, and older edits keep the old place', () => {
+  const moved = normalizeEdit({ ...edit(), hook: { text: 'Moved', color: '#111111', bg: '#ffffff', x: 0.7, y: 0.5, size: 80 } }, { duration: 20 });
+  assert.deepEqual([moved.hook.x, moved.hook.y, moved.hook.size], [0.7, 0.5, 80]);
+  const ass = buildAss(moved, []);
+  assert.match(ass, /Style: Hook,[^,]+,80,/);
+  // Centre 504 of 720 is 216px from the right edge: 204px margins give a 312px line, 156px either side of it.
+  assert.ok(ass.includes(',Hook,,204,204,0,,{\\an8\\pos(504,640)}'));
+  const clamped = normalizeEdit({ ...edit(), hook: { text: 'x', x: 1, y: 2, size: 500 } }, { duration: 20 }).hook;
+  assert.deepEqual([clamped.x, clamped.y, clamped.size], [0.75, 0.9, 120]);
+  const older = normalizeEdit({ ...edit(), hook: { text: 'Old', color: '#111111', bg: '#ffffff' } }, { duration: 20 });
+  assert.ok(buildAss(older, []).includes(',Hook,,60,60,0,,{\\an8\\pos(360,150)}'), 'the default stays where the hook always was');
+  assert.throws(() => normalizeEdit({ ...edit(), hook: { text: 'x', size: 'big' } }, { duration: 20 }), /Hook size/);
+});

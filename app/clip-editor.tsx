@@ -3,7 +3,7 @@
 // worker renders with, so what you see is what gets posted. Saving stores the edit; the worker re-renders it.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, Scissors, Sparkles, Undo2, Copy } from "lucide-react";
-import { ANIMATIONS, ASPECTS, ASPECT_LABELS, KEYWORD_SCALE, CHAT_SIZE, DEFAULT_CHAT, chatWindows, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, HOOK_LINES, HOOK_OUTLINE, hookOutlineColor, MAX_CLIP, MIN_CLIP, PRESETS, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks, timeline, zoomAt } from "../worker/edit.mjs";
+import { ANIMATIONS, ASPECTS, ASPECT_LABELS, KEYWORD_SCALE, CHAT_SIZE, DEFAULT_CHAT, chatWindows, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, HOOK_LINES, HOOK_OUTLINE, HOOK_DEFAULT, HOOK_SIZE, HOOK_X, HOOK_Y, hookOutlineColor, hookPlacement, MAX_CLIP, MIN_CLIP, PRESETS, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks, timeline, zoomAt } from "../worker/edit.mjs";
 
 import { applyAutomaticHook } from "../worker/hooks.mjs";
 
@@ -14,7 +14,7 @@ type Aspect = keyof typeof ASPECTS;
 type Frame = { mode: "blur" | "crop" | "fit" | "split" | "cam" | "pip" | "phone"; aspect?: Aspect; content?: CamBox | null; zoom: number; x: number; y: number; background?: string | null; split?: Split; facecam?: Facecam };
 type Captions = { on: boolean; preset: string; font: string; size: number; color: string; highlight: string; outline: number; outlineColor: string; box: boolean; boxColor: string; uppercase: boolean; animation: string; words: number; y: number; mask: boolean; keywords: boolean; keywordColor: string };
 type Word = [number, number, string];
-export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { text: string; seconds: number; color: string; bg: string | null }; progress: { on: boolean; color: string }; pace?: Pace; chat?: ChatLook; words?: Word[] };
+export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { text: string; seconds: number; color: string; bg: string | null; x: number; y: number; size: number }; progress: { on: boolean; color: string }; pace?: Pace; chat?: ChatLook; audio?: { music: "keep" | "lower" | "voice" }; words?: Word[] };
 type ChatLook = { on: boolean; y: number };
 // [seconds into the source, name, text, colour]: the Twitch chat sent during the clip's source.
 type ChatMessage = [number, string, string, string | null];
@@ -61,19 +61,21 @@ function drawChat(ctx: CanvasRenderingContext2D, lines: { name: string; text: st
 // `margin` matches the subtitle style's left/right margins in buildAss (captions 40, hook 60), so lines wrap at
 // the same width as in the render.
 // A part with `big` (a caption keyword) is drawn KEYWORD_SCALE bigger, like its \fscx/\fscy in the render.
-function drawText(ctx: CanvasRenderingContext2D, parts: { t: string; color: string; big?: boolean }[], c: { font: string; size: number; outline: number; outlineColor: string; box: boolean; boxColor: string }, cx: number, y: number, anchor: "middle" | "top", scale = 1, margin = 40) {
+function drawText(ctx: CanvasRenderingContext2D, parts: { t: string; color: string; big?: boolean }[], c: { font: string; size: number; outline: number; outlineColor: string; box: boolean; boxColor: string }, cx: number, y: number, anchor: "middle" | "top", scale = 1, margin = 40, wrapWidth = cx * 2 - 2 * margin) {
   ctx.save();
+  let left = Infinity, right = -Infinity;
   const font = (big?: boolean) => `bold ${big ? Math.round(c.size * KEYWORD_SCALE) : c.size}px "${c.font}", "DejaVu Sans", Arial, sans-serif`;
   ctx.font = font();
   ctx.textBaseline = "middle"; ctx.lineJoin = "round";
   const measure = (t: string, i: number) => { if (!parts[i]?.big) return ctx.measureText(t).width; ctx.font = font(true); const w = ctx.measureText(t).width; ctx.font = font(); return w; };
-  const lines = wrap(ctx, parts.map(p => p.t), cx * 2 - 2 * margin, measure), lh = c.size * 1.18, space = ctx.measureText(" ").width;
+  const lines = wrap(ctx, parts.map(p => p.t), wrapWidth, measure), lh = c.size * 1.18, space = ctx.measureText(" ").width;
   const top = anchor === "middle" ? y - (lines.length * lh) / 2 : y;
   ctx.translate(cx, top + (lines.length * lh) / 2); ctx.scale(scale, scale); ctx.translate(-cx, -(top + (lines.length * lh) / 2));
   lines.forEach((line, li) => {
     const widths = line.map(i => measure(parts[i].t, i)), total = widths.reduce((a, b) => a + b, 0) + space * (line.length - 1);
     const ly = top + li * lh + lh / 2;
     let x = cx - total / 2;
+    left = Math.min(left, x); right = Math.max(right, x + total);
     if (c.box) { const pad = Math.max(8, Math.round(c.size * 0.22)); ctx.fillStyle = c.boxColor; ctx.fillRect(x - pad, ly - lh / 2 - pad / 2 + 4, total + pad * 2, lh + pad - 8); }
     line.forEach((i, k) => {
       ctx.font = font(parts[i].big);
@@ -84,6 +86,8 @@ function drawText(ctx: CanvasRenderingContext2D, parts: { t: string; color: stri
     });
   });
   ctx.restore();
+  // Where the text landed (before the pop scale), for dragging it.
+  return { left, right, top, bottom: top + lines.length * lh };
 }
 
 const pop = (since: number) => 0.82 + 0.18 * clamp(since / 0.11, 0, 1);
@@ -120,7 +124,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
   useEffect(() => {
     let live = true;
     fetch("/api/clips/" + clipId + "/edit").then(async r => { const body = await r.json() as Bundle & { error?: string }; if (!r.ok) throw new Error(body.error); return body; })
-      .then(b => { if (!live) return; setBundle(b); setEditState(b.edit); setPostText(b.caption.text ?? ""); setCaptionSource(b.caption.source); setCaptionNote(b.caption.error ? "Last attempt failed: " + b.caption.error : ""); if (b.legacy) setTab("frame"); })
+      .then(b => { if (!live) return; setBundle(b); setEditState(b.edit && { ...b.edit, hook: { ...HOOK_DEFAULT, ...b.edit.hook } }); setPostText(b.caption.text ?? ""); setCaptionSource(b.caption.source); setCaptionNote(b.caption.error ? "Last attempt failed: " + b.caption.error : ""); if (b.legacy) setTab("frame"); })
       .catch(e => live && setError(e instanceof Error ? e.message : "Couldn't open this clip."));
     return () => { live = false; };
   }, [clipId]);
@@ -147,6 +151,10 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
   const messages = bundle?.signals?.messages ?? null;
   const chatList = useMemo(() => edit && messages ? chatWindows(messages, edit) : [], [messages, edit]);
   const chatRef = useRef(chatList);
+  // The hook's last drawn box (canvas pixels, null when hidden) for dragging it; while paused on Extras it shows
+  // even after its time so it can be placed.
+  const hookBox = useRef<{ left: number; right: number; top: number; bottom: number } | null>(null), tabRef = useRef(tab);
+  useEffect(() => { tabRef.current = tab; }, [tab]);
   useEffect(() => { chatRef.current = chatList; }, [chatList]);
   useEffect(() => { tlRef.current = tl; }, [tl]);
   useEffect(() => { backgroundsRef.current = backgrounds; }, [backgrounds]);
@@ -232,7 +240,11 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
         else drawText(ctx, cue.words.map((x: { t: string; k?: boolean }, i: number) => ({ t: x.t, big: x.k, color: c.animation === "karaoke" && i === word ? c.highlight : x.k ? c.keywordColor : c.color })), c, W / 2, y, "middle", c.animation === "pop" || c.animation === "karaoke" ? pop(rel - cue.start) : 1);
       }
       // Word by word (wrapped like the render), with the hook's own line breaks.
-      if (e.hook.text && out < e.hook.seconds) drawText(ctx, e.hook.text.split("\n").flatMap((l, i) => [...(i ? [{ t: "\n", color: e.hook.color }] : []), ...l.split(" ").filter(Boolean).map(t => ({ t, color: e.hook.color }))]), e.hook.bg ? { font: c.font, size: 52, outline: 0, outlineColor: "#000000", box: true, boxColor: e.hook.bg } : { font: c.font, size: 52, outline: HOOK_OUTLINE, outlineColor: hookOutlineColor(e.hook.color), box: false, boxColor: "#000000" }, W / 2, 150, "top", pop(out), 60);
+      const hp = hookPlacement(e), placing = v.paused && tabRef.current === "extras";
+      hookBox.current = e.hook.text && (out < e.hook.seconds || placing) ? drawText(ctx, e.hook.text.split("\n").flatMap((l, i) => [...(i ? [{ t: "\n", color: e.hook.color }] : []), ...l.split(" ").filter(Boolean).map(t => ({ t, color: e.hook.color }))]),
+        e.hook.bg ? { font: c.font, size: hp.size, outline: 0, outlineColor: "#000000", box: true, boxColor: e.hook.bg } : { font: c.font, size: hp.size, outline: Math.max(3, Math.round(hp.size * HOOK_OUTLINE / 52)), outlineColor: hookOutlineColor(e.hook.color), box: false, boxColor: "#000000" },
+        hp.x, hp.y, "top", placing ? 1 : pop(out), 60, hp.wrap) : null;
+      if (hookBox.current && placing) { const b = hookBox.current; ctx.save(); ctx.setLineDash([10, 8]); ctx.lineWidth = 3; ctx.strokeStyle = "#bcfa76"; ctx.strokeRect(b.left - 16, b.top - 8, b.right - b.left + 32, b.bottom - b.top + 16); ctx.restore(); }
       if (e.progress.on) { ctx.fillStyle = e.progress.color; ctx.fillRect(0, H - 10, W * clamp(out / clipLen, 0, 1), 10); }
       ctx.restore();
     };
@@ -263,13 +275,30 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
     return () => window.removeEventListener("keydown", onKey);
   }, [toggle, undo, redo, setTrim, onClose]);
 
-  // Drag the picture to reposition it within the room the zoom leaves.
-  const drag = useRef<{ x: number; y: number; fx: number; fy: number } | null>(null);
-  const onPointerDown = (ev: React.PointerEvent<HTMLCanvasElement>) => { if (!edit) return; ev.currentTarget.setPointerCapture(ev.pointerId); drag.current = { x: ev.clientX, y: ev.clientY, fx: edit.frame.x, fy: edit.frame.y }; };
+  // Drag the hook to place it, or anywhere else to reposition the picture within the room the zoom leaves.
+  const drag = useRef<{ x: number; y: number; fx: number; fy: number; hook?: boolean } | null>(null);
+  const onHook = (ev: React.PointerEvent<HTMLCanvasElement>) => {
+    const b = hookBox.current, cv = canvas.current;
+    if (!b || !cv || !editRef.current) return false;
+    const r = cv.getBoundingClientRect(), s = frameSize(editRef.current.frame).W / r.width, x = (ev.clientX - r.left) * s, y = (ev.clientY - r.top) * s;
+    return x >= b.left - 24 && x <= b.right + 24 && y >= b.top - 16 && y <= b.bottom + 16;
+  };
+  const onPointerDown = (ev: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!edit) return;
+    ev.currentTarget.setPointerCapture(ev.pointerId);
+    drag.current = onHook(ev) ? { x: ev.clientX, y: ev.clientY, fx: edit.hook.x, fy: edit.hook.y, hook: true } : { x: ev.clientX, y: ev.clientY, fx: edit.frame.x, fy: edit.frame.y };
+  };
   const onPointerMove = (ev: React.PointerEvent<HTMLCanvasElement>) => {
     const d = drag.current, cv = canvas.current, v = video.current;
-    if (!d || !cv || !bundle) return;
-    const scale = frameSize(editRef.current!.frame).W / cv.getBoundingClientRect().width;
+    if (!d) { ev.currentTarget.style.cursor = onHook(ev) ? "move" : ""; return; }
+    if (!cv || !bundle) return;
+    const r = cv.getBoundingClientRect();
+    if (d.hook) {
+      const round = (n: number) => Math.round(n * 1000) / 1000;
+      change("hook-move", e => ({ ...e, hook: { ...e.hook, x: round(clamp(d.fx + (ev.clientX - d.x) / r.width, HOOK_X[0], HOOK_X[1])), y: round(clamp(d.fy + (ev.clientY - d.y) / r.height, HOOK_Y[0], HOOK_Y[1])) } }));
+      return;
+    }
+    const scale = frameSize(editRef.current!.frame).W / r.width;
     const box = layout({ ...editRef.current!.frame, x: 0, y: 0 }, v?.videoWidth || bundle.source.width, v?.videoHeight || bundle.source.height);
     const roomX = Math.abs(box.area.w - box.w) / 2, roomY = Math.abs(box.area.h - box.h) / 2;
     change("pan", e => ({ ...e, frame: { ...e.frame, x: roomX ? clamp(d.fx + (ev.clientX - d.x) * scale / roomX, -1, 1) : 0, y: roomY ? clamp(d.fy + (ev.clientY - d.y) * scale / roomY, -1, 1) : 0 } }));
@@ -364,7 +393,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
     <div className="editor-body">
       <section className="editor-stage">
         <div className={"phone" + (stacks(edit.frame) ? "" : " landscape")} style={{ aspectRatio: frameSize(edit.frame).W + " / " + frameSize(edit.frame).H }}>
-          <canvas ref={canvas} width={frameSize(edit.frame).W} height={frameSize(edit.frame).H} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={() => { drag.current = null; }} title="Drag to reposition the picture" />
+          <canvas ref={canvas} width={frameSize(edit.frame).W} height={frameSize(edit.frame).H} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={() => { drag.current = null; }} title="Drag to reposition the picture, or drag the hook to move it" />
           {safe && <div className="safe-zones" aria-hidden><span className="sz-top" /><span className="sz-right">App buttons</span><span className="sz-bottom">Username &amp; caption</span></div>}
         </div>
         {edit.frame.mode === "split" && bgPreview && bgIsImage && <img ref={bgImage} key={bgPreview} src={"/api/backgrounds/" + bgPreview + "/file"} alt="" hidden />}
@@ -522,13 +551,17 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
             <p className="hint">The same local hook generator used during clipping. Uses your current trim and transcript corrections; no API key needed.</p>
             <button className="secondary" disabled={saving} onClick={generateOpeningHook}><Sparkles size={15} />{edit.hook.text ? "Regenerate hook" : "Generate hook"}</button>
             {hookNote && <p className="hint" role="status">{hookNote}</p>}
-            <label className="wide">Hook title <small>Shown at the top for the first seconds, to stop the scroll. Press Enter for a new line (up to {HOOK_LINES} lines).</small>
+            <label className="wide">Hook title <small>Shown at the top for the first seconds, to stop the scroll. Press Enter for a new line (up to {HOOK_LINES} lines). Pause and drag it on the preview to move it.</small>
               <textarea className="hook-text" rows={Math.min(HOOK_LINES, Math.max(2, edit.hook.text.split("\n").length))} maxLength={90} placeholder={"e.g. He did NOT\nsee that coming"} value={edit.hook.text}
                 onKeyDown={e => { if (e.key === "Enter" && edit.hook.text.split("\n").length >= HOOK_LINES) e.preventDefault(); }}
                 onChange={e => set("hook", { text: e.target.value.split("\n").slice(0, HOOK_LINES).join("\n") })} /></label>
             <div className="control-grid">
               <label>Hook length <span>{edit.hook.seconds >= len ? "Whole clip" : edit.hook.seconds + "s"}</span><input type="range" min={1} max={Math.max(1, Math.min(30, Math.floor(len)))} step={0.5} value={Math.min(edit.hook.seconds, Math.max(1, Math.min(30, Math.floor(len))))} disabled={edit.hook.seconds >= len} onChange={e => set("hook", { seconds: Number(e.target.value) })} />
                 <span className="check-inline"><input type="checkbox" checked={edit.hook.seconds >= len} onChange={e => set("hook", { seconds: e.target.checked ? 90 : 5 })} />Keep for the whole clip</span></label>
+              <label>Hook size <span>{edit.hook.size}px</span><input type="range" min={HOOK_SIZE[0]} max={HOOK_SIZE[1]} step={2} value={edit.hook.size} onChange={e => set("hook", { size: Number(e.target.value) })} /></label>
+              <label>Hook left / right <span>{Math.round(edit.hook.x * 100)}%</span><input type="range" min={HOOK_X[0]} max={HOOK_X[1]} step={0.005} value={edit.hook.x} onChange={e => set("hook", { x: Number(e.target.value) })} /></label>
+              <label>Hook up / down <span>{Math.round(edit.hook.y * 100)}% down</span><input type="range" min={HOOK_Y[0]} max={HOOK_Y[1]} step={0.005} value={edit.hook.y} onChange={e => set("hook", { y: Number(e.target.value) })} />
+                <span className="check-inline"><button type="button" className="text-button" onClick={() => set("hook", { ...HOOK_DEFAULT })}>Reset hook size and place</button></span></label>
               <label className="color">Hook text<input type="color" value={edit.hook.color} onChange={e => set("hook", { color: e.target.value })} /></label>
               <label className="color" title="Turn off for the text alone, with an outline so it stays readable">Hook background<div className="color-pair"><input type="checkbox" aria-label="Show a hook background" checked={!!edit.hook.bg} onChange={e => set("hook", { bg: e.target.checked ? "#ffffff" : null })} />{edit.hook.bg && <input type="color" value={edit.hook.bg} onChange={e => set("hook", { bg: e.target.value })} />}</div></label>
             </div>
@@ -540,6 +573,9 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
             </div>
             <label className="switch-row"><input type="checkbox" disabled={!messages?.length} checked={!!edit.chat?.on} onChange={e => { const on = e.target.checked; change("chat-on", x => ({ ...x, chat: { ...DEFAULT_CHAT, ...x.chat, on } })); }} />Show chat on the clip <small>{messages?.length ? "The Twitch chat sent during this moment, a few messages at a time, like watching it live (" + messages.length + " messages)" : "Only clips captured live from Twitch keep their chat."}</small></label>
             {edit.chat?.on && <label>Chat position <span>{Math.round(edit.chat.y * 100)}% down</span><input type="range" min={15} max={95} value={Math.round(edit.chat.y * 100)} onChange={e => { const y = Number(e.target.value) / 100; change("chat-y", x => ({ ...x, chat: { ...DEFAULT_CHAT, ...x.chat, y } })); }} /></label>}
+            <label className="wide">Background music <small>Copyrighted music in a clip can get it muted or taken down. Your worker PC separates the voice from everything else when it renders (it can take a few minutes); the preview here plays the original sound.</small>
+              <div className="segmented">{([["keep", "As recorded"], ["lower", "Turn music down"], ["voice", "Voice only"]] as const).map(([mode, label]) => <button key={mode} type="button" className={(edit.audio?.music ?? "keep") === mode ? "active" : ""} onClick={() => change("audio-music", x => ({ ...x, audio: { ...x.audio, music: mode } }))}>{label}</button>)}</div>
+              {(edit.audio?.music ?? "keep") !== "keep" && <small role="status">{edit.audio?.music === "voice" ? "Keeps only the voice: music and game sound are gone too. The safest against copyright claims." : "The voice stays; music and game sound play quietly underneath."}</small>}</label>
             <label className="switch-row"><input type="checkbox" checked={edit.progress.on} onChange={e => set("progress", { on: e.target.checked })} />Progress bar along the bottom <small>Viewers who can see the end coming watch to it</small></label>
             {edit.progress.on && <label className="color inline">Bar colour<input type="color" value={edit.progress.color} onChange={e => set("progress", { color: e.target.value })} /></label>}
           </>}
