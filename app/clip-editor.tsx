@@ -437,20 +437,19 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
           </div>
           {bundle.signals && <div className="heat-legend"><span><i className="loud" />Loudness</span><span><i className="chat" />Chat activity</span><span className="muted">Why this moment was clipped</span></div>}
         </div>
-        <div className="editor-tabs" role="tablist">{(["captions", "frame", "extras", "transcript", "post"] as Tab[]).map(t => <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "active" : ""} onClick={() => setTab(t)}>{{ captions: "Captions", frame: "Frame & look", extras: "Hook & extras", transcript: "Transcript", post: "Post caption" }[t]}</button>)}</div>
+        <div className="editor-tabs" role="tablist">{(["captions", "frame", "extras", "transcript", "post"] as Tab[]).map(t => <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "active" : ""} onClick={() => setTab(t)}>{{ captions: "Subtitles", frame: "Frame & look", extras: "Opening title & extras", transcript: "Transcript", post: "Post text" }[t]}</button>)}</div>
         <div className="editor-controls">
           {bundle.legacy && (tab === "captions" || tab === "transcript") && <div className="subtle-note">This clip was captured before the editor existed, so its captions are part of the picture and can&apos;t be restyled or corrected. You can still trim it, reframe it, adjust its colour, and add a hook title and progress bar. Clips captured from now on are fully editable.</div>}
           {tab === "post" && <>
-            <p className="hint">The text posted with this clip on Instagram, TikTok and YouTube. The first line is also the YouTube title. {bundle.caption.ai ? "Automatic post captions use the saved transcript. Edit this text manually, or generate an on-screen opening hook below." : "Automatic post captions are disabled in Settings. Type your own post text here; the hook generator adds a title to the video."}</p>
-            <label className="wide">Caption <small>{captionSource === "local" ? "Created from transcript" : captionSource === "ai" ? "Written by the AI writer on your PC" : captionSource === "edited" ? "Your text: never automatically replaced" : "Not written yet: " + (bundle.caption.ai ? "created from the transcript before posting" : "the template is used")}</small>
+            <p className="hint">The text posted with this clip on Instagram, TikTok and YouTube. The first line is also the YouTube title. {bundle.caption.ai ? "Written automatically from the saved transcript; edit it here." : "Automatic post text is off in Settings. Type your own here."} The title on the video itself is under Opening title &amp; extras.</p>
+            <label className="wide">Post text <small>{captionSource === "local" ? "Created from transcript" : captionSource === "ai" ? "Written by the AI writer on your PC" : captionSource === "edited" ? "Your text: never automatically replaced" : "Not written yet: " + (bundle.caption.ai ? "created from the transcript before posting" : "the template is used")}</small>
               <textarea rows={9} maxLength={2200} value={postText} onChange={e => setPostText(e.target.value)} placeholder={bundle.caption.ai ? "Leave empty to use an automatic caption or fallback" : "Type the caption to post with this clip"} /></label>
             <div className="caption-actions"><span className="muted">{postText.length} / 2200</span>
-              <button className="secondary" disabled={saving} title="Generate an on-screen opening title from the current transcript" onClick={generateOpeningHook}><Sparkles size={15} />Generate hook</button>
-              <button className="primary" disabled={!!captionBusy} onClick={() => void captionAction({ action: "save", text: postText })}>{captionBusy === "save" ? <Loader2 className="spin" size={15} /> : <Check size={15} />}Save caption</button></div>
+              <button className="primary" disabled={!!captionBusy} onClick={() => void captionAction({ action: "save", text: postText })}>{captionBusy === "save" ? <Loader2 className="spin" size={15} /> : <Check size={15} />}Save post text</button></div>
             {captionNote && <p className="hint" role="status">{captionNote}</p>}
           </>}
           {tab === "captions" && !bundle.legacy && <>
-            <label className="switch-row"><input type="checkbox" checked={c.on} onChange={e => setCaption({ on: e.target.checked, preset: c.preset })} />Show captions</label>
+            <label className="switch-row"><input type="checkbox" checked={c.on} onChange={e => setCaption({ on: e.target.checked, preset: c.preset })} />Show subtitles</label>
             <div className={"caption-controls" + (c.on ? "" : " off")} title={c.on ? undefined : "Captions are off: pick a style to turn them on"}>
             <div className="presets">{Object.entries(PRESETS).map(([key, p]) => <button key={key} className={c.preset === key ? "preset active" : "preset"} onClick={() => { const { label: _label, ...values } = p as typeof p & { label: string }; void _label; setCaption({ ...values, preset: key, on: true }); }} style={{ fontFamily: `"${p.font}", sans-serif`, color: p.box ? p.color : p.color, background: p.box ? p.boxColor : undefined, textShadow: p.box ? "none" : `0 0 3px ${p.outlineColor}, 0 0 3px ${p.outlineColor}` }}>{p.uppercase ? p.label.toUpperCase() : p.label}</button>)}</div>
             <div className="control-grid">
@@ -566,10 +565,10 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
             <button className="secondary" onClick={() => change("reset-frame", e => ({ ...e, frame: { ...e.frame, zoom: 1, x: 0, y: 0 }, look: { brightness: 1, contrast: 1, saturation: 1 } }))}>Reset framing and colour</button>
           </>}
           {tab === "extras" && <>
-            <p className="hint">The same local hook generator used during clipping. Uses your current trim and transcript corrections; no API key needed.</p>
-            <button className="secondary" disabled={saving} onClick={generateOpeningHook}><Sparkles size={15} />{edit.hook.text ? "Regenerate hook" : "Generate hook"}</button>
+            <p className="hint">Writes a title from your current trim and transcript corrections, the same way new clips get one. Runs on your PC; no API key needed.</p>
+            <button className="secondary" disabled={saving} onClick={generateOpeningHook}><Sparkles size={15} />{edit.hook.text ? "Write a new opening title" : "Write an opening title"}</button>
             {hookNote && <p className="hint" role="status">{hookNote}</p>}
-            <label className="wide">Hook title <small>Shown at the top for the first seconds, to stop the scroll. Press Enter for a new line (up to {HOOK_LINES} lines). Pause and drag it on the preview to move it.</small>
+            <label className="wide">Opening title <small>Shown at the top for the first seconds, to stop the scroll. Press Enter for a new line (up to {HOOK_LINES} lines). Pause and drag it on the preview to move it.</small>
               <textarea className="hook-text" rows={Math.min(HOOK_LINES, Math.max(2, edit.hook.text.split("\n").length))} maxLength={90} placeholder={"e.g. He did NOT\nsee that coming"} value={edit.hook.text}
                 onKeyDown={e => { if (e.key === "Enter" && edit.hook.text.split("\n").length >= HOOK_LINES) e.preventDefault(); }}
                 onChange={e => set("hook", { text: e.target.value.split("\n").slice(0, HOOK_LINES).join("\n") })} /></label>

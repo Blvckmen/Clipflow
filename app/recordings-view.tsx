@@ -77,7 +77,7 @@ export function RecordingsView({ recordings, requests, streamers, storage, busy,
   useEffect(() => { if (!active) return; const timer = setInterval(() => { if (document.visibilityState === "visible") onRefresh(); }, 60_000); return () => clearInterval(timer); }, [active, onRefresh]);
   const importer = <ImportVideo streamers={streamers} busy={busy} duration={duration} mutate={mutate} onImported={onRefresh} />;
   if (!recordings.length) return <section className="panel"><div className="empty tall"><div className="empty-icon"><Film size={30} /></div><h3>No recordings yet</h3>
-    <p>Set a streamer to <strong>Record the whole stream</strong> (or clip live and record) under Streamers → Edit. Their next stream is saved on your worker PC, and you can pick clips from it here. Or import a stream that already happened:</p>{importer}</div></section>;
+    <p>Set a streamer to <strong>Record the whole stream</strong> (or clip live and record) under Channels → Edit. Their next stream is saved on your worker PC, and you can pick clips from it here. Or import a stream that already happened:</p>{importer}</div></section>;
   return <div className="recordings-layout">
     <section className="panel recording-list" aria-label="Recordings">
       <div className="panel-heading"><div><h2>Recordings <span className="count">{recordings.length}</span></h2><p>Whole streams and imported videos kept on your worker PC</p></div></div>

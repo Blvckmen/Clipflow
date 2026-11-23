@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { Store, allowed, channelUrl, clipTextFor, dueForProbe, limitFor, plan, retryDelay, shownStatus, validateControl, workerTuning } from "./core.mjs";
+import { Store, allowed, channelUrl, clipTextFor, dueForProbe, limitFor, plan, queuedClip, retryDelay, shownStatus, validateControl, workerTuning } from "./core.mjs";
 // A streamer's transcription, subtitles and automatic hook with these settings (its own choices, else the workspace's).
 const textOf = (settings, id) => clipTextFor(settings, settings.streamers.find(s => s.id === id));
 import { chatSpike, commandTrigger, perSecond } from "./highlights.mjs";
@@ -270,8 +270,10 @@ function processJobs() {
     void lane().finally(() => { lanes -= 1; if (!stopping && jobs.length) processJobs(); });
   }
 }
-// Not alongside another job for the same clip (a re-render while its translation renders) or a second highlight video.
-const startable = j => ![...running].some(r => r.job.id === j.id || (j.kind === "highlight" && r.job.kind === "highlight"));
+// Not alongside another job for the same clip (a re-render while its translation renders) or a second highlight video,
+// and not a live clip while automation or its streamer is paused: those wait for Resume (queuedClip in core.mjs).
+const isLiveClip = j => !j.kind && !j.fromRecording && j.streamer;
+const startable = j => !(isLiveClip(j) && queuedClip(config, j.streamer.id) === "hold") && ![...running].some(r => r.job.id === j.id || (j.kind === "highlight" && r.job.kind === "highlight"));
 async function lane() {
   while (!stopping) {
     // Moments people reacted to before coverage checks, fresh before resumed, highlight videos last (triggers.mjs).
@@ -288,10 +290,12 @@ async function lane() {
 async function clipJob(job) {
   const startedAt = Date.now();
   {
-    // Live captures stop with their streamer; clips asked for from a recording were asked for by hand.
-    if (!job.fromRecording && !allowed(config, job.streamer.id)) {
+    // Live captures are dropped once their streamer or automation is stopped (paused ones wait in the queue, see
+    // startable); clips asked for from a recording were asked for by hand.
+    if (!job.fromRecording && queuedClip(config, job.streamer.id) !== "run") {
+      if (queuedClip(config, job.streamer.id) === "hold") { jobs.push(job); return; }
       store.fail(job.id); await rm(job.dir, { recursive: true, force: true });
-      console.log("Dropped a queued", reasonLabel[job.reason] ?? job.reason, "clip from", job.streamer.url + ":", config ? "the streamer is paused, stopped or disabled" : "no settings from the dashboard");
+      console.log("Dropped a queued", reasonLabel[job.reason] ?? job.reason, "clip from", job.streamer.url + ":", config ? "the streamer or automation is stopped" : "no settings from the dashboard");
       return;
     }
     const controller = new AbortController(), untrack = track(job, controller);
@@ -336,8 +340,9 @@ async function clipJob(job) {
 // Runs every few seconds: ends sessions that should stop and turns chat spikes or quiet periods into clips.
 async function checkSessions() {
   const now = Date.now();
-  // Re-renders were asked for by hand and run regardless of automation; captures stop with their streamer.
-  for (const r of running) if (r.job.streamer && !allowed(config, r.job.streamer.id)) r.controller.abort();
+  // Re-renders were asked for by hand and run regardless of automation. A live clip being made is finished when its
+  // streamer or automation is paused, and cancelled once either is stopped.
+  for (const r of running) if (r.job.streamer && !r.job.fromRecording && queuedClip(config, r.job.streamer.id) === "drop") r.controller.abort();
   for (const [id, session] of sessions) {
     const settings = config, name = session.streamer.url;
     if (!allowed(settings, id)) { await stopSession(id, "paused, stopped or disabled"); continue; }

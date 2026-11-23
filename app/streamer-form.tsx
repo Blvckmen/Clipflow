@@ -101,7 +101,7 @@ export function StreamerForm({ streamer, hasAccounts, busy, workspaceMode, works
       <option value="stopped">Stopped</option>
     </select></label>
     <label>When they go live<select value={mode} onChange={e => setMode(e.target.value)}>{Object.entries(captureModes).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
-      <small>{mode === "clip" ? "Clips are cut while they stream." : mode === "record" ? "The whole stream is saved on your worker PC (about 1 to 3 GB an hour) and clipped when it ends. Pick your own clips under Streamers → Recordings." : "Clips are cut while they stream, and the whole stream is saved so you can pick more later."}{mode !== (streamer.capture_mode ?? "clip") ? " Applies from their next stream." : ""}</small></label>
+      <small>{mode === "clip" ? "Clips are cut while they stream." : mode === "record" ? "The whole stream is saved on your worker PC (about 1 to 3 GB an hour) and clipped when it ends. Pick your own clips under Channels → Recordings." : "Clips are cut while they stream, and the whole stream is saved so you can pick more later."}{mode !== (streamer.capture_mode ?? "clip") ? " Applies from their next stream." : ""}</small></label>
     <label>Daily clip limit<input type="number" min={1} max={100} placeholder={"Workspace setting (" + workspaceLimit + ")"} value={limit ?? ""} onChange={e => setLimit(e.target.value === "" ? null : Math.max(1, Math.min(100, Math.round(Number(e.target.value)))))} />
       <small>Most clips a day from this streamer (resets at midnight UTC). Leave empty to use Settings → Daily limit. Viewers&apos; Twitch clips have their own limit.</small></label>
     <PublishModeField value={publish} onChange={setPublish} ws={workspaceMode} />

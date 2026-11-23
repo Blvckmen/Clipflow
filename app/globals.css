@@ -599,6 +599,13 @@ button.account-streamers{max-width:none;justify-self:start}
 .automation-controls{display:flex;gap:6px;margin-top:12px;padding-top:11px;border-top:1px solid #ffffff10}
 .engine-card .automation-controls button{flex:1;justify-content:center;margin:0;padding:6px 8px;border:1px solid #ffffff1a;border-radius:6px;color:#d9e0e8;background:#ffffff08}
 .engine-card .automation-controls button:hover:not(:disabled){background:#ffffff12}
+/* "⋯" next to Pause/Resume: Stop and clear queue lives here so it isn't pressed by mistake. */
+.automation-more{position:relative;flex:0 0 auto}
+.automation-more>summary{list-style:none;cursor:pointer;padding:6px 10px;border:1px solid #ffffff1a;border-radius:6px;color:#d9e0e8;background:#ffffff08;line-height:1}
+.automation-more>summary::-webkit-details-marker{display:none}
+.automation-more>summary:hover{background:#ffffff12}
+.automation-more>summary:focus-visible{outline:2px solid #ffffff60;outline-offset:2px}
+.engine-card .automation-more>button{position:absolute;right:0;bottom:calc(100% + 6px);z-index:5;white-space:nowrap;flex:none;background:#1b2028;border-color:#ffffff2a}
 .more-controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:14px 4px 4px;margin-top:6px;border-top:1px solid var(--border)}
 .more-controls span{flex:1 1 100%;font-size:13px;color:var(--muted)}
 .more-controls button{display:inline-flex;align-items:center;gap:6px}

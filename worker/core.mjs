@@ -106,6 +106,13 @@ export function validateControl(c) {
   return c;
 }
 export function allowed(c, id) { return c?.control === "running" && c.streamers.some(s => s.id === id && s.status === "armed"); }
+// What happens to a clip already queued for a streamer: "run" it, "hold" it while automation or the streamer is paused
+// (it's made after Resume), or "drop" it once either is stopped, the streamer is gone, or there are no settings.
+export function queuedClip(c, id) {
+  const s = c?.streamers?.find(x => x.id === id);
+  if (!c || !s || c.control === "stopped" || s.status === "stopped") return "drop";
+  return c.control === "running" && s.status === "armed" ? "run" : "hold";
+}
 // Classifies `streamlink --json` output. Only "No playable streams" means offline; other errors are not proof either way.
 export function probeResult(json) {
   if (json?.streams && typeof json.streams === "object" && Object.keys(json.streams).length) return { status: "live", title: typeof json.metadata?.title === "string" ? json.metadata.title.slice(0, 200) : null };

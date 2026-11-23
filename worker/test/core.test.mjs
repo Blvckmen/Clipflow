@@ -4,7 +4,18 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { Store, allowed, channelUrl, dueForProbe, limitFor, plan, probeResult, retryDelay, shownStatus, validateControl, workerTuning } from "../core.mjs";
+import { Store, allowed, channelUrl, dueForProbe, limitFor, plan, probeResult, retryDelay, shownStatus, validateControl, workerTuning, queuedClip } from "../core.mjs";
+
+test("queued clips wait while paused and are dropped only once stopped", () => {
+  const id = "11111111-1111-1111-1111-111111111111", c = (control, status) => ({ control, streamers: [{ id, status }] });
+  assert.equal(queuedClip(c("running", "armed"), id), "run");
+  assert.equal(queuedClip(c("paused", "armed"), id), "hold");
+  assert.equal(queuedClip(c("running", "paused"), id), "hold");
+  assert.equal(queuedClip(c("stopped", "armed"), id), "drop");
+  assert.equal(queuedClip(c("paused", "stopped"), id), "drop");
+  assert.equal(queuedClip(c("running", "armed"), "22222222-2222-2222-2222-222222222222"), "drop");
+  assert.equal(queuedClip(null, id), "drop");
+});
 
 test("worker settings: the dashboard's choices win, then the environment, then the defaults", () => {
   assert.deepEqual(workerTuning(null, {}), { minRating: 6, coverageShare: 0.7, spikeFactor: 2.5, autoHooks: true, aiWriter: true, maxCaptures: 1, clipWorkers: 2, retentionHours: 72 });

@@ -46,7 +46,7 @@ export function ShareClip({ clipId, caption, tiktokAccounts, busy, onMarked }: {
       {state === "ready"
         ? <button className="primary" type="button" onClick={() => void share()}><Smartphone size={15} />Open in TikTok</button>
         : <button className="secondary" type="button" disabled={state === "loading"} onClick={() => void prepare()}>{state === "loading" ? <Loader2 size={15} className="spin" /> : <Smartphone size={15} />}{state === "loading" ? "Preparing video…" : state ? "Again" : "Post in the TikTok app"}</button>}
-      {caption && <button className="text-button" type="button" onClick={() => void copy().then(ok => setNote(ok ? "Caption copied." : "Couldn't copy; select it in the editor's Post caption tab."))}><Copy size={13} />Copy caption</button>}
+      {caption && <button className="text-button" type="button" onClick={() => void copy().then(ok => setNote(ok ? "Caption copied." : "Couldn't copy; select it in the editor's Post text tab."))}><Copy size={13} />Copy caption</button>}
     </div>
     {note && <p className="hint" role="status">{note}</p>}
     {(state === "shared" || state === "downloaded") && tiktokAccounts.length > 0 && <div className="share-mark">
