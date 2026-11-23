@@ -150,6 +150,29 @@ export function shownStatus(c, id, status, countToday) {
 export function limitFor(c, id) {
   return c?.streamers?.find(x => x.id === id)?.dailyLimit ?? c.dailyLimit;
 }
+// Worker settings chosen in the dashboard (Settings → This PC), as plain choices. Each one the dashboard sets wins;
+// one it leaves out (or an older dashboard) falls back to the environment, then the built-in default. A bad value is
+// ignored rather than refused, so a typo can't stop recording.
+export const PICKINESS = { relaxed: { minRating: 4, coverageShare: 0.85 }, normal: { minRating: 6, coverageShare: 0.7 }, strict: { minRating: 8, coverageShare: 0.5 } };
+export const CHAT_SENSITIVITY = { low: 3.5, normal: 2.5, high: 1.8 };
+export const PC_POWER = { light: 1, balanced: 2, maximum: 3 };
+export function workerTuning(c, env = {}) {
+  const w = c?.worker && typeof c.worker === "object" && !Array.isArray(c.worker) ? c.worker : {};
+  const num = (v, fallback) => { const n = Number(v); return v !== undefined && v !== "" && Number.isFinite(n) ? n : fallback; };
+  const int = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi ? v : undefined;
+  const flag = v => typeof v === "boolean" ? v : undefined;
+  const pick = PICKINESS[w.pickiness];
+  return {
+    minRating: pick?.minRating ?? num(env.AI_MIN_RATING, 6),
+    coverageShare: pick?.coverageShare ?? num(env.COVERAGE_SHARE, 0.7),
+    spikeFactor: CHAT_SENSITIVITY[w.chatSensitivity] ?? num(env.CHAT_SPIKE_FACTOR, 2.5),
+    autoHooks: flag(w.autoHooks) ?? env.AUTO_HOOKS !== "false",
+    aiWriter: flag(w.aiWriter) ?? (env.AI_WRITER ?? "on").toLowerCase() !== "off",
+    maxCaptures: int(w.maxCaptures, 1, 4) ?? Math.max(1, Math.floor(num(env.MAX_CAPTURES, 1)) || 1),
+    clipWorkers: PC_POWER[w.power] ?? Math.max(1, Math.min(4, Math.floor(num(env.CLIP_WORKERS, 2)) || 1)),
+    retentionHours: int(w.retentionHours, 12, 720) ?? (num(env.RETENTION_HOURS, 72) > 0 ? num(env.RETENTION_HOURS, 72) : 72),
+  };
+}
 export function retryDelay(attempt) { return Math.min(300_000, 30_000 * 2 ** Math.min(attempt, 4)); }
 export function clipHash(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
 export class Store {

@@ -1,6 +1,6 @@
 import { currentUser, signInPath } from "../../auth";
 import { bucket, database, clipKey, sourceKey, highlightKey } from "../../../db/raw";
-import { defaultCaption, defaults, parseStreamer, settingsSchema, streamerViewerClipsSchema } from "../../../lib/clipflow";
+import { defaultCaption, defaults, parseStreamer, readWorkerSettings, settingsSchema, streamerViewerClipsSchema } from "../../../lib/clipflow";
 import { readStreamerViewerClips, readViewerClips } from "../../../lib/viewer-clips.mjs";
 import { instagramConfig } from "../../../lib/publisher";
 import { connectionFor, connections, hashKey, listKeys, siteConnection, zernioApiUrl } from "../../../lib/zernio-keys";
@@ -125,7 +125,7 @@ export async function GET(request:Request){
   const prefs=Object.fromEntries(Object.entries((p??{}) as Record<string,unknown>).filter(([k])=>k!=="zernio_key_enc"&&k!=="zernio_label"&&k!=="discord_webhook_enc"));
   const keys=(await listKeys(db,owner)).map(k=>({id:k.id,label:k.label,created_at:k.created_at,last_error:k.last_error,accounts:a.results.filter(x=>x.zernio_key_id===k.id).length}));
   const site=!keys.length&&!!siteConnection(env);
-  const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,importClips:Number(p.import_clips??0),viewerClips:readViewerClips(p.viewer_clips),clipCommand:p.clip_command??defaults.clipCommand,learn:p.learn===undefined?true:!!p.learn,weeklyHighlights:!!p.weekly_highlights,discordAlerts:!!p.discord_webhook_enc,alertError:p.alert_error??null,style:parse(p.style)}:{...defaults,style:null};
+  const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,importClips:Number(p.import_clips??0),viewerClips:readViewerClips(p.viewer_clips),clipCommand:p.clip_command??defaults.clipCommand,learn:p.learn===undefined?true:!!p.learn,weeklyHighlights:!!p.weekly_highlights,worker:readWorkerSettings(p.worker_settings),discordAlerts:!!p.discord_webhook_enc,alertError:p.alert_error??null,style:parse(p.style)}:{...defaults,style:null};
   return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(clipRow),moreClips:c.results.length===CLIPS_PAGE,storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,duration,content_type,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,
    // Whole-stream recordings (their heat strips load with GET /api/recordings/<id>) and clips asked for from them.
    recordings:(await db.prepare("SELECT r.id,r.streamer_id,s.name AS streamer,r.title,r.started_at,r.ended_at,r.duration,r.size,r.state,r.error,r.preview_key IS NOT NULL AS preview,r.transcript_at IS NOT NULL AS transcript,r.upload_id IS NOT NULL AS uploading,r.expires_at,r.source_url FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.owner=? ORDER BY r.started_at DESC LIMIT 100").bind(owner).all<Record<string,unknown>>()).results.map(x=>({...x,preview:!!x.preview,uploading:!!x.uploading,transcript:!!x.transcript})),
@@ -252,6 +252,8 @@ export async function POST(request:Request){
    if(s.clipCommand!==undefined)statements.push(db.prepare("UPDATE preferences SET clip_command=? WHERE owner=?").bind(s.clipCommand,owner));
    if(s.learn!==undefined)statements.push(db.prepare("UPDATE preferences SET learn=? WHERE owner=?").bind(Number(s.learn),owner));
    if(s.weeklyHighlights!==undefined)statements.push(db.prepare("UPDATE preferences SET weekly_highlights=? WHERE owner=?").bind(Number(s.weeklyHighlights),owner));
+   // Settings → This PC; an empty object hands every choice back to the worker's own setup.
+   if(s.worker!==undefined)statements.push(db.prepare("UPDATE preferences SET worker_settings=? WHERE owner=?").bind(Object.keys(s.worker).length?JSON.stringify(s.worker):null,owner));
    message="Saved clipping and publishing preferences.";
   }
   if(payload.action==="control"){

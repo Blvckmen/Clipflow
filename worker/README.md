@@ -101,12 +101,23 @@ logs to `worker\data\worker.log`.
   watched and downloaded there (if storage is off, it stays local). Both are retried until
   accepted. Local files are deleted after `RETENTION_HOURS`; the dashboard copy is kept.
 
+The dashboard's **Settings → This PC** sets clip pickiness (`AI_MIN_RATING` and `COVERAGE_SHARE`), chat sensitivity
+(`CHAT_SPIKE_FACTOR`), opening titles (`AUTO_HOOKS`), the local AI writer (`AI_WRITER`), streams recorded at once
+(`MAX_CAPTURES`), PC power (`CLIP_WORKERS`) and how long clip files are kept (`RETENTION_HOURS`). A choice made there
+wins over the variable and applies within `POLL_SECONDS`, with no restart; one left on "Worker setup" uses the variable
+below.
+
+The rest need no setting in normal use. Program paths (`STREAMLINK`, `PYTHON`, `YTDLP`, `OLLAMA_URL`, `WHISPER_DIR`,
+`EMOJI_FONT`) are found automatically or set by `run-windows.ps1`; timing values (`POLL_SECONDS`, `COOLDOWN_SECONDS`,
+`BUFFER_SECONDS`, `LIVE_CHECK_SECONDS`, `CHAT_CLIP_GAP_SECONDS`, `IMPORT_MINUTES`) and the Whisper tuning are for
+troubleshooting only.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CLIPFLOW_URL` | required | Dashboard origin (https, or localhost) |
 | `CLIPFLOW_TOKEN` | required | Worker token from the dashboard |
 | `DATA_DIR` | `/data` | Clips and the local SQLite queue |
-| `AUTO_HOOKS` | `true` | Automatic opening titles on new clips; set `false` to disable, then restart the worker |
+| `AUTO_HOOKS` | `true` | Automatic opening titles on new clips; set `false` to disable |
 | `POLL_SECONDS` | `60` | How often to read control and settings |
 | `COOLDOWN_SECONDS` | `0` | Least time between checks of the rest of the stream (0: back to back) |
 | `CHAT_CLIP_GAP_SECONDS` | `25` | A long chat burst counts as a new moment at most this often |

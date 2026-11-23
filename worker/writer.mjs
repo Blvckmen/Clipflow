@@ -15,7 +15,10 @@ export function inTurn(signal, send) {
   turn = mine.catch(() => {});
   return mine;
 }
-export const writerEnabled = () => (process.env.AI_WRITER ?? "on").toLowerCase() !== "off";
+// The dashboard's "Write post text with AI" choice (setWriterEnabled, from each settings load) wins over AI_WRITER.
+let writerChoice = null;
+export function setWriterEnabled(on) { writerChoice = typeof on === "boolean" ? on : null; }
+export const writerEnabled = () => writerChoice ?? (process.env.AI_WRITER ?? "on").toLowerCase() !== "off";
 
 const schema = {
   type: "object",

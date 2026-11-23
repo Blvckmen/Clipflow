@@ -5,6 +5,17 @@ export const framings={blur:"Blurred background",crop:"Centre crop",fit:"Fit wit
 export const viewerClipsSchema=z.object({perDay:z.number().int().min(1).max(20),maxHours:z.number().int().min(1).max(72),ask:z.boolean()}).strict();
 // A streamer's own: each left out to follow the workspace.
 export const streamerViewerClipsSchema=z.object({on:z.boolean().optional(),minViews:z.number().int().min(1).max(100000).optional(),perDay:z.number().int().min(1).max(20).optional(),maxHours:z.number().int().min(1).max(72).optional(),ask:z.boolean().optional()}).strict();
+// Settings → This PC: choices the worker uses instead of its .env file (worker/core.mjs workerTuning). Each one left out
+// follows the worker's own setting.
+export const workerSettingsSchema=z.object({pickiness:z.enum(["relaxed","normal","strict"]).optional(),chatSensitivity:z.enum(["low","normal","high"]).optional(),autoHooks:z.boolean().optional(),aiWriter:z.boolean().optional(),maxCaptures:z.number().int().min(1).max(4).optional(),power:z.enum(["light","balanced","maximum"]).optional(),retentionHours:z.number().int().min(12).max(720).optional()}).strict();
+export type WorkerSettings=z.infer<typeof workerSettingsSchema>;
+// The saved JSON, keeping only the choices that are still valid.
+export function readWorkerSettings(json:unknown):WorkerSettings{
+ let v:unknown;try{v=typeof json==="string"?JSON.parse(json):null;}catch{return {};}
+ if(!v||typeof v!=="object"||Array.isArray(v))return {};
+ const shape=workerSettingsSchema.shape as Record<string,z.ZodTypeAny>;
+ return Object.fromEntries(Object.entries(v).filter(([k,x])=>shape[k]?.safeParse(x).success&&x!==undefined)) as WorkerSettings;
+}
 export const settingsSchema=z.object({mode:z.enum(["automatic","review"]),duration:z.number().int().min(15).max(90),dailyLimit:z.number().int().min(1).max(100),captions:z.boolean(),framing:z.enum(["blur","crop","fit","split","cam","pip","phone"]),destinations:z.array(z.enum(destinations)).max(5).transform(x=>[...new Set(x)]),captionTemplate:z.string().trim().min(1).max(500).optional(),
  // Omitted by older clients: the saved values are kept.
  aiCaptions:z.boolean().optional(),captionNotes:z.string().trim().max(1000).optional(),
@@ -21,11 +32,13 @@ export const settingsSchema=z.object({mode:z.enum(["automatic","review"]),durati
  // Whether the worker uses what was learned from views when it picks moments.
  learn:z.boolean().optional(),
  // A highlight video of the past week every Monday.
- weeklyHighlights:z.boolean().optional()});
+ weeklyHighlights:z.boolean().optional(),
+ // Settings → This PC (the worker's own choices).
+ worker:workerSettingsSchema.optional()});
 // A streamer's own publishing mode; "workspace" follows Settings → Publishing mode.
 export const publishModes={workspace:"Use the workspace setting",review:"Review clips first",automatic:"Post to social media directly"} as const;
 export const defaultCaption="{streamer} on {platform} #clips #{platform}";
-export const defaults={mode:"automatic",duration:45,dailyLimit:5,captions:true,framing:"blur",destinations:[] as string[],control:"paused",captionTemplate:defaultCaption,aiCaptions:true,captionNotes:"",transcribe:true,recordingDays:7,importClips:0,viewerClips:{perDay:2,maxHours:24,ask:false},clipCommand:"mods" as "off"|"mods"|"everyone",learn:true,weeklyHighlights:false};
+export const defaults={mode:"automatic",duration:45,dailyLimit:5,captions:true,framing:"blur",destinations:[] as string[],control:"paused",captionTemplate:defaultCaption,aiCaptions:true,captionNotes:"",transcribe:true,recordingDays:7,importClips:0,viewerClips:{perDay:2,maxHours:24,ask:false},clipCommand:"mods" as "off"|"mods"|"everyone",learn:true,weeklyHighlights:false,worker:{} as WorkerSettings};
 export const captureModes={clip:"Clip live",record:"Record the whole stream, clip it afterwards",both:"Clip live and record the whole stream"} as const;
 // Platforms this build can actually publish to once an account is connected.
 export const publishable=["Instagram"] as const;

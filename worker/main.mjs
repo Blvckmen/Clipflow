@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { Store, allowed, channelUrl, clipTextFor, dueForProbe, limitFor, plan, retryDelay, shownStatus, validateControl } from "./core.mjs";
+import { Store, allowed, channelUrl, clipTextFor, dueForProbe, limitFor, plan, retryDelay, shownStatus, validateControl, workerTuning } from "./core.mjs";
 // A streamer's transcription, subtitles and automatic hook with these settings (its own choices, else the workspace's).
 const textOf = (settings, id) => clipTextFor(settings, settings.streamers.find(s => s.id === id));
 import { chatSpike, commandTrigger, perSecond } from "./highlights.mjs";
@@ -14,7 +14,7 @@ import { makeHighlightVideo } from "./highlights-video.mjs";
 import { renderClip, videoInfo } from "./render.mjs";
 import { backgroundStart, chooseBackground, localBackground } from "./backgrounds.mjs";
 import { Recorder } from "./recorder.mjs";
-import { chatSample, LANGUAGE_NAMES, pickerEnabled, rateMoments, rateSegments, sentencesOf, spreadWords, translateClip, writeClipText, writerEnabled } from "./writer.mjs";
+import { chatSample, LANGUAGE_NAMES, pickerEnabled, rateMoments, rateSegments, sentencesOf, spreadWords, setWriterEnabled, translateClip, writeClipText, writerEnabled } from "./writer.mjs";
 import { command } from "./process.mjs";
 import { bucketSignals, encodePreview, extractRange, joinSegments, parts, pickMoments, scanRanges, suggestMoments } from "./recordings.mjs";
 import { screenText, screenTextAvailable } from "./screentext.mjs";
@@ -22,7 +22,7 @@ import { Twitch, clipUrl, momentOf, momentTime, pickClips, twitchLogin, viewerSe
 import { PLATFORM_NAMES, downloadVideo, findYtDlp, videoLink, videoTitle } from "./vod.mjs";
 import { stopTranscriber, transcribe as whisper } from "./whisper.mjs";
 import { AI_BATCH, autoClipPicks, mergeAiMoments, transcriptWindows } from "./stream-pass.mjs";
-import { COVERAGE_SHARE, coverageRoom, coverageWindow, enqueueTrigger, jobRank } from "./triggers.mjs";
+import { coverageRoom, coverageWindow, enqueueTrigger, jobRank } from "./triggers.mjs";
 
 // Every log line starts with the time (HH:MM:SS), so how long things take can be read off worker.log.
 for (const level of ["log", "warn", "error"]) {
@@ -40,13 +40,15 @@ if (!origin || !/^cfw_[0-9a-f]{64}$/.test(token)) { console.error("Set CLIPFLOW_
 if (origin.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(origin.hostname)) { console.error("CLIPFLOW_URL must use https."); process.exit(1); }
 
 const dataDir = env.DATA_DIR || "/data";
-const pollMs = seconds(env.POLL_SECONDS, 60), retentionMs = seconds(env.RETENTION_HOURS, 72) * 3600;
+const pollMs = seconds(env.POLL_SECONDS, 60);
+// Settings chosen in the dashboard's Settings → This PC, else this environment (core.mjs workerTuning); refreshed with
+// every settings load, so a change there applies within POLL_SECONDS without a restart.
+let tuning = workerTuning(null, env);
 // Triggers wait in a queue (triggers.mjs); a long chat burst counts as a new trigger at most every CHAT_CLIP_GAP_SECONDS.
 // Between triggers the stream is covered in back-to-back windows; COOLDOWN_SECONDS (default 0) spaces those checks out.
 // (seconds() refuses 0, which is a valid choice here: back-to-back checks.)
 const coverEveryMs = Math.max(0, Number(env.COOLDOWN_SECONDS ?? 0) || 0) * 1000, spikeEveryMs = seconds(env.CHAT_CLIP_GAP_SECONDS, 25);
-const bufferSeconds = seconds(env.BUFFER_SECONDS, 240) / 1000, spikeFactor = Number(env.CHAT_SPIKE_FACTOR ?? 2.5);
-const maxSessions = Math.max(1, Math.floor(Number(env.MAX_CAPTURES ?? 1)));
+const bufferSeconds = seconds(env.BUFFER_SECONDS, 240) / 1000;
 const liveCheckMs = seconds(env.LIVE_CHECK_SECONDS, 120), probeConcurrency = 3, probesPerCycle = 15;
 const postRollMs = 20_000;
 // Why a clip was cut; the code is sent to the dashboard with the clip.
@@ -74,7 +76,7 @@ let config = null, stopping = false, timer, sessionTimer;
 // The jobs being worked on ({ job, controller }), at most CLIP_WORKERS (2) at once: while one clip is transcribed
 // another can be written or rendered. With one at a time clips queued for minutes while most of the PC's cores sat
 // idle (Whisper, the AI writer and ffmpeg each use only some of them). CLIP_WORKERS=1 is the old one-at-a-time.
-const running = new Set(), clipWorkers = Math.max(1, Math.min(4, Math.floor(Number(env.CLIP_WORKERS ?? 2)) || 1));
+const running = new Set();
 const track = (job, controller) => { const slot = { job, controller }; running.add(slot); return () => running.delete(slot); };
 // When the settings were last loaded. A dashboard that doesn't answer (a deploy, an outage) leaves the worker on its last
 // settings for up to CONFIG_GRACE_MS: dropping them stopped every recording and threw away every queued clip, which
@@ -157,6 +159,10 @@ async function refresh() {
     if (!response.ok) throw new Error("HTTP " + response.status);
     config = validateControl(await response.json());
     configAt = Date.now();
+    tuning = workerTuning(config, env);
+    setWriterEnabled(tuning.aiWriter);
+    // More clips at once takes effect now, not when the next job arrives.
+    if (jobs.length) processJobs();
     if (configMissing) { configMissing = false; console.log("Dashboard reachable again"); }
   } catch (error) {
     if (config && Date.now() - configAt < CONFIG_GRACE_MS) {
@@ -259,7 +265,7 @@ async function clipWindow(session, fromMs, toMs, reason) {
 // Starts lanes (up to clipWorkers) that each take the next job until none can be started.
 let lanes = 0;
 function processJobs() {
-  while (lanes < clipWorkers && !stopping && jobs.some(startable)) {
+  while (lanes < tuning.clipWorkers && !stopping && jobs.some(startable)) {
     lanes += 1;
     void lane().finally(() => { lanes -= 1; if (!stopping && jobs.length) processJobs(); });
   }
@@ -305,7 +311,7 @@ async function clipJob(job) {
         messages: (job.chatLines ?? []).map(l => [(l.t - job.rawStartMs) / 1000, l.name ?? "", l.text, l.color ?? null]),
         // Clips with no other sign of a moment (the every-10-minutes check on streams without chat) are skipped when the
         // AI rates every candidate below AI_MIN_RATING (default 6 of 10); chat spikes, !clip and viewers' clips never are.
-        minRating: job.reason === "audio" ? Number(env.AI_MIN_RATING ?? 6) || null : null,
+        minRating: job.reason === "audio" ? tuning.minRating || null : null, autoHooks: tuning.autoHooks,
         rater: pickerEnabled() && !job.exact ? texts => rateMoments(texts, { streamer: who.name, title, chat: job.chatLines?.length ? chatSample(job.chatLines, job.rawStartMs, job.rawStartMs + 120_000, 15) : [] }, { signal: controller.signal }) : null, findFacecam, background: edit => backgroundFor(edit, job.id, title ?? "") }, job.dir, controller.signal);
       store.ready(job.id, result.sha, Math.min(90, Math.max(15, Math.round(result.end - result.start))));
       made = true;
@@ -362,7 +368,7 @@ async function checkSessions() {
       console.log("!clip from", command.by, "on", name + (what === "queued" ? "" : what === "merged" ? " (joins a moment already queued)" : " (already in a clip)"));
     }
     if (session.chat && now - session.lastSpikeMs >= spikeEveryMs) {
-      const spike = chatSpike(session.chat.times, now, { sinceMs: Math.max(session.chat.since, session.startedMs), factor: spikeFactor });
+      const spike = chatSpike(session.chat.times, now, { sinceMs: Math.max(session.chat.since, session.startedMs), factor: tuning.spikeFactor });
       if (spike.spike) {
         session.lastSpikeMs = now;
         const what = enqueueTrigger(session.queue, session.coveredUntil, { atMs: now, reason: "chat" });
@@ -384,7 +390,7 @@ async function checkSessions() {
     const lookbackS = Math.min(bufferSeconds - 20, Math.max(pickerEnabled() ? 180 : 90, settings.duration * 2));
     if (now - session.lastClipMs < coverEveryMs || session.recorder.buffered() < lookbackS * 0.8) continue;
     // The last part of the daily limit is kept for moments people react to.
-    if (!coverageRoom(madeToday, dailyLimit, Number(env.COVERAGE_SHARE ?? COVERAGE_SHARE))) continue;
+    if (!coverageRoom(madeToday, dailyLimit, tuning.coverageShare)) continue;
     const span = coverageWindow({ coveredUntil: session.coveredUntil, latest, lookbackMs: lookbackS * 1000, waiting: jobs.filter(j => j.reason === "audio" && !j.resumed).length + [...running].filter(r => r.job.reason === "audio" && !r.job.resumed).length });
     if (span) {
       session.lastClipMs = now;
@@ -1139,7 +1145,7 @@ async function reportPass() {
 }
 
 async function prune() {
-  const cutoff = new Date(Date.now() - retentionMs).toISOString();
+  const cutoff = new Date(Date.now() - tuning.retentionHours * 3600_000).toISOString();
   for (const row of store.old(cutoff)) {
     await rm(dirname(row.path), { recursive: true, force: true });
     store.remove(row.id);
@@ -1175,7 +1181,7 @@ async function tick() {
   // Stop disallowed recordings before the (slow) live checks rather than after them.
   for (const id of sessions.keys()) if (!allowed(config, id)) await stopSession(id, "paused, stopped or disabled");
   await probe(dueForProbe(config, live, { running: new Set(sessions.keys()), now: Date.now(), interval: liveCheckMs, limit: probesPerCycle }));
-  const { start, bump } = plan(config, { running: new Set(sessions.keys()), blockedUntil, countToday: id => store.countToday(id), now: Date.now(), maxCaptures: maxSessions, isLive });
+  const { start, bump } = plan(config, { running: new Set(sessions.keys()), blockedUntil, countToday: id => store.countToday(id), now: Date.now(), maxCaptures: tuning.maxCaptures, isLive });
   // A higher-priority streamer went live with every slot taken: the lowest-ranked capture ends to make room.
   for (const id of bump) await stopSession(id, "a higher-priority streamer went live");
   for (const streamer of start) await startSession(streamer);

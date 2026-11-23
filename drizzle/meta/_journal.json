@@ -267,6 +267,13 @@
       "when": 1795397783080,
       "tag": "0037_post_schedule",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "6",
+      "when": 1795411522665,
+      "tag": "0038_worker_settings",
+      "breakpoints": true
     }
   ]
 }

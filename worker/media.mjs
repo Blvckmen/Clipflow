@@ -97,7 +97,7 @@ export function sourceSignals(energy,chat,from,to) {
 // the editor, and fills in the webcam box when the clip's look uses a facecam layout and has none yet.
 // `rater(texts)` (rateMoments in writer.mjs) scores candidate moments by what was said in them, 0..10 each; with it and
 // a transcript, the clip is the candidate that's best on loudness, chat and what was said together.
-export async function processWindow(raw,{settings,text=null,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false,hint="",writer=null,rater=null,findFacecam=null,messages=[],chatWeight=0.5,minRating=null},dir,signal) {
+export async function processWindow(raw,{settings,text=null,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false,hint="",writer=null,rater=null,findFacecam=null,messages=[],chatWeight=0.5,minRating=null,autoHooks=process.env.AUTO_HOOKS!=="false"},dir,signal) {
   const source=join(dir,"source.mp4"), energyFile=join(dir,"energy.json"), wordsFile=join(dir,"words.json");
   await mkdir(dir,{recursive:true});
   try {
@@ -155,8 +155,9 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
     base.captions.on=captions;
     const initialEdit=defaultEdit(base,{trimStart:start-from,trimEnd:end-from});
     // Build the title before the first render; the saved edit and dashboard preview share it. The AI writer's hook
-    // comes first when it has one; otherwise (or with AUTO_HOOKS=false off) the transcript-based one.
-    const hooks=transcribe && (text?text.hook:true) && process.env.AUTO_HOOKS!=="false";
+    // comes first when it has one; otherwise the transcript-based one. autoHooks: the dashboard's "Opening titles on
+    // new clips" (AUTO_HOOKS=false when the dashboard doesn't set it).
+    const hooks=transcribe && (text?text.hook:true) && autoHooks;
     // The AI writer only needs what was said, so it works while the source is encoded (the two longest steps).
     const said=words.filter(w=>w[0]>=initialEdit.trim.start-.05&&w[1]<=initialEdit.trim.end+.05).map(w=>w[2]).join(" ");
     const writing=writer&&!signal.aborted?writer({transcript:said,from,to:to}).catch(()=>null):Promise.resolve(null);

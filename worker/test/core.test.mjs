@@ -4,7 +4,20 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { Store, allowed, channelUrl, dueForProbe, limitFor, plan, probeResult, retryDelay, shownStatus, validateControl } from "../core.mjs";
+import { Store, allowed, channelUrl, dueForProbe, limitFor, plan, probeResult, retryDelay, shownStatus, validateControl, workerTuning } from "../core.mjs";
+
+test("worker settings: the dashboard's choices win, then the environment, then the defaults", () => {
+  assert.deepEqual(workerTuning(null, {}), { minRating: 6, coverageShare: 0.7, spikeFactor: 2.5, autoHooks: true, aiWriter: true, maxCaptures: 1, clipWorkers: 2, retentionHours: 72 });
+  const env = { AI_MIN_RATING: "5", COVERAGE_SHARE: "1", CHAT_SPIKE_FACTOR: "3", AUTO_HOOKS: "false", AI_WRITER: "off", MAX_CAPTURES: "2", CLIP_WORKERS: "3", RETENTION_HOURS: "48" };
+  assert.deepEqual(workerTuning({}, env), { minRating: 5, coverageShare: 1, spikeFactor: 3, autoHooks: false, aiWriter: false, maxCaptures: 2, clipWorkers: 3, retentionHours: 48 });
+  const worker = { pickiness: "strict", chatSensitivity: "high", autoHooks: true, aiWriter: true, maxCaptures: 3, power: "light", retentionHours: 24 };
+  assert.deepEqual(workerTuning({ worker }, env), { minRating: 8, coverageShare: 0.5, spikeFactor: 1.8, autoHooks: true, aiWriter: true, maxCaptures: 3, clipWorkers: 1, retentionHours: 24 });
+  // Bad values are ignored, not refused, so a typo can't stop recording.
+  const bad = { pickiness: "picky", chatSensitivity: 9, autoHooks: "yes", maxCaptures: 0, power: "turbo", retentionHours: 1 };
+  assert.deepEqual(workerTuning({ worker: bad }, env), workerTuning({}, env));
+  assert.deepEqual(workerTuning({ worker: [] }, {}), workerTuning(null, {}));
+  assert.equal(workerTuning({}, { CLIP_WORKERS: "9" }).clipWorkers, 4);
+});
 import { sourceSignals, sourceWords } from "../media.mjs";
 
 const a = "11111111-1111-4111-8111-111111111111", b = "22222222-2222-4222-8222-222222222222", c = "33333333-3333-4333-8333-333333333333";

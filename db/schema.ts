@@ -57,6 +57,9 @@ export const preferences=sqliteTable("preferences",{
  learn:integer("learn",{mode:"boolean"}).notNull().default(true),
  // Make a highlight video of the past week every Monday (lib/highlights.ts).
  weeklyHighlights:integer("weekly_highlights",{mode:"boolean"}).notNull().default(false),
+ // Settings → This PC (lib/clipflow.ts workerSettingsSchema): JSON choices the worker uses instead of its .env; null:
+ // the worker's own setup for all of them.
+ workerSettings:text("worker_settings"),
  // No longer used: the single Zernio key setting, moved to zernio_keys by migration 0011.
  zernioKeyEnc:text("zernio_key_enc"),zernioLabel:text("zernio_label"),
 });
