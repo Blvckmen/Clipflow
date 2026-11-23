@@ -12,7 +12,7 @@
     "start": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.json --local --persist-to .wrangler/state --ip 127.0.0.1 --inspector-port 0",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "test:api": "node --test tests/api.test.mjs",
-    "test:unit": "node --test tests/access-jwt.test.mjs tests/secure.test.mjs tests/posting-plan.test.mjs tests/posting-rules.test.mjs tests/insights.test.mjs tests/viewer-clips.test.mjs tests/virality.test.mjs",
+    "test:unit": "node --test tests/access-jwt.test.mjs tests/secure.test.mjs tests/posting-plan.test.mjs tests/posting-rules.test.mjs tests/insights.test.mjs tests/viewer-clips.test.mjs tests/virality.test.mjs tests/pc-health.test.mjs",
     "test:publishing": "node --test --test-concurrency=1 tests/publishing.e2e.mjs",
     "test:zernio": "node --test --test-concurrency=1 tests/zernio.e2e.mjs",
     "deploy:check": "node scripts/deploy-cloudflare.mjs --check",

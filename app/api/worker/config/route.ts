@@ -12,13 +12,14 @@ export async function GET(request:Request){
  try{
   const db=database(),owner=await workerOwner(request,db);
   if(!owner)return Response.json({error:"Invalid worker token."},{status:401});
-  const [s,p,r,,b,rec,req,tr,hl,vc]=await Promise.all([
+  const [s,p,r,wt,b,rec,req,tr,hl,vc]=await Promise.all([
    db.prepare("SELECT id,url,status,style,capture_mode,clip_text,learned,viewer_clips,daily_limit FROM streamers WHERE owner=? ORDER BY priority IS NULL,priority,created_at").bind(owner).all<{id:string;url:string;status:string;style:string|null;capture_mode:string|null;clip_text:string|null;learned:string|null;viewer_clips:string|null;daily_limit:number|null}>(),
    db.prepare("SELECT duration,daily_limit,captions,framing,control,style,transcribe,recording_days,import_clips,viewer_clips,clip_command,learn,worker_settings FROM preferences WHERE owner=?").bind(owner).first(),
    // Edits saved in the dashboard that still need rendering, oldest request first.
    // signals: the source's loudness, for jump cuts and punch-in zooms.
    db.prepare("SELECT id,edit,edit_rev,transcript,source_meta,signals FROM clips WHERE owner=? AND render_state='queued' AND edit IS NOT NULL ORDER BY coalesce(rendered_at,created_at) LIMIT 5").bind(owner).all<{id:string;edit:string;edit_rev:number;transcript:string|null;source_meta:string|null;signals:string|null}>(),
-   db.prepare("UPDATE worker_tokens SET last_seen=? WHERE owner=?").bind(new Date().toISOString(),owner).run(),
+   // Checking in; restart_at: a restart asked for from Settings → This PC, done by the worker once it is idle.
+   db.prepare("UPDATE worker_tokens SET last_seen=? WHERE owner=? RETURNING restart_at").bind(new Date().toISOString(),owner).first<{restart_at:string|null}>(),
    // Split-screen background videos the worker may download (GET /api/worker/backgrounds/<id>).
    db.prepare("SELECT id,name,size,duration,content_type FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all<{id:string;name:string;size:number;duration:number|null;content_type:string}>(),
    // Recordings the dashboard still has (the worker deletes its copies of the rest), videos waiting to be imported
@@ -37,6 +38,7 @@ export async function GET(request:Request){
    style:parse(p?.style),
    // Settings → This PC; each choice left out follows the worker's .env (worker/core.mjs workerTuning).
    // workerRev: their fingerprint, which the worker reports back once it runs with them (Saved → Applied).
+   restartAt:wt?.restart_at??null,
    worker:readWorkerSettings(p?.worker_settings),workerRev:workerSettingsRev(readWorkerSettings(p?.worker_settings)),
    streamers:s.results.map(x=>({id:x.id,url:x.url,status:x.status,style:parse(x.style),captureMode:x.capture_mode??"clip",text:clipText(x.clip_text),viewerClips:readStreamerViewerClips(x.viewer_clips),dailyLimit:x.daily_limit??null,...chatWeightOf(x.learned,p?.learn)})),
    recordingDays:(p?.recording_days as number|undefined)??defaults.recordingDays,importClips:(p?.import_clips as number|undefined)??defaults.importClips,viewerClips:readViewerClips(p?.viewer_clips),

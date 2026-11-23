@@ -281,6 +281,13 @@
       "when": 1795422730733,
       "tag": "0039_worker_device",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "6",
+      "when": 1795430430984,
+      "tag": "0040_worker_restart",
+      "breakpoints": true
     }
   ]
 }

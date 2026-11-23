@@ -10,6 +10,7 @@ const textOf = (settings, id) => clipTextFor(settings, settings.streamers.find(s
 import { chatSpike, commandTrigger, perSecond } from "./highlights.mjs";
 import { openChat } from "./chat.mjs";
 import { PROBE_TIMEOUT_MS, probeLive, processWindow, streamlink } from "./media.mjs";
+import { checkHealth, codeStamp } from "./health.mjs";
 import { normalizeEdit } from "./edit.mjs";
 import { makeHighlightVideo } from "./highlights-video.mjs";
 import { renderClip, videoInfo } from "./render.mjs";
@@ -148,13 +149,53 @@ async function probe(streamers) {
 const DEVICE_EVERY_MS = 5 * 60_000;
 let deviceSent = "", deviceSentAt = 0;
 function deviceReport() {
-  const ready = jobs.filter(startable).length;
+  const ready = jobs.filter(startable);
+  // How long the oldest clip ready to be made has waited, in whole 5 minutes (so the report doesn't change every
+  // minute): a long wait means this PC is falling behind.
+  const oldest = ready.length ? Math.min(...ready.map(j => j.queuedAt ?? Date.now())) : null;
   return {
     applied: appliedRev,
-    recording: [...sessions.keys()].slice(0, 20), making: Math.min(50, running.size), waiting: ready, held: jobs.length - ready,
+    recording: [...sessions.keys()].slice(0, 20), making: Math.min(50, running.size), waiting: ready.length, held: jobs.length - ready.length,
+    oldestWaitMin: oldest === null ? 0 : Math.floor((Date.now() - oldest) / 300_000) * 5,
     uses: { maxCaptures: tuning.maxCaptures, clipWorkers: tuning.clipWorkers, whisperModel: tuning.whisperModel, aiWriter: tuning.aiWriter, retentionHours: tuning.retentionHours },
     cores: availableParallelism(), memoryGb: Math.round(totalmem() / 2 ** 30 * 10) / 10,
+    health, restartPending,
   };
+}
+
+// Health checks (health.mjs): when the worker starts, every HEALTH_EVERY_MS, and again soon after the transcription
+// quality or the AI writer changes. They run alongside the cycle, never holding it up.
+const HEALTH_EVERY_MS = 10 * 60_000;
+let health = null, healthAt = 0, healthRunning = false, healthKey = "";
+function maybeCheckHealth() {
+  const key = tuning.whisperModel + "|" + tuning.aiWriter;
+  if (key !== healthKey) { healthKey = key; healthAt = 0; }
+  if (healthRunning || Date.now() - healthAt < HEALTH_EVERY_MS) return;
+  healthRunning = true;
+  checkHealth({ dataDir, whisperDir: env.WHISPER_DIR || "/data/models", whisperModel: tuning.whisperModel, python, streamlink,
+    ollamaUrl: env.OLLAMA_URL || "http://127.0.0.1:11434", ollamaModels: [env.OLLAMA_MODEL || "qwen2.5:7b", env.OLLAMA_PICKER_MODEL || "qwen2.5:3b"],
+    aiWriter: tuning.aiWriter, startedStamp })
+    .then(h => { health = h; healthAt = Date.now(); })
+    .catch(error => console.warn("Health check failed:", error.message))
+    .finally(() => { healthRunning = false; });
+}
+
+// Restart when idle, asked for from Settings → This PC (config.restartAt later than this start): once nothing is
+// recording, being made, ready to be made or uploading, the worker exits cleanly and run-windows.ps1 starts it again on the
+// code now on disk. Until then it carries on as usual, recordings included.
+const startedAt = Date.now(), startedStamp = await codeStamp();
+let restartPending = false;
+function restartIfIdle() {
+  if (!restartPending && config?.restartAt && Date.parse(config.restartAt) > startedAt) {
+    restartPending = true;
+    console.log("Restart asked for from the dashboard; restarting once idle");
+  }
+  // Clips held while paused don't count: they wait for Resume either way and come back after the restart
+  // (resumeInterrupted, if under a day old).
+  if (!restartPending || sessions.size || running.size || jobs.some(startable) || reporting) return false;
+  console.log("Restarting as asked from the dashboard (idle)");
+  void shutdown();
+  return true;
 }
 
 async function reportStatus() {
@@ -1205,6 +1246,8 @@ async function resumeInterrupted() {
 
 async function tick() {
   await refresh();
+  if (restartIfIdle()) return;
+  maybeCheckHealth();
   await resumeInterrupted();
   queueRenders(config?.renders);
   queueTranslations(config?.translations);

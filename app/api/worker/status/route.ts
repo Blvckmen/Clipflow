@@ -12,6 +12,14 @@ const statusSchema=z.object({
   recording:z.array(z.string().uuid()).max(20),making:z.number().int().min(0).max(50),waiting:z.number().int().min(0).max(10_000),held:z.number().int().min(0).max(10_000),
   uses:z.object({maxCaptures:z.number().int().min(1).max(20),clipWorkers:z.number().int().min(1).max(20),whisperModel:z.string().max(40),aiWriter:z.boolean(),retentionHours:z.number().min(0).max(100_000)}),
   cores:z.number().int().min(1).max(1024),memoryGb:z.number().min(0).max(100_000),
+  // How long the oldest clip ready to be made has waited (minutes), whether a restart asked for from the dashboard is
+  // waiting for the PC to be idle, and the health checks (worker/health.mjs; lib/pc-health.mjs reads them).
+  oldestWaitMin:z.number().min(0).max(1_000_000).optional(),restartPending:z.boolean().optional(),
+  health:z.object({
+   checkedAt:z.string().datetime(),diskFreeGb:z.number().min(0).nullable(),diskTotalGb:z.number().min(0).nullable(),
+   ffmpeg:z.boolean(),streamlink:z.boolean(),whisper:z.boolean(),whisperModel:z.string().max(40),whisperReady:z.boolean().nullable(),
+   ollama:z.enum(["off","down","ok"]),ollamaMissing:z.array(z.string().max(80)).max(5),codeChanged:z.boolean(),
+  }).nullable().optional(),
  }).optional(),
 });
 export async function POST(request:Request){

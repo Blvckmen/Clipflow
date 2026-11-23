@@ -232,6 +232,58 @@ test("Local code writes post captions from the transcript ahead of posting; the 
 
 });
 
+test("This PC settings: saved choices reach the worker, which reports them applied with what it is doing", async () => {
+  // Put back afterwards: later tests rely on the workspace settings set before this one.
+  const was = (await dash()).body.settings;
+  const restore = { mode: was.mode, duration: was.duration, dailyLimit: was.dailyLimit, captions: was.captions, framing: was.framing, destinations: was.destinations, aiCaptions: was.aiCaptions, ...(was.captionTemplate ? { captionTemplate: was.captionTemplate } : {}), ...(was.captionNotes ? { captionNotes: was.captionNotes } : {}), worker: {} };
+  try {
+  const prefs = { mode: "automatic", duration: 30, dailyLimit: 2, captions: true, framing: "blur", destinations: ["Instagram"], aiCaptions: false };
+  assert.equal((await dash({ action: "settings", settings: { ...prefs, worker: { transcription: "accurate", maxCaptures: 2, power: "light" } } })).status, 200);
+  const config = await (await worker("/api/worker/config")).json();
+  assert.deepEqual(config.worker, { transcription: "accurate", maxCaptures: 2, power: "light" });
+  assert.match(config.workerRev, /^[0-9a-z]+$/);
+  let engine = (await dash()).body.engine;
+  assert.equal(engine.settingsRev, config.workerRev, "the dashboard and the worker see the same fingerprint");
+  assert.notEqual(engine.device?.applied, engine.settingsRev, "not applied until the worker says so");
+  const device = { applied: config.workerRev, recording: [streamer.id], making: 1, waiting: 3, held: 0, uses: { maxCaptures: 2, clipWorkers: 1, whisperModel: "medium", aiWriter: true, retentionHours: 72 }, cores: 8, memoryGb: 15.7 };
+  assert.equal((await worker("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers: [], device }) })).status, 200);
+  engine = (await dash()).body.engine;
+  assert.equal(engine.device.applied, engine.settingsRev, "Applied");
+  assert.deepEqual(engine.device.recording, [streamer.id]);
+  assert.equal(engine.device.uses.whisperModel, "medium");
+  assert.ok(engine.deviceAt);
+  // A new choice changes the fingerprint: waiting for the PC again until it reports the new one.
+  assert.equal((await dash({ action: "settings", settings: { ...prefs, worker: { transcription: "fast" } } })).status, 200);
+  engine = (await dash()).body.engine;
+  assert.notEqual(engine.device.applied, engine.settingsRev);
+  assert.equal((await dash({ action: "settings", settings: { ...prefs, worker: { transcription: "perfect" } } })).status, 400, "unknown quality refused");
+  assert.equal((await worker("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers: [], device: { ...device, recording: ["not-an-id"] } }) })).status, 400, "a malformed report is refused");
+  // An older worker that sends no device report still works.
+  assert.equal((await worker("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers: [] }) })).status, 200);
+  } finally { assert.equal((await dash({ action: "settings", settings: restore })).status, 200, "settings restored"); }
+});
+
+test("This PC health: the worker's checks reach the dashboard, and a restart asked for there reaches the worker", async () => {
+  const health = { checkedAt: new Date().toISOString(), diskFreeGb: 4.2, diskTotalGb: 475, ffmpeg: true, streamlink: true, whisper: true, whisperModel: "small", whisperReady: true, ollama: "down", ollamaMissing: [], codeChanged: true };
+  const device = { applied: null, recording: [], making: 0, waiting: 0, held: 0, oldestWaitMin: 35, restartPending: false, uses: { maxCaptures: 1, clipWorkers: 1, whisperModel: "small", aiWriter: true, retentionHours: 72 }, cores: 8, memoryGb: 31.9, health };
+  assert.equal((await worker("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers: [], device }) })).status, 200);
+  let engine = (await dash()).body.engine;
+  assert.deepEqual(engine.device.health, health, "kept as reported");
+  assert.equal(engine.device.oldestWaitMin, 35);
+  assert.equal((await worker("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers: [], device: { ...device, health: { ...health, ollama: "maybe" } } }) })).status, 400, "malformed health refused");
+  // No restart asked for yet.
+  assert.equal((await (await worker("/api/worker/config")).json()).restartAt, null);
+  const asked = await dash({ action: "restartWorker" });
+  assert.equal(asked.status, 200);
+  const config = await (await worker("/api/worker/config")).json();
+  assert.ok(Date.parse(config.restartAt) > Date.now() - 60_000, "the worker hears about it with its settings");
+  engine = (await dash()).body.engine;
+  assert.equal(engine.restartAt, config.restartAt);
+  assert.equal((await worker("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers: [], device: { ...device, restartPending: true } }) })).status, 200);
+  assert.equal((await dash()).body.engine.device.restartPending, true);
+});
+
+
 test("an account set to Spanish posts the Spanish version the worker made, or fails with the reason", async () => {
   const words = [[6.2, 6.6, "No"], [6.7, 7.0, "way"], [7.1, 8.6, "that!"]];
   const material = () => { const src = randomBytes(2048); return { edit: defaultEdit(defaultStyle(), { trimStart: 6, trimEnd: 36 }), transcript: words, source: { width: 1920, height: 1080, duration: 42, sha: createHash("sha256").update(src).digest("hex"), size: src.length } }; };
@@ -336,28 +388,3 @@ test("disconnecting removes the account and its links, and drops unsent posts", 
   assert.ok(body.posts.every(p => p.state === "published"), "only published history is kept");
 });
 
-test("This PC settings: saved choices reach the worker, which reports them applied with what it is doing", async () => {
-  const prefs = { mode: "automatic", duration: 30, dailyLimit: 2, captions: true, framing: "blur", destinations: ["Instagram"], aiCaptions: false };
-  assert.equal((await dash({ action: "settings", settings: { ...prefs, worker: { transcription: "accurate", maxCaptures: 2, power: "light" } } })).status, 200);
-  const config = await (await worker("/api/worker/config")).json();
-  assert.deepEqual(config.worker, { transcription: "accurate", maxCaptures: 2, power: "light" });
-  assert.match(config.workerRev, /^[0-9a-z]+$/);
-  let engine = (await dash()).body.engine;
-  assert.equal(engine.settingsRev, config.workerRev, "the dashboard and the worker see the same fingerprint");
-  assert.notEqual(engine.device?.applied, engine.settingsRev, "not applied until the worker says so");
-  const device = { applied: config.workerRev, recording: [streamer.id], making: 1, waiting: 3, held: 0, uses: { maxCaptures: 2, clipWorkers: 1, whisperModel: "medium", aiWriter: true, retentionHours: 72 }, cores: 8, memoryGb: 15.7 };
-  assert.equal((await worker("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers: [], device }) })).status, 200);
-  engine = (await dash()).body.engine;
-  assert.equal(engine.device.applied, engine.settingsRev, "Applied");
-  assert.deepEqual(engine.device.recording, [streamer.id]);
-  assert.equal(engine.device.uses.whisperModel, "medium");
-  assert.ok(engine.deviceAt);
-  // A new choice changes the fingerprint: waiting for the PC again until it reports the new one.
-  assert.equal((await dash({ action: "settings", settings: { ...prefs, worker: { transcription: "fast" } } })).status, 200);
-  engine = (await dash()).body.engine;
-  assert.notEqual(engine.device.applied, engine.settingsRev);
-  assert.equal((await dash({ action: "settings", settings: { ...prefs, worker: { transcription: "perfect" } } })).status, 400, "unknown quality refused");
-  assert.equal((await worker("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers: [], device: { ...device, recording: ["not-an-id"] } }) })).status, 400, "a malformed report is refused");
-  // An older worker that sends no device report still works.
-  assert.equal((await worker("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers: [] }) })).status, 200);
-});

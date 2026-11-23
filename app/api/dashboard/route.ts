@@ -48,6 +48,7 @@ const actionSchema=z.discriminatedUnion("action",[
  // `platform` is the pre-multi-account form: it disconnects that platform's only account.
  z.object({action:z.literal("disconnect"),id:z.string().uuid().optional(),platform:z.enum(["instagram"]).optional()}),
  z.object({action:z.literal("retryPost"),id:z.string().min(1).max(64)}),
+ z.object({action:z.literal("restartWorker")}),
  z.object({action:z.literal("schedulePost"),id:z.string().min(1).max(64),at:z.string().regex(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/).nullable()}),
  // Posts held for review (their account had reached its daily limit): queue them to post when there's room, or skip them.
  z.object({action:z.literal("reviewPosts"),ids:z.array(z.string().min(1).max(64)).min(1).max(200).transform(x=>[...new Set(x)]),op:z.enum(["queue","skip"])}),
@@ -117,12 +118,12 @@ export async function GET(request:Request){
    db.prepare("SELECT p.id,p.clip_id,p.platform,p.account_id,p.state,p.permalink,p.error,p.attempts,p.created_at,p.published_at,p.round,p.views,p.likes,p.draft,s.name AS streamer,a.username AS account FROM posts p LEFT JOIN clips c ON c.id=p.clip_id LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner LEFT JOIN accounts a ON a.id=p.account_id WHERE p.owner=? ORDER BY p.created_at DESC LIMIT 100").bind(owner).all(),
    db.prepare("SELECT streamer_id,account_id FROM streamer_accounts WHERE owner=?").bind(owner).all<{streamer_id:string;account_id:string}>(),
   ]);
-  const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(owner).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(owner).all(),db.prepare(CLIPS_SQL+" WHERE c.owner=? ORDER BY c.created_at DESC LIMIT "+CLIPS_PAGE).bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at,device,device_at FROM worker_tokens WHERE owner=?").bind(owner).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null;device:string|null;device_at:string|null}>()]);
+  const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(owner).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(owner).all(),db.prepare(CLIPS_SQL+" WHERE c.owner=? ORDER BY c.created_at DESC LIMIT "+CLIPS_PAGE).bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at,device,device_at,restart_at FROM worker_tokens WHERE owner=?").bind(owner).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null;device:string|null;device_at:string|null;restart_at:string|null}>()]);
   const lastSeen=w?.last_seen??null,connected=!!lastSeen&&Date.now()-Date.parse(lastSeen)<ENGINE_FRESH_MS;
   const engine={connected,lastSeen,tokenCreated:w?.created_at??null,lastError:w?.last_error??null,lastErrorAt:w?.last_error_at??null,
     // Settings → This PC: what the worker last said about itself, and the fingerprint of the saved settings to compare
     // with the one it runs with (Saved → Waiting for device → Applied).
-    device:(()=>{try{return w?.device?JSON.parse(w.device):null;}catch{return null;}})(),deviceAt:w?.device_at??null,settingsRev:workerSettingsRev(readWorkerSettings(p?.worker_settings)),status:connected?"Worker connected":w?(lastSeen?"Worker offline":"Waiting for worker"):"Setup required"};
+    device:(()=>{try{return w?.device?JSON.parse(w.device):null;}catch{return null;}})(),deviceAt:w?.device_at??null,restartAt:w?.restart_at??null,settingsRev:workerSettingsRev(readWorkerSettings(p?.worker_settings)),status:connected?"Worker connected":w?(lastSeen?"Worker offline":"Waiting for worker"):"Setup required"};
   const streamers=s.results.map(x=>({...x,style:parse(x.style),posting_rules:readRules(x.posting_rules),viewer_clips:readStreamerViewerClips(x.viewer_clips),accounts:l.results.filter(k=>k.streamer_id===x.id).map(k=>k.account_id)}));
   // Stored Zernio keys never leave the server: only their labels and how many accounts each holds.
   const prefs=Object.fromEntries(Object.entries((p??{}) as Record<string,unknown>).filter(([k])=>k!=="zernio_key_enc"&&k!=="zernio_label"&&k!=="discord_webhook_enc"));
@@ -479,6 +480,13 @@ export async function POST(request:Request){
    const n=r.meta.changes??0,posts=n+" post"+(n===1?"":"s");
    if(!n)return Response.json({error:"Those posts are no longer waiting for review."},{status:409});
    return Response.json({ok:true,message:payload.op==="queue"?"Queued "+posts+". They go out as their accounts have room again, within each daily limit.":"Skipped "+posts+"; those clips won't post to those accounts."});
+  }
+  if(payload.action==="restartWorker"){
+   // Settings → This PC: the worker restarts on the code on its disk once nothing is recording or being made
+   // (worker/main.mjs restartIfIdle), so nothing in progress is cut short.
+   const r=await db.prepare("UPDATE worker_tokens SET restart_at=? WHERE owner=?").bind(iso,owner).run();
+   if(!r.meta.changes)return Response.json({error:"Connect a PC first."},{status:409});
+   return Response.json({ok:true,message:"Your PC restarts as soon as nothing is recording or being made."});
   }
   if(payload.action==="schedulePost"){
    // From the calendar: post at a chosen time (it waits until then, then skips the posting hours; the daily limit

@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef } from "react";
-import { AlertTriangle, Check, Cpu, Loader2, MonitorSmartphone, Settings2 } from "lucide-react";
+import { AlertTriangle, Check, Cpu, Info, Loader2, MonitorSmartphone, RotateCw, Settings2, XCircle } from "lucide-react";
+import { pcProblems } from "../lib/pc-health.mjs";
 import type { WorkerSettings } from "../lib/clipflow";
 
 // Settings → This PC: how the worker on the user's own PC runs, chosen here instead of in its .env file, plus what it
@@ -11,8 +12,10 @@ export type Device = {
   applied: string | null; recording: string[]; making: number; waiting: number; held: number;
   uses: { maxCaptures: number; clipWorkers: number; whisperModel: string; aiWriter: boolean; retentionHours: number };
   cores: number; memoryGb: number;
+  oldestWaitMin?: number; restartPending?: boolean;
+  health?: { checkedAt: string; diskFreeGb: number | null; diskTotalGb: number | null; ffmpeg: boolean; streamlink: boolean; whisper: boolean; whisperModel: string; whisperReady: boolean | null; ollama: "off" | "down" | "ok"; ollamaMissing: string[]; codeChanged: boolean } | null;
 };
-export type PcEngine = { connected: boolean; lastSeen: string | null; tokenCreated: string | null; lastError: string | null; lastErrorAt: string | null; device?: Device | null; deviceAt?: string | null; settingsRev?: string };
+export type PcEngine = { connected: boolean; lastSeen: string | null; tokenCreated: string | null; lastError: string | null; lastErrorAt: string | null; device?: Device | null; deviceAt?: string | null; settingsRev?: string; restartAt?: string | null };
 
 const POWER = { light: "Light", balanced: "Balanced", maximum: "Maximum" } as const;
 const POWER_OF: Record<number, keyof typeof POWER> = { 1: "light", 2: "balanced", 3: "maximum" };
@@ -33,9 +36,9 @@ export function applyState(engine: PcEngine | null | undefined): "applied" | "wa
   return engine.connected ? "waiting" : "offline";
 }
 
-export function ThisPcSettings({ value, onChange, engine, dirty, channelName, onRefresh }: {
+export function ThisPcSettings({ value, onChange, engine, dirty, channelName, onRefresh, onRestart, busy }: {
   value: WorkerSettings; onChange: (v: WorkerSettings) => void; engine: PcEngine | null | undefined; dirty: boolean;
-  channelName: (id: string) => string | null; onRefresh: () => void;
+  channelName: (id: string) => string | null; onRefresh: () => void; onRestart: () => void; busy: boolean;
 }) {
   const set = <K extends keyof WorkerSettings>(k: K, v: WorkerSettings[K] | undefined) => { const next = { ...value }; if (v === undefined) delete next[k]; else next[k] = v; onChange(next); };
   const device = engine?.device ?? null, uses = device?.uses, state = applyState(engine);
@@ -48,6 +51,11 @@ export function ThisPcSettings({ value, onChange, engine, dirty, channelName, on
   const onOff = (k: "autoHooks" | "aiWriter", current?: boolean) => <select value={value[k] === undefined ? "" : value[k] ? "on" : "off"} onChange={e => set(k, e.target.value === "" ? undefined : e.target.value === "on")}><option value="">{current === undefined ? "Automatic (on unless changed)" : auto(current ? "on" : "off")}</option><option value="on">On</option><option value="off">Off</option></select>;
   const recentProblem = engine?.lastError && engine.lastErrorAt && Date.now() - Date.parse(engine.lastErrorAt) < 24 * 3600_000;
   const names = (device?.recording ?? []).map(id => channelName(id) ?? "a removed channel");
+  // Health checks (lib/pc-health.mjs): what's wrong on the PC and how to fix it, worst first.
+  const problems = pcProblems(device, { connected: !!engine?.connected });
+  const checked = !!device?.health && !!engine?.connected;
+  // A restart was asked for but the PC hasn't said it's waiting yet (it hears within a minute).
+  const restartAsked = !!engine?.restartAt && !device?.restartPending && Date.now() - Date.parse(engine.restartAt) < 3 * 60_000;
 
   return <section className="panel settings-group this-pc">
     <div className="group-head"><Settings2 size={18} /><div><h2>This PC</h2><p>How the PC that records and makes your clips runs. Changes reach it within a minute, without a restart, and never cut off a recording or a clip in progress.</p></div>
@@ -65,12 +73,20 @@ export function ThisPcSettings({ value, onChange, engine, dirty, channelName, on
         <div><strong>{!device ? "Activity not reported yet" : names.length || device.making || device.waiting ? [names.length ? "Recording " + names.join(", ") : "", device.making ? "making " + plural(device.making, "clip") : "", device.waiting ? plural(device.waiting, "clip") + " waiting" : ""].filter(Boolean).join(" · ").replace(/^./, c => c.toUpperCase()) : "Idle: no channel is live"}</strong>
           <small>{!device ? "Shows once the worker is updated and checks in." : device.held ? plural(device.held, "clip") + " held while automation is paused. " : ""}{device && engine?.deviceAt ? "Updated " + ago(engine.deviceAt) + "." : ""}</small></div>
       </div>
-      <div className={"pc-line " + (recentProblem ? "warn" : "ok")}>
-        {recentProblem ? <AlertTriangle size={16} /> : <Check size={16} />}
-        <div><strong>{recentProblem ? "Last problem " + ago(engine!.lastErrorAt!) : "No problems in the last day"}</strong>
-          {recentProblem && <small className="pc-error">{engine!.lastError}</small>}</div>
+      <div className={"pc-line " + (problems.some(p => p.level === "bad") ? "bad" : recentProblem || problems.some(p => p.level === "warn") ? "warn" : "ok")}>
+        {problems.length || recentProblem ? <AlertTriangle size={16} /> : <Check size={16} />}
+        <div><strong>{problems.length ? plural(problems.length, "thing") + " to look at" : checked ? "All checks passed" : recentProblem ? "Last problem " + ago(engine!.lastErrorAt!) : "No problems in the last day"}</strong>
+          {checked && device!.health!.diskFreeGb !== null && <small>{device!.health!.diskFreeGb} GB free on disk · checked {ago(device!.health!.checkedAt)}</small>}
+          {recentProblem && <small className="pc-error">Last error {ago(engine!.lastErrorAt!)}: {engine!.lastError}</small>}</div>
       </div>
     </div>
+
+    {problems.length > 0 && <ul className="pc-problems">{problems.map(p => <li key={p.id} className={p.level}>
+      {p.level === "bad" ? <XCircle size={16} /> : p.level === "warn" ? <AlertTriangle size={16} /> : <Info size={16} />}
+      <div><strong>{p.title}</strong><small>{p.fix}</small></div>
+      {p.action === "restart" && <button type="button" className="secondary" disabled={busy || restartAsked} onClick={onRestart}><RotateCw size={14} />{restartAsked ? "Restart asked for" : "Restart when idle"}</button>}
+    </li>)}</ul>}
+    {engine?.connected && !problems.some(p => p.action === "restart" || p.id === "restarting") && <p className="pc-restart"><button type="button" className="text-button" disabled={busy || restartAsked} onClick={onRestart}><RotateCw size={13} />{restartAsked ? "Restart asked for: it happens once nothing is recording or being made" : "Restart the worker when idle"}</button></p>}
 
     <div className="group-body">
       <label>Computer usage<select value={value.power ?? ""} onChange={e => set("power", (e.target.value || undefined) as WorkerSettings["power"])}><option value="">{auto(uses ? POWER[POWER_OF[uses.clipWorkers]] ?? uses.clipWorkers + " clips at a time" : null)}</option><option value="light">Light: one clip at a time</option><option value="balanced">Balanced: two clips at a time</option><option value="maximum">Maximum: three clips at a time</option></select>

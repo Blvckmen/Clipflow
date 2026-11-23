@@ -1,0 +1,1 @@
+ALTER TABLE `worker_tokens` ADD `restart_at` text;
