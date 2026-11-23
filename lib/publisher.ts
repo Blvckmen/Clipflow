@@ -217,6 +217,11 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
     AND coalesce(c.reviewed_at,c.created_at)>=max(?,sa.created_at)
     AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.clip_id=c.id AND p.account_id=?)`).bind(account.platform, account.id, full ? "review" : "queued", full ? fullNote : null, iso, iso, iso, account.id, account.owner, account.connected_at, account.id).run();
 
+  // A post that goes back to the queue (or fails) after it was sent as an overflow draft (the planner sending it to
+  // TikTok drafts because the day's direct posts were used up) loses that draft mark, so the next try is planned
+  // afresh and posts directly once there's room. A post queued by hand as a draft stays one. (The mark is set before
+  // sending, not after, so a retry after a lost response repeats exactly the same request.)
+  const UNDRAFT = "draft=CASE WHEN queued_by_hand=1 THEN draft ELSE 0 END";
   const fail = async (post: PostRow, message: string) => {
     // TikTok saying "not now" (drafts inbox full, too many posts today) isn't a failure: try again later, as a
     // fresh request (updated_at is part of the idempotency key), without using up an attempt.
@@ -225,11 +230,11 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
       const later = now + (busy === "drafts" ? 2 : 3) * 3600_000;
       const note = busy === "drafts" ? "TikTok's drafts inbox is full. Post or delete drafts in the TikTok app; Clipflow tries again at " + new Date(later).toISOString().slice(11, 16) + " UTC."
         : "TikTok won't take more posts from apps today; Clipflow tries again at " + new Date(later).toISOString().slice(11, 16) + " UTC.";
-      await db.prepare("UPDATE posts SET state='queued',container_id=NULL,error=?,next_attempt_at=?,updated_at=? WHERE id=?").bind(note, new Date(later).toISOString(), iso, post.id).run();
+      await db.prepare("UPDATE posts SET state='queued',container_id=NULL," + UNDRAFT + ",error=?,next_attempt_at=?,updated_at=? WHERE id=?").bind(note, new Date(later).toISOString(), iso, post.id).run();
       return;
     }
     const attempts = post.attempts + 1, final = attempts >= MAX_ATTEMPTS;
-    await db.prepare("UPDATE posts SET state=?,container_id=NULL,attempts=?,error=?,next_attempt_at=?,updated_at=? WHERE id=?")
+    await db.prepare("UPDATE posts SET state=?,container_id=NULL," + UNDRAFT + ",attempts=?,error=?,next_attempt_at=?,updated_at=? WHERE id=?")
       .bind(final ? "failed" : "queued", attempts, message.slice(0, 500), new Date(now + 5 * 60_000 * attempts).toISOString(), iso, post.id).run();
   };
   const apply = async (post: PostRow, result: Outcome) => {
