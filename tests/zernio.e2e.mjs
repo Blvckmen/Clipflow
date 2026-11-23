@@ -264,7 +264,7 @@ test("a cancelled sign-in returns with its reason and adds nothing", async () =>
 test("per-account options change how posts are sent", async () => {
   const { body } = await dash();
   const tt = body.accounts.find(a => a.platform === "tiktok"), yt = body.accounts.find(a => a.username === "new_youtube");
-  assert.deepEqual(tt.options, { tiktokMode: "reviewed", tiktokPrivacy: "PUBLIC_TO_EVERYONE", allowComments: true, youtubeVisibility: "public", dailyLimit: null, gapMinutes: 0, whenFull: "review", overflowToDrafts: true }, "defaults");
+  assert.deepEqual(tt.options, { tiktokMode: "reviewed", tiktokPrivacy: "PUBLIC_TO_EVERYONE", allowComments: true, youtubeVisibility: "public", dailyLimit: null, gapMinutes: 0, whenFull: "review", overflowToDrafts: true, hours: "any", hoursFrom: 17, hoursTo: 23, timeZone: "UTC", subtitleLanguage: "en" }, "defaults");
   assert.equal((await dash({ action: "accountOptions", id: tt.id, options: { tiktokMode: "direct", tiktokPrivacy: "SELF_ONLY", allowComments: false } })).status, 200);
   assert.equal((await dash({ action: "accountOptions", id: yt.id, options: { youtubeVisibility: "unlisted" } })).status, 200);
   assert.equal((await dash({ action: "accountOptions", id: yt.id, options: { youtubeVisibility: "secret" } })).status, 400, "unknown values are refused");
