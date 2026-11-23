@@ -29,6 +29,8 @@ export const optionsSchema = z.object({
   // This account's own daily limit (null: the workspace's), and minutes to leave between its posts.
   dailyLimit: z.number().int().min(1).max(100).nullable().optional(),
   gapMinutes: z.number().int().min(0).max(720).optional(),
+  // Spread the day's posts evenly across the posting hours (lib/posting-plan.mjs spreadGap), never closer than gapMinutes.
+  spread: z.boolean().optional(),
   whenFull: z.enum(keys(whenFullChoices)).optional(),
   hours: z.enum(keys(hoursChoices)).optional(),
   // The language this account posts in: clips get translated subtitles, hook and caption first (lib/languages.ts).
@@ -43,7 +45,7 @@ export const optionsSchema = z.object({
   overflowToDrafts: z.boolean().optional(),
 }).strict();
 export type AccountOptions = Required<z.infer<typeof optionsSchema>>;
-export const defaultOptions: AccountOptions = { tiktokMode: "reviewed", tiktokPrivacy: "PUBLIC_TO_EVERYONE", allowComments: true, youtubeVisibility: "public", dailyLimit: null, gapMinutes: 0, whenFull: "review", overflowToDrafts: true, hours: "any", hoursFrom: 17, hoursTo: 23, timeZone: "UTC", subtitleLanguage: "en" };
+export const defaultOptions: AccountOptions = { tiktokMode: "reviewed", tiktokPrivacy: "PUBLIC_TO_EVERYONE", allowComments: true, youtubeVisibility: "public", dailyLimit: null, gapMinutes: 0, spread: false, whenFull: "review", overflowToDrafts: true, hours: "any", hoursFrom: 17, hoursTo: 23, timeZone: "UTC", subtitleLanguage: "en" };
 export const gapChoices = { 0: "Post as soon as possible", 15: "At least 15 minutes apart", 30: "At least 30 minutes apart", 60: "At least 1 hour apart", 120: "At least 2 hours apart", 180: "At least 3 hours apart" } as const;
 
 // Stored options merged over the defaults; anything unreadable falls back to them.

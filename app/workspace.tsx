@@ -14,6 +14,7 @@ import { BackgroundLibrary, type Background } from "./background-library";
 import { captureModes, defaults, destinations, framings } from "../lib/clipflow";
 import { viralityLabel } from "../lib/virality.mjs";
 import { ReviewFeed } from "./review-feed";
+import { PublishingCalendar } from "./publishing-calendar";
 import ClipEditor from "./clip-editor";
 import { AccountOptionsForm, hasOptions, ZernioPanel, type Publishing } from "./publishing-setup";
 import type { AccountOptions } from "../lib/account-options";
@@ -94,11 +95,11 @@ const nav=[
  {name:"Home",icon:LayoutDashboard,pages:["Overview"]},
  {name:"Streamers",icon:Radio,pages:["Streamers","Recordings"]},
  {name:"Clips",icon:Film,pages:["Clip library","Highlights","Caption generator"]},
- {name:"Publishing",icon:Clapperboard,pages:["Publishing","Connections","Analytics"]},
+ {name:"Publishing",icon:Clapperboard,pages:["Publishing","Calendar","Connections","Analytics"]},
  {name:"Settings",icon:Settings2,pages:["Settings","Look","Alerts"]},
 ];
-const pageLabel:Record<string,string>={Overview:"Overview",Streamers:"Channels",Recordings:"Recordings","Clip library":"Library",Highlights:"Highlights","Caption generator":"Caption writer",Publishing:"Queue",Connections:"Accounts",Analytics:"Performance",Settings:"Clipping & posting",Look:"Look & backgrounds",Alerts:"Alerts & worker"};
-const pageIntro:Record<string,string>={Overview:"What needs you, who's live and how posting is going.",Streamers:"The channels Clipflow watches, records and clips.",Recordings:"Whole streams saved on your worker PC. Watch them back and pick your own clips.","Clip library":"Every captured moment. Review, edit and post.",Highlights:"The best clips of a period, joined into one landscape video.","Caption generator":"Write post captions for your clips.",Publishing:"Every post, from queue to published.",Connections:"The social accounts your clips post to.",Analytics:"How your clips do once they're posted.",Settings:"How new clips are made and posted.",Look:"Split-screen backgrounds and each streamer's layout.",Alerts:"Discord alerts and the clip worker on your PC."};
+const pageLabel:Record<string,string>={Overview:"Overview",Streamers:"Channels",Recordings:"Recordings","Clip library":"Library",Highlights:"Highlights","Caption generator":"Caption writer",Publishing:"Queue",Calendar:"Calendar",Connections:"Accounts",Analytics:"Performance",Settings:"Clipping & posting",Look:"Look & backgrounds",Alerts:"Alerts & worker"};
+const pageIntro:Record<string,string>={Overview:"What needs you, who's live and how posting is going.",Streamers:"The channels Clipflow watches, records and clips.",Recordings:"Whole streams saved on your worker PC. Watch them back and pick your own clips.","Clip library":"Every captured moment. Review, edit and post.",Highlights:"The best clips of a period, joined into one landscape video.","Caption generator":"Write post captions for your clips.",Publishing:"Every post, from queue to published.",Calendar:"When each post goes out, by day. Move one, or let Clipflow spread them through each account's best hours.",Connections:"The social accounts your clips post to.",Analytics:"How your clips do once they're posted.",Settings:"How new clips are made and posted.",Look:"Split-screen backgrounds and each streamer's layout.",Alerts:"Discord alerts and the clip worker on your PC."};
 const NO_POSTS:Post[]=[];
 const byScore=(a:{score?:number;created_at:string},b:{score?:number;created_at:string})=>(b.score??0)-(a.score??0)||b.created_at.localeCompare(a.created_at);
 // The score badge on a clip: Hot, Promising, OK or Weak (lib/virality.mjs).
@@ -406,6 +407,7 @@ export default function Dashboard(){
   :<div className="empty tall"><div className="empty-icon"><Clapperboard size={30}/></div><h3>{accounts.length?"Nothing queued yet":"Connect an account to start posting"}</h3><p>{accounts.length?(streamers.some(s=>s.accounts.length)?"Approved clips appear here as they are queued for their streamer's accounts.":"Pick which account posts each streamer's clips under Streamers → Posts to."):canConnect?"Connect your accounts under Accounts.":"Publishing needs a Zernio API key on this site; see DEPLOY.md."}</p><button className="secondary" onClick={()=>changeView(accounts.length?"Streamers":"Connections")}>{accounts.length?"Open streamers":"Open accounts"}</button></div>}</section></>}
  {view==="Highlights"&&data&&<HighlightsPanel highlights={(data as {highlights?:Highlight[]}).highlights??[]} streamers={streamers} busy={busy} workerOnline={!!engine?.connected} weekly={!!(settings as {weeklyHighlights?:boolean}).weeklyHighlights} mutate={body=>mutate(body)}/>}
  {view==="Recordings"&&<RecordingsView recordings={recordings} requests={data?.recordingRequests??[]} streamers={streamers.map(s=>({id:s.id,name:s.name}))} storage={!!data?.storage} busy={busy} workerOnline={!!engine?.connected} duration={settings.duration} mutate={mutate} onRefresh={load} onOpenLibrary={()=>changeView("Clip library")}/>}
+ {view==="Calendar"&&<PublishingCalendar accounts={accounts} brand={name=><Brand name={name}/>} platformName={platformName} busy={busy} mutate={body=>mutate(body)} onDataChanged={()=>void load(true)}/>}
  {view==="Analytics"&&<AnalyticsView analytics={analytics??null} hasAccounts={accounts.length>0} brand={name=><Brand name={name}/>} platformName={platformName} onConnect={()=>changeView("Connections")}/>}
  
  </div></main>

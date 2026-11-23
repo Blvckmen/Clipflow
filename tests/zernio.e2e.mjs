@@ -264,7 +264,7 @@ test("a cancelled sign-in returns with its reason and adds nothing", async () =>
 test("per-account options change how posts are sent", async () => {
   const { body } = await dash();
   const tt = body.accounts.find(a => a.platform === "tiktok"), yt = body.accounts.find(a => a.username === "new_youtube");
-  assert.deepEqual(tt.options, { tiktokMode: "reviewed", tiktokPrivacy: "PUBLIC_TO_EVERYONE", allowComments: true, youtubeVisibility: "public", dailyLimit: null, gapMinutes: 0, whenFull: "review", overflowToDrafts: true, hours: "any", hoursFrom: 17, hoursTo: 23, timeZone: "UTC", subtitleLanguage: "en" }, "defaults");
+  assert.deepEqual(tt.options, { tiktokMode: "reviewed", tiktokPrivacy: "PUBLIC_TO_EVERYONE", allowComments: true, youtubeVisibility: "public", dailyLimit: null, gapMinutes: 0, spread: false, whenFull: "review", overflowToDrafts: true, hours: "any", hoursFrom: 17, hoursTo: 23, timeZone: "UTC", subtitleLanguage: "en" }, "defaults");
   assert.equal((await dash({ action: "accountOptions", id: tt.id, options: { tiktokMode: "direct", tiktokPrivacy: "SELF_ONLY", allowComments: false } })).status, 200);
   assert.equal((await dash({ action: "accountOptions", id: yt.id, options: { youtubeVisibility: "unlisted" } })).status, 200);
   assert.equal((await dash({ action: "accountOptions", id: yt.id, options: { youtubeVisibility: "secret" } })).status, 400, "unknown values are refused");
@@ -387,6 +387,40 @@ test("an account's own daily limit and spacing pace its posts", async () => {
   assert.equal((await state(b.id)).state, "published", "then goes out");
   assert.equal((await state(b.id)).error, null);
   await dash({ action: "accountOptions", id: ig.id, options: { gapMinutes: 0, dailyLimit: null } });
+  await dash({ action: "settings", settings });
+  await dash({ action: "control", control: "running" });
+});
+
+test("the calendar shows planned and posted posts, and a post scheduled for later waits for its time", async () => {
+  const ig = (await dash()).body.accounts.find(a => a.platform === "instagram");
+  await dash({ action: "settings", settings: { ...settings, mode: "review", dailyLimit: 50 } });
+  await dash({ action: "control", control: "running" });
+  await cron(2 * 3600_000);
+  const a = (await addClip()).clip;
+  await dash({ action: "postClips", ids: [a.id], accounts: [ig.id] });
+  const post = (await dash()).body.posts.find(p => p.clip_id === a.id && p.platform === "instagram");
+  // Far ahead of the test's clock, which runs ahead of real time.
+  const later = new Date(Date.now() + 40 * 86_400_000);
+  later.setUTCSeconds(0, 0);
+  assert.equal((await dash({ action: "schedulePost", id: post.id, at: new Date(Date.now() + 90 * 86_400_000).toISOString() })).status, 400, "at most 60 days ahead");
+  assert.equal((await dash({ action: "schedulePost", id: post.id, at: later.toISOString() })).status, 200);
+  for (let i = 0; i < 3; i++) await cron(61_000);
+  assert.equal((await dash()).body.posts.find(p => p.id === post.id).state, "queued", "waits for its time");
+  assert.ok(!(await sentFor(a.id)).instagram, "not sent");
+  const week = (from, to) => fetch(base + "/api/calendar?from=" + from + "&to=" + to, { headers: who }).then(async r => ({ status: r.status, body: await r.json() }));
+  const now = new Date(), from = new Date(now.getTime() - 3 * 86_400_000).toISOString(), to = new Date(now.getTime() + 4 * 86_400_000).toISOString();
+  assert.equal((await week(from, new Date(now.getTime() + 30 * 86_400_000).toISOString())).status, 400, "a week at most");
+  const cal = await week(from, to);
+  assert.equal(cal.status, 200);
+  const item = cal.body.items.find(i => i.id === post.id);
+  assert.equal(item.kind, "scheduled");
+  assert.equal(item.at, later.toISOString());
+  assert.ok(cal.body.accounts.some(x => x.id === ig.id && x.spread === false && x.limit === 50), "accounts with their pacing");
+  // Back to automatic: it goes out at the next run.
+  assert.equal((await dash({ action: "schedulePost", id: post.id, at: null })).status, 200);
+  for (let i = 0; i < 4 && (await dash()).body.posts.find(p => p.id === post.id).state !== "published"; i++) await cron(61_000);
+  assert.equal((await dash()).body.posts.find(p => p.id === post.id).state, "published");
+  assert.equal((await dash({ action: "schedulePost", id: post.id, at: later.toISOString() })).status, 409, "a sent post can't be scheduled");
   await dash({ action: "settings", settings });
   await dash({ action: "control", control: "running" });
 });

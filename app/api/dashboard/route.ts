@@ -48,6 +48,7 @@ const actionSchema=z.discriminatedUnion("action",[
  // `platform` is the pre-multi-account form: it disconnects that platform's only account.
  z.object({action:z.literal("disconnect"),id:z.string().uuid().optional(),platform:z.enum(["instagram"]).optional()}),
  z.object({action:z.literal("retryPost"),id:z.string().min(1).max(64)}),
+ z.object({action:z.literal("schedulePost"),id:z.string().min(1).max(64),at:z.string().regex(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/).nullable()}),
  // Posts held for review (their account had reached its daily limit): queue them to post when there's room, or skip them.
  z.object({action:z.literal("reviewPosts"),ids:z.array(z.string().min(1).max(64)).min(1).max(200).transform(x=>[...new Set(x)]),op:z.enum(["queue","skip"])}),
  // The owner posted a clip themselves (e.g. in the TikTok app): record it, so it isn't also posted there automatically.
@@ -473,6 +474,22 @@ export async function POST(request:Request){
    const n=r.meta.changes??0,posts=n+" post"+(n===1?"":"s");
    if(!n)return Response.json({error:"Those posts are no longer waiting for review."},{status:409});
    return Response.json({ok:true,message:payload.op==="queue"?"Queued "+posts+". They go out as their accounts have room again, within each daily limit.":"Skipped "+posts+"; those clips won't post to those accounts."});
+  }
+  if(payload.action==="schedulePost"){
+   // From the calendar: post at a chosen time (it waits until then, then skips the posting hours; the daily limit
+   // and the set gap still apply), or hand it back to automatic scheduling. A post held for review is queued by it.
+   const post=await db.prepare("SELECT state FROM posts WHERE id=? AND owner=?").bind(payload.id,owner).first<{state:string}>();
+   if(!post)return Response.json({error:"Post not found."},{status:404});
+   if(post.state!=="queued"&&!(post.state==="review"&&payload.at))return Response.json({error:post.state==="processing"?"This post is already going out.":"Only posts that haven't gone out can be scheduled."},{status:409});
+   if(payload.at){
+    const at=Date.parse(payload.at);
+    if(!(at>Date.now()-5*60_000&&at<Date.now()+60*86_400_000))return Response.json({error:"Pick a time in the next 60 days."},{status:400});
+    const when=new Date(Math.max(at,Date.now())).toISOString();
+    await db.prepare("UPDATE posts SET state='queued',queued_by_hand=1,scheduled_for=?,next_attempt_at=?,error=NULL,updated_at=? WHERE id=? AND owner=? AND state IN ('queued','review')").bind(when,when,iso,payload.id,owner).run();
+    return Response.json({ok:true,message:at<=Date.now()+60_000?"Posting it now, as soon as the account has room.":"Scheduled."});
+   }
+   await db.prepare("UPDATE posts SET queued_by_hand=0,scheduled_for=NULL,next_attempt_at=?,error=NULL,updated_at=? WHERE id=? AND owner=? AND state='queued'").bind(iso,iso,payload.id,owner).run();
+   return Response.json({ok:true,message:"Back to automatic: it goes out in the account's next open slot."});
   }
   if(payload.action==="retryPost"){
    const post=await db.prepare("SELECT state,clip_id FROM posts WHERE id=? AND owner=?").bind(payload.id,owner).first<{state:string;clip_id:string}>();

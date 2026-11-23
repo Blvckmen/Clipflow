@@ -260,6 +260,13 @@
       "when": 1795386153758,
       "tag": "0036_streamer_daily_limit",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "6",
+      "when": 1795397783080,
+      "tag": "0037_post_schedule",
+      "breakpoints": true
     }
   ]
 }

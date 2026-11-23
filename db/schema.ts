@@ -137,6 +137,8 @@ export const posts=sqliteTable("posts",{
  draft:integer("draft",{mode:"boolean"}).notNull().default(false),
  // Queued by the owner (posted by hand, or queued from review): waits for room rather than being held for review.
  queuedByHand:integer("queued_by_hand",{mode:"boolean"}).notNull().default(false),
+ // The time the owner picked for it on the calendar (it waits until then, then skips the posting hours); null: automatic.
+ scheduledFor:text("scheduled_for"),
  // Performance read from the platform (through Zernio's analytics, about hourly); null until first read.
  views:integer("views"),likes:integer("likes"),comments:integer("comments"),shares:integer("shares"),saves:integer("saves"),metricsAt:text("metrics_at"),
 },t=>[uniqueIndex("posts_clip_account_round").on(t.clipId,t.accountId,t.round),index("posts_owner_state").on(t.owner,t.state),

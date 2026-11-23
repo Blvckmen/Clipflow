@@ -80,3 +80,33 @@ test("bestHours learns from this account's views, and uses evenings until it can
   // The same posts seen from New York (UTC-5) are early-morning posts there.
   assert.deepEqual(bestHours(posts, "America/New_York", 3).hours, [3, 4, 5]);
 });
+
+test("spreading evenly spaces the day's posts across the posting hours", async () => {
+  const { spreadGap } = await import("../lib/posting-plan.mjs");
+  assert.equal(spreadGap([17, 18, 19, 20, 21, 22], 5, 0, true), 72);
+  assert.equal(spreadGap(null, 6, 0, true), 240, "all day");
+  assert.equal(spreadGap([17, 18], 5, 60, true), 60, "never less than the set gap");
+  assert.equal(spreadGap([17, 18], 5, 15, false), 15, "off: the set gap");
+});
+
+test("the forecast follows the gap, the posting hours and the daily limit", async () => {
+  const { forecast } = await import("../lib/posting-plan.mjs");
+  const q = (id, i, extra = {}) => ({ id, createdAt: now - 1000 + i, due: now, ...extra });
+  // Noon UTC, hours 17-22, gap 60: the first waits for 5pm, then one an hour.
+  const evening = forecast({ platform: "youtube", limit: 5, gapMinutes: 60, hours: [17, 18, 19, 20, 21, 22], timeZone: "UTC", sent: [], queue: [q("a", 0), q("b", 1), q("c", 2)], now });
+  assert.deepEqual(["a", "b", "c"].map(id => new Date(evening[id].at).toISOString().slice(11, 16)), ["17:00", "18:00", "19:00"]);
+  // Limit 2 with one sent an hour ago: one more now, the next once that one is a day old.
+  const full = forecast({ platform: "youtube", limit: 2, gapMinutes: 0, hours: null, sent: [now - h], queue: [q("a", 0), q("b", 1)], now });
+  assert.equal(full.a.at, now);
+  assert.equal(full.b.at, now - h + 24 * h);
+  // Set to hold when full: the second is held for review instead.
+  const hold = forecast({ platform: "youtube", limit: 2, gapMinutes: 0, hours: null, holdWhenFull: true, sent: [now - h], queue: [q("a", 0), q("b", 1)], now });
+  assert.deepEqual(hold.b, { held: true });
+  // Scheduled by hand for 2pm: skips the evening hours and goes then; one minute apart at least.
+  const pinned = forecast({ platform: "youtube", limit: 5, gapMinutes: 0, hours: [17], timeZone: "UTC", sent: [], queue: [q("a", 0, { due: now + 2 * h, byHand: true }), q("b", 1, { byHand: true })], now });
+  assert.equal(pinned.a.at, now + 2 * h);
+  assert.equal(pinned.b.at, now);
+  // TikTok: 15 a day whatever the account's own limit.
+  const tt = forecast({ platform: "tiktok", limit: 50, gapMinutes: 0, hours: null, sent: Array.from({ length: 15 }, (_, i) => now - 10 * h + i * 60_000), queue: [q("a", 0)], now });
+  assert.equal(tt.a.at, now - 10 * h + 24 * h);
+});

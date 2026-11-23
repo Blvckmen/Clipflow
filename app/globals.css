@@ -744,3 +744,73 @@ button.account-streamers{max-width:none;justify-self:start}
 .feed-empty p{color:#aeb7c2}
 .feed-empty-actions{display:flex;gap:10px;margin-top:8px}
 @media (min-width:901px){.review-feed{left:50%;width:min(460px,100vw);transform:translateX(-50%);box-shadow:0 0 0 100vmax #000c}}
+
+/* Publishing calendar */
+.calendar-page{display:flex;flex-direction:column;gap:16px}
+.cal-accounts ul{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px}
+.cal-accounts li{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:12px;background:#0f1318}
+.cal-accounts li.on{border-color:#bcfa7655;background:#bcfa760a}
+.cal-accounts li>div{flex:1;min-width:0;display:flex;flex-direction:column}
+.cal-accounts li strong{display:flex;align-items:center;gap:6px;font-size:14px}
+.cal-accounts li small{color:var(--muted);font-size:12px;line-height:1.35}
+.switch{display:inline-flex;align-items:center;gap:6px;cursor:pointer;flex-shrink:0}
+.switch input{position:absolute;opacity:0;width:1px;height:1px}
+.switch span{width:34px;height:20px;border-radius:999px;background:var(--border);position:relative;transition:background .15s}
+.switch span::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:var(--text);transition:transform .15s}
+.switch input:checked+span{background:var(--lime)}
+.switch input:checked+span::after{transform:translateX(14px);background:#0c0f13}
+.switch input:focus-visible+span{outline:2px solid var(--lime);outline-offset:2px}
+.switch input:disabled+span{opacity:.5}
+.switch em{font-style:normal;font-size:12px;color:var(--muted);width:24px}
+.cal-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.cal-nav{display:flex;align-items:center;gap:6px}
+.cal-nav strong{min-width:150px;text-align:center}
+.cal-filters{display:flex;align-items:center;gap:10px;font-size:13px}
+.cal-filters select{width:auto}
+.cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}
+.cal-day{border:1px solid var(--border);border-radius:12px;padding:8px 6px;min-height:180px;background:#0f1318;transition:border-color .1s,background .1s}
+.cal-day.today{border-color:#bcfa7688}
+.cal-day.past{opacity:.75}
+.cal-day.drop{border-color:var(--lime);background:#bcfa7612}
+.cal-day-head{display:flex;align-items:baseline;gap:6px;padding:0 4px 6px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.cal-day-head b{color:var(--text);font-size:16px;letter-spacing:0}
+.cal-day.today .cal-day-head b{color:var(--lime)}
+.cal-day-head small{margin-left:auto;font-size:11px}
+.cal-day ul,.cal-unplaced{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.cal-none{color:var(--muted);font-size:12px;margin:6px 4px}
+.cal-item{position:relative;border-radius:9px;background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--muted)}
+.cal-item.posted{border-left-color:#5b6775;opacity:.85}
+.cal-item.planned{border-left-color:#7cb7ff}
+.cal-item.scheduled{border-left-color:var(--lime)}
+.cal-item.posting{border-left-color:#ffc861}
+.cal-item.held,.cal-item.later{border-left-color:#ffc861}
+.cal-item.dragging{opacity:.4}
+.cal-item[draggable=true]{cursor:grab}
+.cal-item-main{all:unset;box-sizing:border-box;display:grid;grid-template-columns:auto 1fr auto;grid-template-areas:"time time score" "brand what what" "kind kind kind";align-items:center;gap:3px 6px;width:100%;padding:6px 7px;cursor:pointer}
+.cal-item-main:disabled{cursor:default}
+.cal-item-main:focus-visible{outline:2px solid var(--lime);outline-offset:-2px;border-radius:8px}
+.cal-time{grid-area:time;font-size:12px;font-weight:650;font-variant-numeric:tabular-nums}
+.cal-item .brand{grid-area:brand;width:20px;height:20px;font-size:11px}
+.cal-item .brand svg{width:11px;height:11px}
+.cal-what{grid-area:what;min-width:0;display:flex;flex-direction:column;line-height:1.25}
+.cal-what strong{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cal-what small{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cal-item .score-badge{grid-area:score;padding:3px 5px;font-size:10px}
+.cal-kind{grid-area:kind;font-size:10.5px;color:var(--muted)}
+.cal-kind.scheduled{color:var(--lime)}
+.cal-kind.posting{color:#ffc861}
+.cal-link{position:absolute;right:6px;bottom:5px;color:var(--muted)}
+.cal-edit{position:absolute;top:calc(100% + 6px);left:0;width:280px;z-index:6;display:flex;flex-direction:column;gap:8px;padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--panel);box-shadow:0 14px 40px #000a}.cal-day:nth-child(n+5) .cal-edit,.cal-unplaced .cal-edit{left:auto;right:0}
+.cal-edit label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
+.cal-edit input{font-size:13px;padding:6px 8px}
+.cal-edit-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.cal-edit-actions button{font-size:12px;padding:6px 9px;display:inline-flex;align-items:center;gap:5px}
+.cal-edit-actions .icon-button{margin-left:auto;padding:4px}
+.cal-edit small{font-size:11px;color:var(--muted);line-height:1.4}
+.cal-item.open{z-index:5;border-color:var(--lime)}
+.cal-hint{display:flex;gap:6px;align-items:flex-start;font-size:12px;margin:12px 2px 0}
+.cal-hint svg{flex-shrink:0;margin-top:2px}
+.cal-unplaced{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px}
+.field-note{display:block;color:var(--muted);font-size:12px;margin:-6px 0 6px}
+@media (max-width:1100px){.cal-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media (max-width:700px){.cal-edit,.cal-day:nth-child(n+5) .cal-edit,.cal-unplaced .cal-edit{position:static;width:auto;box-shadow:none;border-width:1px 0 0;border-radius:0}.cal-grid{grid-template-columns:1fr}.cal-day{min-height:0}.cal-nav strong{min-width:0;font-size:14px}.cal-toolbar{flex-direction:column;align-items:stretch}.cal-nav{justify-content:space-between}}

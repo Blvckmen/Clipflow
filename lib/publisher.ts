@@ -15,7 +15,7 @@ import { readOptions, tiktokSettings, wantsDraft } from "./account-options";
 import { subtitleLanguages, translatable } from "./languages";
 import { weeklyHighlights } from "./highlights";
 import { pruneSources } from "./sources";
-import { planNext, tiktokBusy, TIKTOK_DAILY, bestHours, hoursLabel, nextOpenAt, windowHours } from "./posting-plan.mjs";
+import { planNext, tiktokBusy, TIKTOK_DAILY, bestHours, hoursLabel, nextOpenAt, windowHours, spreadGap } from "./posting-plan.mjs";
 import { applyRules, lengthProblem, readRules } from "./posting-rules.mjs";
 import { keyConnection, siteConnection, zernioApiUrl, type Connection } from "./zernio-keys";
 
@@ -190,6 +190,16 @@ function zernioAdapter(config: Connection, account: AccountRow): Adapter {
   };
 }
 
+// The hours of the day an account posts in (options.hours): a fixed window, or its best hours from the views of its
+// posts over the last 90 days (posts_account_published, at most 300 rows). null: any time.
+export async function postingHours(db: D1Database, accountId: string, options: ReturnType<typeof readOptions>, now: number): Promise<number[] | null> {
+  if (options.hours === "any") return null;
+  if (options.hours === "window") return windowHours(options.hoursFrom, options.hoursTo);
+  const { results } = await db.prepare("SELECT published_at,views FROM posts WHERE account_id=? AND state='published' AND views IS NOT NULL AND published_at>=? ORDER BY published_at DESC LIMIT 300")
+    .bind(accountId, new Date(now - 90 * 24 * 3600_000).toISOString()).all<{ published_at: string; views: number }>();
+  return bestHours(results.map(p => ({ at: Date.parse(p.published_at), views: p.views })), options.timeZone).hours;
+}
+
 async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: number) {
   const db = env.DB!, iso = new Date(now).toISOString();
 
@@ -291,9 +301,13 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   const day = await db.prepare("SELECT sum(draft=0 AND state='published') AS direct, sum(draft=1) AS drafts, max(at) AS last, min(at) AS oldest FROM " + LAST_DAY)
     .bind(account.id, since, account.id, since).first<{ direct: number | null; drafts: number | null; last: string | null; oldest: string | null }>();
   const at = (v: string | null | undefined) => v ? Date.parse(v) : null;
+  // This account's posting hours (null: any time), to wait for them and to spread the day's posts across them. A post
+  // queued or scheduled by hand goes when asked: it skips both (the set gap and the limits still apply).
+  const hours = queued.queued_by_hand ? null : await postingHours(db, account.id, options, now);
+  const limit = options.dailyLimit ?? account.daily_limit ?? 5;
   const plan = planNext({
     platform: account.platform, wantsDraft: account.platform === "tiktok" && (!!queued.draft || wantsDraft(options, !!clip.reviewed_at)), queuedByHand: !!queued.queued_by_hand, holdWhenFull: options.whenFull === "review",
-    limit: options.dailyLimit ?? account.daily_limit ?? 5, gapMinutes: options.gapMinutes,
+    limit, gapMinutes: queued.queued_by_hand ? options.gapMinutes : spreadGap(hours, limit, options.gapMinutes, options.spread),
     directToday: day?.direct ?? 0, draftsToday: day?.drafts ?? 0, lastSentAt: at(day?.last), oldestSentAt: at(day?.oldest), now,
   });
   if (plan.action === "hold") {
@@ -301,9 +315,7 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
     return;
   }
   // Posting hours: outside this account's best hours (or its set window) the post waits for the next of them.
-  if ((plan.action === "post" || plan.action === "draft") && !queued.queued_by_hand && options.hours !== "any") {
-    const hours = options.hours === "window" ? windowHours(options.hoursFrom, options.hoursTo) : bestHours((await db.prepare("SELECT published_at,views FROM posts WHERE account_id=? AND state='published' AND views IS NOT NULL AND published_at>=? ORDER BY published_at DESC LIMIT 300")
-      .bind(account.id, new Date(now - 90 * 24 * 3600_000).toISOString()).all<{ published_at: string; views: number }>()).results.map(p => ({ at: Date.parse(p.published_at), views: p.views })), options.timeZone).hours;
+  if ((plan.action === "post" || plan.action === "draft") && !queued.queued_by_hand && hours) {
     const opens = nextOpenAt(now, hours, options.timeZone);
     if (opens !== null) {
       await db.prepare("UPDATE posts SET next_attempt_at=?,error=? WHERE id=?").bind(new Date(opens).toISOString(), "Waiting for " + (options.hours === "window" ? "this account's posting hours" : "this account's best hours") + " (" + hoursLabel(hours) + ", " + options.timeZone + ").", queued.id).run();
