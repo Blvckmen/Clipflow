@@ -22,6 +22,7 @@ import type { AccountOptions } from "../lib/account-options";
 import CaptionGenerator from "./caption-generator";
 import { RecordingsView, type Recording, type RecordingRequest } from "./recordings-view";
 import { ClipThumb } from "./clip-thumb";
+import { apiFetch, readJson } from "../lib/read-json.mjs";
 import { ViewerClipsPanel, ViewerClipsSettings, type Candidate, type ViewerClipsOwn } from "./viewer-clips";
 // How long a deleted clip can be brought back with Undo before it is really deleted.
 const UNDO_MS=6000;
@@ -135,7 +136,7 @@ export default function Dashboard(){
   const seq=changeSeq.current;
   if(quiet&&inflight.current)return;
   if(!quiet){setLoading(true);setError("");}
-  try{const response=await fetch("/api/dashboard");const result=await response.json() as Data & {error?:string};if(response.status===401){setSignIn((result as {signIn?:string}).signIn??"/signin-with-chatgpt?return_to=/");setAuth(true);return;}if(!response.ok)throw new Error(result.error);
+  try{const response=await apiFetch("/api/dashboard");const result=await readJson<Data & {error?:string}>(response);if(response.status===401){setSignIn((result as {signIn?:string}).signIn??"/signin-with-chatgpt?return_to=/");setAuth(true);return;}if(!response.ok)throw new Error(result.error);
    if(quiet&&(seq!==changeSeq.current||inflight.current))return;
    setAuth(false);setData(result);if(!quiet)setDraft(result.settings);setLoadedAt(Date.now());lastLoad.current=Date.now();}
   catch(e){if(!quiet)setError(e instanceof Error?e.message:"Couldn't load your workspace.");}finally{if(!quiet)setLoading(false);}
@@ -183,7 +184,7 @@ export default function Dashboard(){
   if(change.optimistic){changeSeq.current++;const apply=change.optimistic;setData(d=>d&&apply(d));}
   if(!instant)setBusy(true);
   setError("");inflight.current++;
-  try{const response=await fetch("/api/dashboard",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});const result=await response.json() as {error?:string;message:string;token?:string;streamerId?:string};if(!response.ok)throw new Error(result.error);
+  try{const response=await apiFetch("/api/dashboard",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});const result=await readJson<{error?:string;message:string;token?:string;streamerId?:string}>(response);if(!response.ok)throw new Error(result.error);
    if(!instant){await load();setToast(result.message);}
    return result;}
   catch(e){failed=true;setError(e instanceof Error?e.message:"Couldn't save your changes.");return false;}
@@ -218,7 +219,7 @@ export default function Dashboard(){
  const loadOlder=async()=>{
   const last=[...(data?.clips||[]),...older.clips].at(-1);if(!last||loadingOlder)return;
   setLoadingOlder(true);
-  try{const r=await fetch("/api/dashboard?before="+encodeURIComponent(last.created_at));const j=await r.json() as {clips?:Clip[];moreClips?:boolean;error?:string};if(!r.ok||!j.clips)throw new Error(j.error||"Couldn't load older clips.");setOlder(o=>({clips:[...o.clips,...j.clips!],more:!!j.moreClips}));}
+  try{const r=await apiFetch("/api/dashboard?before="+encodeURIComponent(last.created_at));const j=await readJson<{clips?:Clip[];moreClips?:boolean;error?:string}>(r);if(!r.ok||!j.clips)throw new Error(j.error||"Couldn't load older clips.");setOlder(o=>({clips:[...o.clips,...j.clips!],more:!!j.moreClips}));}
   catch(e){setError(e instanceof Error?e.message:"Couldn't load older clips.");}
   finally{setLoadingOlder(false);}
  };

@@ -2,6 +2,7 @@
 // Settings → Split-screen backgrounds: looping videos or still images shown under the stream in split screen.
 import { useEffect, useRef, useState } from "react";
 import { Film, Loader2, Trash2, Upload } from "lucide-react";
+import { readJson } from "../lib/read-json.mjs";
 
 export type Background = { id: string; name: string; size: number; duration?: number | null; content_type?: string; created_at: string };
 const IMAGE_TYPES: Record<string, string> = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp" };
@@ -66,7 +67,7 @@ export function BackgroundLibrary({ backgrounds, storage, busy, onUploaded, onDe
       let seconds: number | null = null;
       if (!image) { const url = URL.createObjectURL(file); seconds = await videoLength(url); URL.revokeObjectURL(url); }
       const response = await fetch("/api/backgrounds", { method: "POST", headers: { "content-type": type, "x-file-name": encodeURIComponent(file.name), ...(seconds && { "x-duration": String(seconds) }) }, body: file });
-      const result = await response.json() as { message?: string; error?: string };
+      const result = await readJson<{ message?: string; error?: string }>(response);
       if (!response.ok) throw new Error(result.error ?? "Upload failed.");
       onUploaded(result.message ?? "Uploaded.");
     } catch (e) { setError(e instanceof Error ? e.message : "Upload failed."); }

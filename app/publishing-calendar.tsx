@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { CalendarClock, ChevronLeft, ChevronRight, ExternalLink, Flame, Loader2, RotateCcw, Send, Sparkles, X } from "lucide-react";
 import { viralityLabel } from "../lib/virality.mjs";
+import { readJson } from "../lib/read-json.mjs";
 import type { AccountOptions } from "../lib/account-options";
 
 // Publishing → Calendar: a week of posts per day. What went out, and when everything still queued will go out, as
@@ -40,7 +41,7 @@ export function PublishingCalendar({ accounts, brand, platformName, busy, mutate
     try {
       const end = new Date(week); end.setDate(end.getDate() + 7);
       const r = await fetch("/api/calendar?from=" + new Date(week).toISOString() + "&to=" + end.toISOString());
-      const body = await r.json() as Calendar & { error?: string };
+      const body = await readJson<Calendar & { error?: string }>(r);
       if (!r.ok) throw new Error(body.error);
       setCal(body); setError("");
     } catch (e) { setError(e instanceof Error && e.message ? e.message : "The calendar is unavailable right now."); }

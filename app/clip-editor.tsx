@@ -6,6 +6,7 @@ import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, 
 import { ANIMATIONS, ASPECTS, ASPECT_LABELS, KEYWORD_SCALE, CHAT_SIZE, DEFAULT_CHAT, chatWindows, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, HOOK_LINES, HOOK_OUTLINE, HOOK_DEFAULT, HOOK_SIZE, HOOK_X, HOOK_Y, hookOutlineColor, hookPlacement, MAX_CLIP, MIN_CLIP, PRESETS, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks, timeline, zoomAt } from "../worker/edit.mjs";
 
 import { applyAutomaticHook } from "../worker/hooks.mjs";
+import { apiFetch, readJson } from "../lib/read-json.mjs";
 
 type Split = { share: number; top: "stream" | "background"; divider: string | null; volume: number };
 type CamBox = { x: number; y: number; w: number; h: number };
@@ -100,7 +101,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
     setCopying(true); setError("");
     try {
       const response = await fetch("/api/dashboard", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "duplicateClip", id: clipId }) });
-      const body = (await response.json().catch(() => ({}))) as { clipId?: string; message?: string; error?: string };
+      const body = await readJson<{ clipId?: string; message?: string; error?: string }>(response).catch((e: Error) => ({ error: e.message }) as { clipId?: string; message?: string; error?: string });
       if (!response.ok || !body.clipId) throw new Error(body.error || "Couldn't copy the clip. Please retry.");
       onCopied?.(body.clipId, body.message ?? "Copied the clip.");
     } catch (e) { setError((e as Error).message); } finally { setCopying(false); }
@@ -123,7 +124,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
 
   useEffect(() => {
     let live = true;
-    fetch("/api/clips/" + clipId + "/edit").then(async r => { const body = await r.json() as Bundle & { error?: string }; if (!r.ok) throw new Error(body.error); return body; })
+    apiFetch("/api/clips/" + clipId + "/edit").then(async r => { const body = await readJson<Bundle & { error?: string }>(r); if (!r.ok) throw new Error(body.error); return body; })
       .then(b => { if (!live) return; setBundle(b); setEditState(b.edit && { ...b.edit, hook: { ...HOOK_DEFAULT, ...b.edit.hook } }); setPostText(b.caption.text ?? ""); setCaptionSource(b.caption.source); setCaptionNote(b.caption.error ? "Last attempt failed: " + b.caption.error : ""); if (b.legacy) setTab("frame"); })
       .catch(e => live && setError(e instanceof Error ? e.message : "Couldn't open this clip."));
     return () => { live = false; };
@@ -333,7 +334,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
     setCaptionBusy(body.action); setCaptionNote(""); setError("");
     try {
       const response = await fetch("/api/clips/" + clipId + "/caption", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      const result = await response.json() as { error?: string; text: string | null; source: string | null; message: string };
+      const result = await readJson<{ error?: string; text: string | null; source: string | null; message: string }>(response);
       if (!response.ok) throw new Error(result.error);
       setPostText(result.text ?? ""); setCaptionSource(result.source); setCaptionNote(result.message);
     } catch (e) { setCaptionNote(e instanceof Error ? e.message : "Couldn't update the post text."); }
@@ -345,7 +346,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
     setSaving(true); setError("");
     try {
       const response = await fetch("/api/clips/" + clipId + "/edit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ edit, rev: bundle.rev, ...(saveStyle && { saveStyle: "streamer" }) }) });
-      const result = await response.json() as { error?: string; message: string };
+      const result = await readJson<{ error?: string; message: string }>(response);
       if (!response.ok) throw new Error(result.error);
       onSaved(result.message);
     } catch (e) { setError(e instanceof Error ? e.message : "Couldn't save the edit."); }

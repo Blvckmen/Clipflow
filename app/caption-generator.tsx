@@ -1,6 +1,7 @@
 "use client";
 import { useRef, useState } from "react";
 import { Check, Copy, Loader2, Sparkles, WandSparkles } from "lucide-react";
+import { readJson } from "../lib/read-json.mjs";
 
 type Options = { platform: string; tone: string; length: string; emojis: boolean; hashtags: boolean };
 export default function CaptionGenerator({ signedIn, clips = [] }: { signedIn: boolean; clips?: { id: string; streamer: string | null; created_at: string }[] }) {
@@ -15,7 +16,7 @@ export default function CaptionGenerator({ signedIn, clips = [] }: { signedIn: b
     inFlight.current = true; setBusy(true); setError(""); setCopied(null);
     try {
       const response = await fetch("/api/captions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ topic, ...(clipId && { clipId }), ...options }), signal: AbortSignal.timeout(150_000) });
-      const data = await response.json() as { captions: string[]; limit: number; error?: string };
+      const data = await readJson<{ captions: string[]; limit: number; error?: string }>(response);
       if (!response.ok) throw new Error(data.error || "Couldn't write post text.");
       setResult({ ...data, platform: options.platform });
     } catch (e) { setError(e instanceof Error && e.name === "TimeoutError" ? "Generation timed out. Please try again." : e instanceof Error ? e.message : "Couldn't reach the post text writer."); }
