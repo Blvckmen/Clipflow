@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { database } from "../../../../db/raw";
 import { workerOwner } from "../../../../lib/worker-auth";
+import { defaults } from "../../../../lib/clipflow";
 import { viralityScore } from "../../../../lib/virality.mjs";
 import { normalizeEdit, normalizeWords } from "../../../../worker/edit.mjs";
 const box=z.object({x:z.number().min(0).max(1),y:z.number().min(0).max(1),w:z.number().min(0.01).max(1),h:z.number().min(0.01).max(1)});
@@ -37,7 +38,8 @@ export async function POST(request:Request){
   if(existing)return existing.owner===owner?Response.json({ok:true,duplicate:true}):Response.json({error:"Clip id conflict."},{status:409});
   // The publishing mode at arrival decides whether the clip waits for review: the streamer's own, else the workspace's.
   const prefs=await db.prepare("SELECT mode FROM preferences WHERE owner=?").bind(owner).first<{mode:string}>();
-  const review=(streamer.publish_mode??prefs?.mode)==="review"?"pending":"approved";
+  // A workspace that never saved settings has no preferences row yet: it reviews first, like every new workspace.
+ const review=(streamer.publish_mode??prefs?.mode??defaults.mode)==="review"?"pending":"approved";
   const src=clip.source,iso=new Date().toISOString();
   await db.batch([
    db.prepare("INSERT INTO clips (id,owner,streamer_id,created_at,duration,captions,sha,size,review,reason,edit,transcript,signals,source_meta,source_sha,source_size,rendered_at,post_caption,caption_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")

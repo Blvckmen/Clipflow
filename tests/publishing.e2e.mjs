@@ -232,6 +232,28 @@ test("Local code writes post captions from the transcript ahead of posting; the 
 
 });
 
+test("a new workspace reviews clips first, whether or not it has saved settings yet", async () => {
+  // A second workspace, set up the way a newcomer does it: a channel and a PC, no settings saved.
+  const other = { "oai-authenticated-user-id": owner + "_new", "oai-authenticated-user-email": owner + "_new@test.local" };
+  const as = async body => { const r = await fetch(base + "/api/dashboard", body ? { method: "POST", headers: { ...other, "content-type": "application/json" }, body: JSON.stringify(body) } : { headers: other }); return { status: r.status, body: await r.json() }; };
+  let channel;
+  try {
+    assert.equal((await as()).body.settings.mode, "review", "shown as Review first before anything is saved");
+    assert.equal((await as({ action: "add", url: "https://twitch.tv/" + owner + "new" })).status, 200);
+    channel = (await as()).body.streamers[0];
+    const token = (await as({ action: "token" })).body.token;
+    const bytes = randomBytes(3000), clip = { id: randomUUID(), streamerId: channel.id, createdAt: new Date().toISOString(), duration: 30, captions: true, sha: createHash("sha256").update(bytes).digest("hex"), size: bytes.length, reason: "chat" };
+    assert.equal((await fetch(base + "/api/worker/clips", { method: "POST", headers: { authorization: "Bearer " + token, "content-type": "application/json" }, body: JSON.stringify(clip) })).status, 200);
+    assert.equal((await as()).body.clips.find(c => c.id === clip.id).review, "pending", "its PC's first clip waits for review");
+    // Resuming automation creates the settings row: still Review first.
+    assert.equal((await as({ action: "control", control: "running" })).status, 200);
+    assert.equal((await as()).body.settings.mode, "review");
+    await as({ action: "deleteClip", id: clip.id });
+  } finally {
+    if (channel) await as({ action: "remove", id: channel.id });
+  }
+});
+
 test("This PC settings: saved choices reach the worker, which reports them applied with what it is doing", async () => {
   // Put back afterwards: later tests rely on the workspace settings set before this one.
   const was = (await dash()).body.settings;

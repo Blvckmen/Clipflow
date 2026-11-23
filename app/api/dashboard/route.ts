@@ -174,7 +174,7 @@ export async function POST(request:Request){
    statements.push(db.prepare("INSERT INTO streamers (id,owner,name,url,platform,status,created_at,capture_mode,publish_mode) VALUES (?,?,?,?,?,'armed',?,?,?)").bind(streamerId,owner,name,channel.url,channel.platform,iso,payload.captureMode??"clip",storedMode(payload.publishMode)));
    for(const a of linked)statements.push(db.prepare("INSERT INTO streamer_accounts (streamer_id,account_id,owner,created_at) VALUES (?,?,?,?)").bind(streamerId,a.id,owner,iso));
    // Adding a streamer means "start clipping them": automation is switched on for the workspace.
-   statements.push(db.prepare("INSERT INTO preferences (owner,control) VALUES (?,'running') ON CONFLICT(owner) DO UPDATE SET control='running'").bind(owner));
+   statements.push(db.prepare("INSERT INTO preferences (owner,mode,control) VALUES (?,'review','running') ON CONFLICT(owner) DO UPDATE SET control='running'").bind(owner));
    message="Added "+name+" from "+channel.platform+". "+(payload.captureMode==="record"?"Their whole stream is recorded as soon as they go live, and clipped when it ends":payload.captureMode==="both"?"Clipping and recording start as soon as they go live":"Clipping starts as soon as they go live")+(linked.length?" and clips post to "+linked.map(a=>"@"+a.username).join(", ")+".":".");
   }
   if(payload.action==="status"||payload.action==="remove"){
@@ -254,7 +254,7 @@ export async function POST(request:Request){
     statements.push(db.prepare("UPDATE streamers SET style=? WHERE id=? AND owner=?").bind(json,payload.streamerId,owner));
     message=style?"Saved this look for "+streamer.name+"'s new clips.":streamer.name+"'s new clips use the workspace look again.";
    }else{
-    statements.push(db.prepare("INSERT INTO preferences (owner,style) VALUES (?,?) ON CONFLICT(owner) DO UPDATE SET style=excluded.style").bind(owner,json));
+    statements.push(db.prepare("INSERT INTO preferences (owner,mode,style) VALUES (?,'review',?) ON CONFLICT(owner) DO UPDATE SET style=excluded.style").bind(owner,json));
     message=style?"Saved this look as the workspace default.":"The workspace look is back to the built-in default.";
    }
   }
@@ -274,7 +274,7 @@ export async function POST(request:Request){
    message="Saved clipping and publishing preferences.";
   }
   if(payload.action==="control"){
-   statements.push(db.prepare("INSERT INTO preferences (owner,control) VALUES (?,?) ON CONFLICT(owner) DO UPDATE SET control=excluded.control").bind(owner,payload.control));
+   statements.push(db.prepare("INSERT INTO preferences (owner,mode,control) VALUES (?,'review',?) ON CONFLICT(owner) DO UPDATE SET control=excluded.control").bind(owner,payload.control));
    message=payload.control==="running"?"Global automation resumed.":payload.control==="paused"?"Global automation paused.":"Global automation stopped.";
   }
   // Deleting clips also drops their posts that haven't gone out, and cancels any Zernio is still holding (e.g. for
@@ -310,7 +310,7 @@ export async function POST(request:Request){
     else if(!isDiscordWebhook(url))return Response.json({error:"Paste a Discord webhook link: in your server, Server Settings, Integrations, Webhooks, New Webhook, Copy Webhook URL."},{status:400});
     const problem=await sendDiscord(url,payload.op==="test"?"\u{1F44B} Test from Clipflow: review alerts reach this channel.":"\u{2705} Clipflow will post here when clips are waiting for your review.");
     if(problem)return Response.json({error:problem},{status:502});
-    if(payload.op==="connect")statements.push(db.prepare("INSERT INTO preferences (owner,discord_webhook_enc) VALUES (?,?) ON CONFLICT(owner) DO UPDATE SET discord_webhook_enc=excluded.discord_webhook_enc,alert_error=NULL").bind(owner,await encrypt(url.trim(),env.TOKEN_KEY)));
+    if(payload.op==="connect")statements.push(db.prepare("INSERT INTO preferences (owner,mode,discord_webhook_enc) VALUES (?,'review',?) ON CONFLICT(owner) DO UPDATE SET discord_webhook_enc=excluded.discord_webhook_enc,alert_error=NULL").bind(owner,await encrypt(url.trim(),env.TOKEN_KEY)));
     message=payload.op==="test"?"Sent a test message to your Discord.":"Discord alerts are on. A test message was sent to the channel.";
    }
   }

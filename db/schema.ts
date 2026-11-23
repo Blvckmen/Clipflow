@@ -31,7 +31,9 @@ export const streamers = sqliteTable("streamers", {
  dailyLimit:integer("daily_limit"),
 },t=>[uniqueIndex("streamers_owner_url").on(t.owner,t.url)]);
 export const preferences=sqliteTable("preferences",{
- owner:text("owner").primaryKey(),mode:text("mode").notNull().default("automatic"),duration:integer("duration").notNull().default(45),dailyLimit:integer("daily_limit").notNull().default(5),captions:integer("captions",{mode:"boolean"}).notNull().default(true),destinations:text("destinations").notNull().default('[]'),control:text("control").notNull().default("paused"),framing:text("framing").notNull().default("blur"),
+ owner:text("owner").primaryKey(),// The column default stays "automatic" (changing it needs a table rebuild); every INSERT sets mode itself, "review"
+ // for a new workspace (lib/clipflow.ts defaults.mode), so the default is never used.
+ mode:text("mode").notNull().default("automatic"),duration:integer("duration").notNull().default(45),dailyLimit:integer("daily_limit").notNull().default(5),captions:integer("captions",{mode:"boolean"}).notNull().default(true),destinations:text("destinations").notNull().default('[]'),control:text("control").notNull().default("paused"),framing:text("framing").notNull().default("blur"),
  // Post caption; {streamer} and {platform} are replaced with the clip's channel name and source platform.
  captionTemplate:text("caption_template").notNull().default("{streamer} on {platform} #clips #{platform}"),
  // The workspace's default clip look (JSON style); null uses the built-in one with `framing` and `captions`.
