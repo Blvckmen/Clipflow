@@ -854,3 +854,11 @@ button.account-streamers{max-width:none;justify-self:start}
 /* Virality score learned from views: a small dot on the badge, and the reason in the phone review feed */
 .score-badge.learned::after{content:"";width:4px;height:4px;border-radius:50%;background:currentColor;margin-left:2px;opacity:.8}
 .feed-why{display:block;font-style:normal;font-size:12px;color:#dfe5ec;opacity:.85;margin-top:2px}
+
+/* Channel search shares the platform filter and remains usable on phones. */
+.channel-search{display:flex;align-items:center;gap:8px;min-width:0;width:280px;max-width:100%;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:#141a21;color:var(--muted)}
+.channel-search:focus-within{outline:2px solid var(--lime,#bcfa76);outline-offset:2px}
+.channel-search input{width:100%;min-width:0;border:0;background:transparent;color:var(--text,#edf2f7);padding:10px 0;font:inherit;font-size:14px;outline:none}
+.channel-search input::-webkit-search-cancel-button{display:none}
+.channel-search>svg,.channel-search button{flex-shrink:0}
+@media(max-width:640px){.streamer-panel .panel-tools{width:100%;justify-content:flex-start}.channel-search{width:100%}.channel-search input{font-size:16px}.streamer-panel .panel-foot{flex-wrap:wrap}}
