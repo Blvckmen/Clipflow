@@ -6,7 +6,7 @@ import { viralityLabel } from "../lib/virality.mjs";
 // Phone review: the clips waiting for review one at a time, full screen, best first. Swipe right (or Approve) to
 // accept, left (or Reject) to reject, up (or Skip) to come back to it later. Undo takes the last decision back.
 // Keys work too: → or Enter accepts, ← or R rejects, ↓ or Space skips, Esc closes.
-type FeedClip = { id: string; streamer: string | null; created_at: string; duration: number; reason: string | null; score?: number; edit_rev: number };
+type FeedClip = { id: string; streamer: string | null; created_at: string; duration: number; reason: string | null; score?: number; scoreWhy?: string | null; edit_rev: number };
 type Review = "pending" | "approved" | "rejected";
 const SWIPE = 90;
 
@@ -81,7 +81,8 @@ export function ReviewFeed({ clips, reasonLabels, onDecide, onEdit, onClose }: {
         <video key={current.id} ref={video} src={src(current)} autoPlay loop playsInline muted={muted} preload="auto" />
         {hint && <span className="feed-stamp">{hint === "approve" ? "Approve" : hint === "reject" ? "Reject" : "Later"}</span>}
         <div className="feed-meta">
-          {current.score != null && <span className={"score-badge " + viralityLabel(current.score).toLowerCase()} title="Virality score"><Flame size={11} />{current.score}</span>}
+          {current.score != null && <span className={"score-badge " + viralityLabel(current.score).toLowerCase()} title={"Virality score" + (current.scoreWhy ? ": " + current.scoreWhy : "")}><Flame size={11} />{current.score}</span>}
+          {current.scoreWhy && <em className="feed-why">{current.scoreWhy}</em>}
           <strong>{current.streamer ?? "Removed streamer"}</strong>
           <small>{[current.reason && (reasonLabels[current.reason] ?? current.reason), current.duration + "s", new Date(current.created_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })].filter(Boolean).join(" · ")}</small>
         </div>

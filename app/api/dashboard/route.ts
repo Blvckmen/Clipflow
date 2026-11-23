@@ -11,7 +11,8 @@ import { decrypt, encrypt } from "../../../lib/secure";
 import { normalizeStyle } from "../../../worker/edit.mjs";
 import { PLATFORM_NAMES, videoLink } from "../../../worker/video-link.mjs";
 import { emptyRules, readRules } from "../../../lib/posting-rules.mjs";
-import { viralityScore } from "../../../lib/virality.mjs";
+import { learnedScore, viralityScore } from "../../../lib/virality.mjs";
+import { viewRatio } from "../../../lib/insights.mjs";
 import { socialCaptionsAvailable } from "../../../lib/social-caption";
 import { aiCaptionsAvailable } from "../../../lib/post-caption";
 import { removeRecordingFiles } from "../../../lib/recordings";
@@ -100,15 +101,27 @@ const parse=(json:unknown)=>{try{return typeof json==="string"?JSON.parse(json):
 // The library's clips, newest first, CLIPS_PAGE at a time: the dashboard loads the newest page, and ?before=<created_at>
 // pages further back ("Load older clips"), read through the clips_owner_created index.
 const CLIPS_PAGE=200;
-const CLIPS_SQL="SELECT c.id,c.streamer_id,c.created_at,c.duration,c.captions,c.size,c.file_key IS NOT NULL AS stored,c.review,c.reason,(c.edit IS NOT NULL OR c.file_key IS NOT NULL) AS editable,c.edit IS NULL AS legacy,c.post_caption,c.caption_source,c.source_key IS NOT NULL AS source_stored,c.render_state,c.render_error,c.rendered_at,c.edit_rev,c.thumb_rev,json_extract(c.signals,'$.score') AS score,s.name AS streamer,(SELECT json_group_object(p.account_id,p.state) FROM posts p WHERE p.clip_id=c.id AND p.round=(SELECT MAX(q.round) FROM posts q WHERE q.clip_id=p.clip_id AND q.account_id=p.account_id)) AS targets FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner";
-const clipRow=(x:Record<string,unknown>)=>({...x,score:typeof x.score==="number"?x.score:viralityScore({reason:x.reason as string|null}),targets:parse(x.targets as string|null)??{},captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored});
+const CLIPS_SQL="SELECT c.id,c.streamer_id,c.created_at,c.duration,c.captions,c.size,c.file_key IS NOT NULL AS stored,c.review,c.reason,(c.edit IS NOT NULL OR c.file_key IS NOT NULL) AS editable,c.edit IS NULL AS legacy,c.post_caption,c.caption_source,c.source_key IS NOT NULL AS source_stored,c.render_state,c.render_error,c.rendered_at,c.edit_rev,c.thumb_rev,json_extract(c.signals,'$.score') AS score,s.name AS streamer,(SELECT json_group_object(p.account_id,p.state) FROM posts p WHERE p.clip_id=c.id AND p.round=(SELECT MAX(q.round) FROM posts q WHERE q.clip_id=p.clip_id AND q.account_id=p.account_id)) AS targets,(SELECT json_group_array(json_array(p.platform,p.views)) FROM posts p WHERE p.clip_id=c.id AND p.state='published' AND p.views IS NOT NULL) AS measured FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner";
+// Each streamer's view profile (streamers.learned.views, lib/insights.mjs), by streamer id, for the score below.
+type ViewProfile={median:number;platforms:Record<string,number>;reasons:Record<string,{lift:number;n:number}>};
+const viewProfiles=(rows:Record<string,unknown>[])=>new Map(rows.map(r=>[String(r.id),(parse(r.learned as string|null) as {views?:ViewProfile}|null)?.views] as const).filter((e):e is readonly [string,ViewProfile]=>!!e[1]));
+// The score made when the clip arrived (or from its reason, for older clips), then adjusted by what views have taught
+// about this streamer: how this kind of moment does for them, and once posted, the clip's own views
+// (lib/virality.mjs learnedScore). Worked out here, so every clip's score follows the latest numbers without rewrites.
+const clipRowWith=(profiles:Map<string,ViewProfile>)=>({measured,...x}:Record<string,unknown>)=>{
+ const reason=x.reason as string|null,base=typeof x.score==="number"?x.score:viralityScore({reason});
+ const profile=profiles.get(String(x.streamer_id)),posted=(parse(measured as string|null) as [string,number][]|null)??[];
+ const learned=profile?learnedScore(base,{reason,reasonLift:reason?profile.reasons?.[reason]:undefined,ratios:posted.map(([platform,views])=>viewRatio(views,platform,profile))}):{score:base,why:null};
+ return {...x,score:learned.score,scoreWhy:learned.why,targets:parse(x.targets as string|null)??{},captions:!!x.captions,stored:!!x.stored,editable:!!x.editable,legacy:!!x.legacy,source_stored:!!x.source_stored};
+};
 export async function GET(request:Request){
  const user=await currentUser();if(!user)return Response.json({error:"Sign in to open your dashboard.",signIn:signInPath()},{status:401});
  const before=new URL(request.url).searchParams.get("before");
  if(before!==null){
   if(!/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(before))return Response.json({error:"Check the date and try again."},{status:400});
-  const {results}=await database().prepare(CLIPS_SQL.replace(" FROM clips c "," FROM clips c INDEXED BY clips_owner_created ")+" WHERE c.owner=? AND c.created_at<? ORDER BY c.created_at DESC LIMIT "+CLIPS_PAGE).bind(user.userId,before).all<Record<string,unknown>>();
-  return Response.json({clips:results.map(clipRow),moreClips:results.length===CLIPS_PAGE},{headers:{"Cache-Control":"private, no-store"}});
+  const [{results},{results:learned}]=await Promise.all([database().prepare(CLIPS_SQL.replace(" FROM clips c "," FROM clips c INDEXED BY clips_owner_created ")+" WHERE c.owner=? AND c.created_at<? ORDER BY c.created_at DESC LIMIT "+CLIPS_PAGE).bind(user.userId,before).all<Record<string,unknown>>(),
+   database().prepare("SELECT id,learned FROM streamers WHERE owner=?").bind(user.userId).all<{id:string;learned:string|null}>()]);
+  return Response.json({clips:results.map(clipRowWith(viewProfiles(learned))),moreClips:results.length===CLIPS_PAGE},{headers:{"Cache-Control":"private, no-store"}});
  }
  try{
   const db=database(),owner=user.userId;
@@ -130,7 +143,7 @@ export async function GET(request:Request){
   const keys=(await listKeys(db,owner)).map(k=>({id:k.id,label:k.label,created_at:k.created_at,last_error:k.last_error,accounts:a.results.filter(x=>x.zernio_key_id===k.id).length}));
   const site=!keys.length&&!!siteConnection(env);
   const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,importClips:Number(p.import_clips??0),viewerClips:readViewerClips(p.viewer_clips),clipCommand:p.clip_command??defaults.clipCommand,learn:p.learn===undefined?true:!!p.learn,weeklyHighlights:!!p.weekly_highlights,worker:readWorkerSettings(p.worker_settings),discordAlerts:!!p.discord_webhook_enc,alertError:p.alert_error??null,style:parse(p.style)}:{...defaults,style:null};
-  return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(clipRow),moreClips:c.results.length===CLIPS_PAGE,storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,duration,content_type,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,
+  return Response.json({user:user.displayName,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(clipRowWith(viewProfiles(s.results))),moreClips:c.results.length===CLIPS_PAGE,storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,duration,content_type,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,
    // Whole-stream recordings (their heat strips load with GET /api/recordings/<id>) and clips asked for from them.
    recordings:(await db.prepare("SELECT r.id,r.streamer_id,s.name AS streamer,r.title,r.started_at,r.ended_at,r.duration,r.size,r.state,r.error,r.preview_key IS NOT NULL AS preview,r.transcript_at IS NOT NULL AS transcript,r.upload_id IS NOT NULL AS uploading,r.expires_at,r.source_url FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.owner=? ORDER BY r.started_at DESC LIMIT 100").bind(owner).all<Record<string,unknown>>()).results.map(x=>({...x,preview:!!x.preview,uploading:!!x.uploading,transcript:!!x.transcript})),
    highlights:(await db.prepare("SELECT id,title,state,size,duration,error,auto,clips,created_at FROM highlights WHERE owner=? ORDER BY created_at DESC LIMIT 20").bind(owner).all<{clips:string}>()).results.map(({clips,...h})=>({...h,clips:(JSON.parse(clips) as unknown[]).length})),

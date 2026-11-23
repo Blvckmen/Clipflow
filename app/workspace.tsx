@@ -42,7 +42,7 @@ function LiveStatus({s,now}:{s:Streamer;now:number}){
 }
 type Settings=typeof defaults;
 type Review="pending"|"approved"|"rejected";
-type Clip={id:string;streamer_id:string;streamer:string|null;created_at:string;duration:number;captions:boolean;size:number;stored:boolean;review:Review;reason:string|null;editable:boolean;source_stored:boolean;render_state:string|null;render_error:string|null;rendered_at:string|null;edit_rev:number;thumb_rev?:number|null;score?:number;post_caption?:string|null;targets?:Record<string,Post["state"]>};
+type Clip={id:string;streamer_id:string;streamer:string|null;created_at:string;duration:number;captions:boolean;size:number;stored:boolean;review:Review;reason:string|null;editable:boolean;source_stored:boolean;render_state:string|null;render_error:string|null;rendered_at:string|null;edit_rev:number;thumb_rev?:number|null;score?:number;scoreWhy?:string|null;post_caption?:string|null;targets?:Record<string,Post["state"]>};
 type ClipFilter="all"|Review;
 const reviewFilters:Record<ClipFilter,string>={pending:"Needs review",approved:"Approved",rejected:"Rejected",all:"All"};
 const reasonLabels:Record<string,string>={command:"!clip in chat",chat:"Chat spike",audio:"Loudest moment",best:"Best of a recording",manual:"Picked from a recording",viewer:"Viewer's Twitch clip"};
@@ -68,7 +68,7 @@ function ClipCard({clip,posts,target,busy,selected,selecting,onSelect,onPlay,onE
   <button className="clip-thumb" onClick={onPlay} disabled={!clip.stored} aria-label={"Play clip from "+(clip.streamer??"a removed streamer")}>
    {clip.stored?<ClipThumb clip={clip}/>:<span className="thumb-empty"><Film size={26}/>On worker</span>}
    <span className="thumb-length">{clip.duration}s</span>
-   <ScoreBadge score={clip.score}/>
+   <ScoreBadge score={clip.score} why={clip.scoreWhy}/>
    {clip.render_state==="queued"&&<span className="thumb-state"><Loader2 size={12} className="spin"/>Rendering edit</span>}
    {clip.render_state==="failed"&&<span className="thumb-state bad" title={clip.render_error??""}>Render failed</span>}
   </button>
@@ -104,7 +104,7 @@ const pageIntro:Record<string,string>={Overview:"What needs you, who's live and 
 const NO_POSTS:Post[]=[];
 const byScore=(a:{score?:number;created_at:string},b:{score?:number;created_at:string})=>(b.score??0)-(a.score??0)||b.created_at.localeCompare(a.created_at);
 // The score badge on a clip: Hot, Promising, OK or Weak (lib/virality.mjs).
-function ScoreBadge({score}:{score?:number}){if(score==null)return null;const label=viralityLabel(score);return <span className={"score-badge "+label.toLowerCase()} title={"Virality score "+score+" of 100 ("+label+"): from why it was clipped, how far chat jumped, the AI's rating and how loud it got"} aria-label={"Virality score "+score}><Flame size={11}/>{score}</span>;}
+function ScoreBadge({score,why}:{score?:number;why?:string|null}){if(score==null)return null;const label=viralityLabel(score);return <span className={"score-badge "+label.toLowerCase()+(why?" learned":"")} title={"Virality score "+score+" of 100 ("+label+")"+(why?". "+why+".":": from why it was clipped, how far chat jumped, the AI's rating and how loud it got. It learns from views once this streamer has some measured posts.")} aria-label={"Virality score "+score+(why?", "+why:"")}><Flame size={11}/>{score}</span>;}
 const groupOf=(page:string)=>nav.find(g=>g.pages.includes(page))??nav[0];
 // Phone tab bar: every section but Settings, which is under More.
 const mobileTabs=nav.filter(g=>g.name!=="Settings").map(g=>({name:g.name,short:g.name,icon:g.icon,pages:g.pages}));
