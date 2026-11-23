@@ -23,9 +23,9 @@ function ClipTextFields({ value, onChange, ws }: { value: Record<(typeof TEXT_KE
   const on = (k: (typeof TEXT_KEYS)[number]) => value[k] === "workspace" ? wsValue[k] : value[k] === "on";
   const noTranscript = !on("transcribe");
   const rows = [
-    ["transcribe", "Transcription", "Whisper on your worker PC writes down what is said. Needed for subtitles, hooks and AI post captions."],
-    ["subtitles", "Subtitles", "Word-by-word captions on the video."],
-    ["hook", "Automatic hook", "A short title at the start of each clip, written from what is said. You can still type or change one in the editor."],
+    ["transcribe", "Transcription", "Whisper on your worker PC writes down what is said. Needed for subtitles, opening titles and AI post text."],
+    ["subtitles", "Subtitles", "Word-by-word subtitles on the video."],
+    ["hook", "Automatic opening title", "A short title at the start of each clip, written from what is said. You can still type or change one in the editor."],
   ] as const;
   return <fieldset className="clip-text-fields"><legend>Text on new clips</legend>
     {rows.map(([k, label, note]) => { const off = k !== "transcribe" && noTranscript; return <label key={k} className={off ? "muted-field" : ""}>{label}
@@ -44,7 +44,7 @@ function PostingRulesFields({ value, onChange, streamer }: { value: Rules; onCha
   const set = (patch: Partial<Rules>) => onChange({ ...value, ...patch });
   const seconds = (text: string) => { const n = Number(text); return text.trim() && Number.isInteger(n) && n >= 5 && n <= 600 ? n : null; };
   const channel = (() => { try { const u = new URL(streamer.url); return u.hostname.replace(/^www\./, "") + u.pathname.replace(/\/$/, ""); } catch { return ""; } })();
-  const sample = applyRules("Your clip's caption…", value, { streamer: streamer.name, platform: streamer.platform ?? "Twitch", channel });
+  const sample = applyRules("Your clip's post text…", value, { streamer: streamer.name, platform: streamer.platform ?? "Twitch", channel });
   const readBrief = () => {
     const got = parseBrief(value.brief), keys = Object.keys(got);
     onChange({ ...value, ...got, hashtags: got.hashtags ?? value.hashtags, mentions: got.mentions ?? value.mentions });
@@ -63,8 +63,8 @@ function PostingRulesFields({ value, onChange, streamer }: { value: Rules; onCha
       <label>Shortest clip (s)<input inputMode="numeric" value={value.minSeconds ?? ""} onChange={e => set({ minSeconds: seconds(e.target.value) })} placeholder="any" /></label>
       <label>Longest clip (s)<input inputMode="numeric" value={value.maxSeconds ?? ""} onChange={e => set({ maxSeconds: seconds(e.target.value) })} placeholder="any" /></label>
     </div>
-    <small className="field-note">The label goes first and the credit, hashtags and mentions are added to whatever caption a post has. A clip outside the lengths is held for you instead of posting; queue it yourself to post it anyway.</small>
-    <pre className="posting-preview" aria-label="Example caption">{sample}</pre>
+    <small className="field-note">The label goes first and the credit, hashtags and mentions are added to whatever post text a post has. A clip outside the lengths is held for you instead of posting; queue it yourself to post it anyway.</small>
+    <pre className="posting-preview" aria-label="Example post text">{sample}</pre>
   </fieldset>;
 }
 

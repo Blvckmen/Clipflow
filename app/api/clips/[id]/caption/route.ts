@@ -13,7 +13,7 @@ const bodySchema=z.discriminatedUnion("action",[
 export async function POST(request:Request,{params}:{params:Promise<{id:string}>}){
  const user=await currentUser();if(!user)return Response.json({error:"Sign in to edit clips."},{status:401});
  const origin=request.headers.get("origin");if(origin&&origin!==new URL(request.url).origin)return Response.json({error:"Request origin rejected."},{status:403});
- let body;try{body=bodySchema.parse(await request.json());}catch{return Response.json({error:"Check the caption and try again."},{status:400});}
+ let body;try{body=bodySchema.parse(await request.json());}catch{return Response.json({error:"Check the post text and try again."},{status:400});}
  const db=database(),{id}=await params,owner=user.userId;
  const clip=await db.prepare("SELECT id FROM clips WHERE id=? AND owner=?").bind(id,owner).first();
  if(!clip)return Response.json({error:"Clip not found."},{status:404});
@@ -25,12 +25,12 @@ export async function POST(request:Request,{params}:{params:Promise<{id:string}>
  const row=await db.prepare(CLIP_FACTS_SQL+" WHERE c.id=? AND c.owner=?").bind(id,owner).first<CaptionRow>();
  if(!row)return Response.json({error:"Clip not found."},{status:404});
  const facts=factsFromRow(row);
- if(!spokenText(facts.words,facts.trim))return Response.json({error:"This clip has no transcript in its saved trim. Type a caption, or enable transcription for future clips."},{status:409});
+ if(!spokenText(facts.words,facts.trim))return Response.json({error:"This clip has no transcript in its saved trim. Type the post text, or turn on transcription for future clips."},{status:409});
  let text;
- try { text=await captionClip(env,row,true); } catch { return Response.json({error:"The clip or caption changed. Reopen it and try again."},{status:409}); }
+ try { text=await captionClip(env,row,true); } catch { return Response.json({error:"The clip or its post text changed. Reopen it and try again."},{status:409}); }
  if(!text){
   const failed=await db.prepare("SELECT caption_error FROM clips WHERE id=?").bind(id).first<{caption_error:string|null}>();
-  return Response.json({error:failed?.caption_error??"The local generator couldn't write a caption."},{status:502});
+  return Response.json({error:failed?.caption_error??"The local writer couldn't write post text."},{status:502});
  }
  return Response.json({ok:true,text,source:"local",message:"Caption created from the saved transcript."});
 }

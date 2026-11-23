@@ -5,7 +5,7 @@ import { CLIP_FACTS_SQL, factsFromRow, spokenText, type CaptionRow } from "../..
 export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   const user = await currentUser();
-  if (!user) return Response.json({ error: "Sign in to generate captions." }, { status: 401 });
+  if (!user) return Response.json({ error: "Sign in to write post text." }, { status: 401 });
   const origin = request.headers.get("origin");
   if (origin && origin !== new URL(request.url).origin) return Response.json({ error: "Request origin rejected." }, { status: 403 });
   let input;

@@ -28,7 +28,7 @@ export function ShareClip({ clipId, caption, tiktokAccounts, busy, onMarked }: {
       a.href = url; a.download = f.name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 60_000);
       const copied = await copy();
       window.open("https://www.tiktok.com/tiktokstudio/upload", "_blank", "noopener");
-      setState("downloaded"); setNote("Video downloaded" + (copied ? " and caption copied" : "") + ". Upload it on the TikTok page that just opened" + (copied ? " and paste the caption." : "."));
+      setState("downloaded"); setNote("Video downloaded" + (copied ? " and post text copied" : "") + ". Upload it on the TikTok page that just opened" + (copied ? " and paste the post text." : "."));
     } catch (e) { setState(""); setNote(e instanceof Error ? e.message : "Couldn't prepare the video."); }
   };
   const share = async () => {
@@ -36,7 +36,7 @@ export function ShareClip({ clipId, caption, tiktokAccounts, busy, onMarked }: {
     const copied = await copy();
     try {
       await navigator.share({ files: [file] });
-      setState("shared"); setNote("Pick TikTok, then " + (copied ? "paste the caption (it's copied) and " : "") + "post. Mark it below once it's up.");
+      setState("shared"); setNote("Pick TikTok, then " + (copied ? "paste the post text (it's copied) and " : "") + "post. Mark it below once it's up.");
     } catch (e) { if ((e as Error).name !== "AbortError") setNote("Couldn't open the share sheet: " + (e as Error).message); }
   };
 
@@ -46,7 +46,7 @@ export function ShareClip({ clipId, caption, tiktokAccounts, busy, onMarked }: {
       {state === "ready"
         ? <button className="primary" type="button" onClick={() => void share()}><Smartphone size={15} />Open in TikTok</button>
         : <button className="secondary" type="button" disabled={state === "loading"} onClick={() => void prepare()}>{state === "loading" ? <Loader2 size={15} className="spin" /> : <Smartphone size={15} />}{state === "loading" ? "Preparing video…" : state ? "Again" : "Post in the TikTok app"}</button>}
-      {caption && <button className="text-button" type="button" onClick={() => void copy().then(ok => setNote(ok ? "Caption copied." : "Couldn't copy; select it in the editor's Post text tab."))}><Copy size={13} />Copy caption</button>}
+      {caption && <button className="text-button" type="button" onClick={() => void copy().then(ok => setNote(ok ? "Post text copied." : "Couldn't copy; select it in the editor's Post text tab."))}><Copy size={13} />Copy post text</button>}
     </div>
     {note && <p className="hint" role="status">{note}</p>}
     {(state === "shared" || state === "downloaded") && tiktokAccounts.length > 0 && <div className="share-mark">

@@ -29,6 +29,8 @@ def load(name):
     """A Whisper model, loaded once per process (`serve` keeps them between requests)."""
     from faster_whisper import WhisperModel
     if name not in MODELS:
+        # One model at a time: switching Transcription quality frees the old one (about 0.5-1.5 GB) first.
+        MODELS.clear()
         # "small" is far more accurate than "tiny" on stream audio (game sound, music, crosstalk, slang) and still runs
         # on a laptop CPU. WHISPER_MODEL=tiny brings back the fast, rough transcripts; WHISPER_THREADS sets the cores.
         MODELS[name]=WhisperModel(name,device="cpu",compute_type="int8",download_root=os.getenv("WHISPER_DIR","/data/models"),cpu_threads=int(os.getenv("WHISPER_THREADS","4")))

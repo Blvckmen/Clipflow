@@ -1,5 +1,5 @@
 import { database } from "../../../../db/raw";
-import { defaults, readWorkerSettings } from "../../../../lib/clipflow";
+import { defaults, readWorkerSettings, workerSettingsRev } from "../../../../lib/clipflow";
 import { workerOwner } from "../../../../lib/worker-auth";
 import { readStreamerViewerClips, readViewerClips } from "../../../../lib/viewer-clips.mjs";
 export const dynamic="force-dynamic";
@@ -36,7 +36,8 @@ export async function GET(request:Request){
    control:p?.control??defaults.control,duration:p?.duration??defaults.duration,dailyLimit:p?.daily_limit??defaults.dailyLimit,captions:p?!!p.captions:defaults.captions,transcribe:p?!!p.transcribe:defaults.transcribe,framing:p?.framing??defaults.framing,
    style:parse(p?.style),
    // Settings → This PC; each choice left out follows the worker's .env (worker/core.mjs workerTuning).
-   worker:readWorkerSettings(p?.worker_settings),
+   // workerRev: their fingerprint, which the worker reports back once it runs with them (Saved → Applied).
+   worker:readWorkerSettings(p?.worker_settings),workerRev:workerSettingsRev(readWorkerSettings(p?.worker_settings)),
    streamers:s.results.map(x=>({id:x.id,url:x.url,status:x.status,style:parse(x.style),captureMode:x.capture_mode??"clip",text:clipText(x.clip_text),viewerClips:readStreamerViewerClips(x.viewer_clips),dailyLimit:x.daily_limit??null,...chatWeightOf(x.learned,p?.learn)})),
    recordingDays:(p?.recording_days as number|undefined)??defaults.recordingDays,importClips:(p?.import_clips as number|undefined)??defaults.importClips,viewerClips:readViewerClips(p?.viewer_clips),
    viewerClipPicks:vc.results.map(x=>({id:x.clip_id,streamerId:x.streamer_id,title:x.title,duration:x.duration,views:x.views,createdAt:x.clip_created_at,videoId:x.video_id,vodOffset:x.vod_offset})),clipCommand:(p?.clip_command as string|undefined)??defaults.clipCommand,recordings:rec.results.map(x=>x.id),

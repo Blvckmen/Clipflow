@@ -11,6 +11,10 @@ const script = fileURLToPath(new URL("./captions.py", import.meta.url));
 const IDLE_MS = 30 * 60_000;
 let server = null;  // { child, pending: Map<id, { resolve, reject }>, buffer, idle }
 let seq = 0;
+// The model used when a caller doesn't name one: Settings → This PC "Transcription quality" (core.mjs workerTuning),
+// set by main.mjs with every settings load, so a change applies from the next clip without a restart.
+let defaultModel = process.env.WHISPER_MODEL || "small";
+export function setWhisperModel(name) { if (typeof name === "string" && name) defaultModel = name; }
 
 function stopServer(reason) {
   const s = server;
@@ -54,8 +58,8 @@ function startServer(python) {
 export const hintText = hint => [...String(hint ?? "")].slice(0, 200).join("").toWellFormed();
 
 // Writes Whisper's words for `source` to `target` (captions.py's {"segments": [...]} JSON).
-// model: a Whisper model name ("small" unless WHISPER_MODEL says otherwise); hint: names and titles to spell right.
-export async function transcribe(source, target, { hint = "", model = process.env.WHISPER_MODEL || "small", python = process.env.PYTHON || "python", signal, timeout = 600_000 } = {}) {
+// model: a Whisper model name (the setting above unless given); hint: names and titles to spell right.
+export async function transcribe(source, target, { hint = "", model = defaultModel, python = process.env.PYTHON || "python", signal, timeout = 600_000 } = {}) {
   hint = hintText(hint);
   const oneShot = () => command(python, [script, "words", source, target, hint], { signal, timeout, env: { ...process.env, WHISPER_MODEL: model } }).done;
   if ((process.env.WHISPER_SERVER ?? "on").toLowerCase() === "off") return oneShot();

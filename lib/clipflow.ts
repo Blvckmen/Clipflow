@@ -7,7 +7,7 @@ export const viewerClipsSchema=z.object({perDay:z.number().int().min(1).max(20),
 export const streamerViewerClipsSchema=z.object({on:z.boolean().optional(),minViews:z.number().int().min(1).max(100000).optional(),perDay:z.number().int().min(1).max(20).optional(),maxHours:z.number().int().min(1).max(72).optional(),ask:z.boolean().optional()}).strict();
 // Settings → This PC: choices the worker uses instead of its .env file (worker/core.mjs workerTuning). Each one left out
 // follows the worker's own setting.
-export const workerSettingsSchema=z.object({pickiness:z.enum(["relaxed","normal","strict"]).optional(),chatSensitivity:z.enum(["low","normal","high"]).optional(),autoHooks:z.boolean().optional(),aiWriter:z.boolean().optional(),maxCaptures:z.number().int().min(1).max(4).optional(),power:z.enum(["light","balanced","maximum"]).optional(),retentionHours:z.number().int().min(12).max(720).optional()}).strict();
+export const workerSettingsSchema=z.object({pickiness:z.enum(["relaxed","normal","strict"]).optional(),chatSensitivity:z.enum(["low","normal","high"]).optional(),autoHooks:z.boolean().optional(),aiWriter:z.boolean().optional(),maxCaptures:z.number().int().min(1).max(4).optional(),power:z.enum(["light","balanced","maximum"]).optional(),retentionHours:z.number().int().min(12).max(720).optional(),transcription:z.enum(["fast","balanced","accurate"]).optional()}).strict();
 export type WorkerSettings=z.infer<typeof workerSettingsSchema>;
 // The saved JSON, keeping only the choices that are still valid.
 export function readWorkerSettings(json:unknown):WorkerSettings{
@@ -15,6 +15,13 @@ export function readWorkerSettings(json:unknown):WorkerSettings{
  if(!v||typeof v!=="object"||Array.isArray(v))return {};
  const shape=workerSettingsSchema.shape as Record<string,z.ZodTypeAny>;
  return Object.fromEntries(Object.entries(v).filter(([k,x])=>shape[k]?.safeParse(x).success&&x!==undefined)) as WorkerSettings;
+}
+// A short fingerprint of the saved choices (FNV-1a over them in key order). The worker gets it with its settings and
+// reports back the one it is running with, so the dashboard can say Saved → Waiting for device → Applied.
+export function workerSettingsRev(w:WorkerSettings){
+ const text=JSON.stringify(Object.keys(w).sort().map(k=>[k,w[k as keyof WorkerSettings]]));
+ let h=0x811c9dc5;for(let i=0;i<text.length;i++){h^=text.charCodeAt(i);h=Math.imul(h,0x01000193)>>>0;}
+ return h.toString(36);
 }
 export const settingsSchema=z.object({mode:z.enum(["automatic","review"]),duration:z.number().int().min(15).max(90),dailyLimit:z.number().int().min(1).max(100),captions:z.boolean(),framing:z.enum(["blur","crop","fit","split","cam","pip","phone"]),destinations:z.array(z.enum(destinations)).max(5).transform(x=>[...new Set(x)]),captionTemplate:z.string().trim().min(1).max(500).optional(),
  // Omitted by older clients: the saved values are kept.

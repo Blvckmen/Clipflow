@@ -13,7 +13,7 @@ export type ClipFacts = { streamer: string; platform: string; streamTitle: strin
 export const spokenText = transcriptText;
 export async function writeCaption(_env: Env, facts: ClipFacts): Promise<CaptionParts> {
   const text = spokenText(facts.words, facts.trim);
-  if (!text) throw new Error("No transcript is available for the saved trim. Use your own caption or the fallback template.");
+  if (!text) throw new Error("No transcript is available for the saved trim. Type your own post text or use the fallback.");
   const extras = facts.notes.match(/#[\p{L}\p{N}_]+/gu) ?? [];
   return { title: selectExcerpt(text, 90), body: "Clip from " + shorten(facts.streamer, 60) + " on " + shorten(facts.platform, 30) + ".",
     hashtags: keywordTags(text, [facts.streamer, facts.platform, ...extras], 6) };
@@ -36,7 +36,7 @@ export async function captionClip(env: Env, row: CaptionRow, replace = false): P
   const saved = await env.DB!.prepare("UPDATE clips SET post_caption=?,caption_source='local',caption_error=NULL,caption_tries=0 WHERE id=? AND owner=? AND edit_rev=? AND post_caption IS ?" + (replace ? "" : " AND coalesce(caption_source,'')!='edited'"))
     .bind(text, row.id, row.owner, row.edit_rev, row.post_caption).run();
   if (saved.meta.changes) return text;
-  if (replace) throw new Error("The clip or caption changed while generating. Reopen it and try again.");
+  if (replace) throw new Error("The clip or its post text changed while writing. Reopen it and try again.");
   const latest = await env.DB!.prepare("SELECT post_caption FROM clips WHERE id=? AND owner=?").bind(row.id, row.owner).first<{post_caption:string|null}>();
   return latest?.post_caption ?? null;
 }
@@ -56,9 +56,9 @@ export async function fillCaptions(env: Env, now = Date.now()) {
   const setAside = (row: CaptionRow, tries: string, error: string) => db.prepare("UPDATE clips SET caption_tries=" + tries + ",caption_error=? WHERE id=? AND edit_rev=? AND post_caption IS NULL").bind(error.slice(0, 300), row.id, row.edit_rev).run();
   for (const row of results) {
     const facts = factsFromRow(row);
-    if (!spokenText(facts.words, facts.trim)) { await setAside(row, String(MAX_TRIES), "Nothing is said in this clip's trim, so no caption was written. Write one, or the account's caption template is used."); continue; }
+    if (!spokenText(facts.words, facts.trim)) { await setAside(row, String(MAX_TRIES), "Nothing is said in this clip's trim, so no post text was written. Write your own, or the fallback post text is used."); continue; }
     try { await captionClip(env, row); }
-    catch (error) { await setAside(row, "caption_tries+1", "Couldn't write a caption: " + (error as Error).message); }
+    catch (error) { await setAside(row, "caption_tries+1", "Couldn't write post text: " + (error as Error).message); }
   }
 }
 

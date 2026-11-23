@@ -163,6 +163,9 @@ export function limitFor(c, id) {
 export const PICKINESS = { relaxed: { minRating: 4, coverageShare: 0.85 }, normal: { minRating: 6, coverageShare: 0.7 }, strict: { minRating: 8, coverageShare: 0.5 } };
 export const CHAT_SENSITIVITY = { low: 3.5, normal: 2.5, high: 1.8 };
 export const PC_POWER = { light: 1, balanced: 2, maximum: 3 };
+// Transcription quality: the Whisper model. "small" was the only choice before; "medium" is about 3x slower on a laptop
+// CPU and downloads about 1.5 GB the first time it is used.
+export const TRANSCRIPTION = { fast: "base", balanced: "small", accurate: "medium" };
 export function workerTuning(c, env = {}) {
   const w = c?.worker && typeof c.worker === "object" && !Array.isArray(c.worker) ? c.worker : {};
   const num = (v, fallback) => { const n = Number(v); return v !== undefined && v !== "" && Number.isFinite(n) ? n : fallback; };
@@ -178,6 +181,7 @@ export function workerTuning(c, env = {}) {
     maxCaptures: int(w.maxCaptures, 1, 4) ?? Math.max(1, Math.floor(num(env.MAX_CAPTURES, 1)) || 1),
     clipWorkers: PC_POWER[w.power] ?? Math.max(1, Math.min(4, Math.floor(num(env.CLIP_WORKERS, 2)) || 1)),
     retentionHours: int(w.retentionHours, 12, 720) ?? (num(env.RETENTION_HOURS, 72) > 0 ? num(env.RETENTION_HOURS, 72) : 72),
+    whisperModel: TRANSCRIPTION[w.transcription] ?? (env.WHISPER_MODEL || "small"),
   };
 }
 export function retryDelay(attempt) { return Math.min(300_000, 30_000 * 2 ** Math.min(attempt, 4)); }

@@ -335,3 +335,29 @@ test("disconnecting removes the account and its links, and drops unsent posts", 
   assert.ok(body.streamers.every(s => s.accounts.length === 0));
   assert.ok(body.posts.every(p => p.state === "published"), "only published history is kept");
 });
+
+test("This PC settings: saved choices reach the worker, which reports them applied with what it is doing", async () => {
+  const prefs = { mode: "automatic", duration: 30, dailyLimit: 2, captions: true, framing: "blur", destinations: ["Instagram"], aiCaptions: false };
+  assert.equal((await dash({ action: "settings", settings: { ...prefs, worker: { transcription: "accurate", maxCaptures: 2, power: "light" } } })).status, 200);
+  const config = await (await worker("/api/worker/config")).json();
+  assert.deepEqual(config.worker, { transcription: "accurate", maxCaptures: 2, power: "light" });
+  assert.match(config.workerRev, /^[0-9a-z]+$/);
+  let engine = (await dash()).body.engine;
+  assert.equal(engine.settingsRev, config.workerRev, "the dashboard and the worker see the same fingerprint");
+  assert.notEqual(engine.device?.applied, engine.settingsRev, "not applied until the worker says so");
+  const device = { applied: config.workerRev, recording: [streamer.id], making: 1, waiting: 3, held: 0, uses: { maxCaptures: 2, clipWorkers: 1, whisperModel: "medium", aiWriter: true, retentionHours: 72 }, cores: 8, memoryGb: 15.7 };
+  assert.equal((await worker("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers: [], device }) })).status, 200);
+  engine = (await dash()).body.engine;
+  assert.equal(engine.device.applied, engine.settingsRev, "Applied");
+  assert.deepEqual(engine.device.recording, [streamer.id]);
+  assert.equal(engine.device.uses.whisperModel, "medium");
+  assert.ok(engine.deviceAt);
+  // A new choice changes the fingerprint: waiting for the PC again until it reports the new one.
+  assert.equal((await dash({ action: "settings", settings: { ...prefs, worker: { transcription: "fast" } } })).status, 200);
+  engine = (await dash()).body.engine;
+  assert.notEqual(engine.device.applied, engine.settingsRev);
+  assert.equal((await dash({ action: "settings", settings: { ...prefs, worker: { transcription: "perfect" } } })).status, 400, "unknown quality refused");
+  assert.equal((await worker("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers: [], device: { ...device, recording: ["not-an-id"] } }) })).status, 400, "a malformed report is refused");
+  // An older worker that sends no device report still works.
+  assert.equal((await worker("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers: [] }) })).status, 200);
+});

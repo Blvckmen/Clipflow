@@ -102,10 +102,15 @@ logs to `worker\data\worker.log`.
   accepted. Local files are deleted after `RETENTION_HOURS`; the dashboard copy is kept.
 
 The dashboard's **Settings → This PC** sets clip pickiness (`AI_MIN_RATING` and `COVERAGE_SHARE`), chat sensitivity
-(`CHAT_SPIKE_FACTOR`), opening titles (`AUTO_HOOKS`), the local AI writer (`AI_WRITER`), streams recorded at once
-(`MAX_CAPTURES`), PC power (`CLIP_WORKERS`) and how long clip files are kept (`RETENTION_HOURS`). A choice made there
-wins over the variable and applies within `POLL_SECONDS`, with no restart; one left on "Worker setup" uses the variable
-below.
+(`CHAT_SPIKE_FACTOR`), opening titles (`AUTO_HOOKS`), the local AI writer (`AI_WRITER`), simultaneous channels
+(`MAX_CAPTURES`), computer usage (`CLIP_WORKERS`), transcription quality (`WHISPER_MODEL`: Faster `base`, Balanced
+`small`, More accurate `medium`) and how long clip files are kept (`RETENTION_HOURS`). A choice made there wins over the
+variable and applies within `POLL_SECONDS`, with no restart; one left on "Automatic" uses the variable below.
+
+Changes never cut work short: a recording over a lowered channel limit carries on until the stream ends (new ones wait),
+a clip being made finishes before a lowered computer usage takes effect, and a new transcription quality starts with
+the next clip. The worker reports the settings it runs with, what it is doing and the PC's cores and memory with its
+status, so the page shows Saved → Waiting for this PC → Applied and recommends a channel limit for the PC.
 
 The rest need no setting in normal use. Program paths (`STREAMLINK`, `PYTHON`, `YTDLP`, `OLLAMA_URL`, `WHISPER_DIR`,
 `EMOJI_FONT`) are found automatically or set by `run-windows.ps1`; timing values (`POLL_SECONDS`, `COOLDOWN_SECONDS`,

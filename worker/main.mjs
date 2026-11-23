@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { availableParallelism, totalmem } from "node:os";
 import { Store, allowed, channelUrl, clipTextFor, dueForProbe, limitFor, plan, queuedClip, retryDelay, shownStatus, validateControl, workerTuning } from "./core.mjs";
 // A streamer's transcription, subtitles and automatic hook with these settings (its own choices, else the workspace's).
 const textOf = (settings, id) => clipTextFor(settings, settings.streamers.find(s => s.id === id));
@@ -20,7 +21,7 @@ import { bucketSignals, encodePreview, extractRange, joinSegments, parts, pickMo
 import { screenText, screenTextAvailable } from "./screentext.mjs";
 import { Twitch, clipUrl, momentOf, momentTime, pickClips, twitchLogin, viewerSettings } from "./twitch.mjs";
 import { PLATFORM_NAMES, downloadVideo, findYtDlp, videoLink, videoTitle } from "./vod.mjs";
-import { stopTranscriber, transcribe as whisper } from "./whisper.mjs";
+import { setWhisperModel, stopTranscriber, transcribe as whisper } from "./whisper.mjs";
 import { AI_BATCH, autoClipPicks, mergeAiMoments, transcriptWindows } from "./stream-pass.mjs";
 import { coverageRoom, coverageWindow, enqueueTrigger, jobRank } from "./triggers.mjs";
 
@@ -82,6 +83,9 @@ const track = (job, controller) => { const slot = { job, controller }; running.a
 // settings for up to CONFIG_GRACE_MS: dropping them stopped every recording and threw away every queued clip, which
 // lost about a quarter of the moments viewers clipped (115 such stops in 2.5 days).
 let configAt = 0, configMissing = false;
+// The fingerprint of the dashboard settings this worker runs with (config.workerRev), reported back so Settings → This
+// PC can show Applied. null until the first settings load.
+let appliedRev = null;
 const CONFIG_GRACE_MS = seconds(env.CONFIG_GRACE_SECONDS, 1800);
 let pendingError = null;  // latest problem not yet delivered to the dashboard
 
@@ -139,15 +143,32 @@ async function probe(streamers) {
   }));
 }
 
+// What this PC says about itself with its status (Settings → This PC): the settings it runs with, what it is doing and
+// the values it actually uses. Sent when it changes, and at least every DEVICE_EVERY_MS so the dashboard knows it's current.
+const DEVICE_EVERY_MS = 5 * 60_000;
+let deviceSent = "", deviceSentAt = 0;
+function deviceReport() {
+  const ready = jobs.filter(startable).length;
+  return {
+    applied: appliedRev,
+    recording: [...sessions.keys()].slice(0, 20), making: Math.min(50, running.size), waiting: ready, held: jobs.length - ready,
+    uses: { maxCaptures: tuning.maxCaptures, clipWorkers: tuning.clipWorkers, whisperModel: tuning.whisperModel, aiWriter: tuning.aiWriter, retentionHours: tuning.retentionHours },
+    cores: availableParallelism(), memoryGb: Math.round(totalmem() / 2 ** 30 * 10) / 10,
+  };
+}
+
 async function reportStatus() {
   // Recording streamers are refreshed every cycle so the dashboard never shows them as stale.
   for (const id of sessions.keys()) setLive(id, "recording", live.get(id)?.title ?? null);
-  if (!unreported.size && !pendingError) return;
+  const device = deviceReport(), deviceText = JSON.stringify(device);
+  const deviceDue = deviceText !== deviceSent || Date.now() - deviceSentAt >= DEVICE_EVERY_MS;
+  if (!unreported.size && !pendingError && !deviceDue) return;
   const ids = [...unreported], error = pendingError;
   const streamers = ids.filter(id => live.has(id)).map(id => { const s = live.get(id); return { id, status: shownStatus(config, id, s.status, id => store.countToday(id)), checkedAt: new Date(s.checkedAt).toISOString(), title: s.title }; });
   try {
-    const response = await api("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers, ...(error && { error }) }) });
+    const response = await api("/api/worker/status", { method: "POST", body: JSON.stringify({ streamers, device, ...(error && { error }) }) });
     if (!response.ok) throw new Error("HTTP " + response.status);
+    deviceSent = deviceText; deviceSentAt = Date.now();
     for (const id of ids) unreported.delete(id);
     if (pendingError === error) pendingError = null;
   } catch (failure) { console.warn("Status report deferred:", failure.message); }
@@ -161,6 +182,9 @@ async function refresh() {
     configAt = Date.now();
     tuning = workerTuning(config, env);
     setWriterEnabled(tuning.aiWriter);
+    // Transcription quality: from the next transcription (one already running finishes with its model).
+    setWhisperModel(tuning.whisperModel);
+    appliedRev = typeof config?.workerRev === "string" ? config.workerRev : null;
     // More clips at once takes effect now, not when the next job arrives.
     if (jobs.length) processJobs();
     if (configMissing) { configMissing = false; console.log("Dashboard reachable again"); }
@@ -276,6 +300,9 @@ const isLiveClip = j => !j.kind && !j.fromRecording && j.streamer;
 const startable = j => !(isLiveClip(j) && queuedClip(config, j.streamer.id) === "hold") && ![...running].some(r => r.job.id === j.id || (j.kind === "highlight" && r.job.kind === "highlight"));
 async function lane() {
   while (!stopping) {
+    // Fewer clips at once (Settings → This PC): a lane beyond the new number stops once its clip is done, rather than
+    // cutting it short or carrying on until the queue is empty.
+    if (lanes > tuning.clipWorkers) return;
     // Moments people reacted to before coverage checks, fresh before resumed, highlight videos last (triggers.mjs).
     const ready = jobs.filter(startable);
     if (!ready.length) return;

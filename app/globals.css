@@ -821,3 +821,21 @@ button.account-streamers{max-width:none;justify-self:start}
 .field-note{display:block;color:var(--muted);font-size:12px;margin:-6px 0 6px}
 @media (max-width:1100px){.cal-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media (max-width:700px){.cal-edit,.cal-day:nth-child(n+5) .cal-edit,.cal-unplaced .cal-edit{position:static;width:auto;box-shadow:none;border-width:1px 0 0;border-radius:0}.cal-grid{grid-template-columns:1fr}.cal-day{min-height:0}.cal-nav strong{min-width:0;font-size:14px}.cal-toolbar{flex-direction:column;align-items:stretch}.cal-nav{justify-content:space-between}}
+
+/* Settings → This PC: status and Saved → Applied */
+.this-pc .group-head{flex-wrap:wrap}
+.apply-chip{margin-left:auto;align-self:flex-start;display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600;padding:5px 10px;border-radius:999px;border:1px solid var(--border);color:var(--muted);white-space:nowrap}
+.apply-chip.applied{color:var(--lime);border-color:#bcfa7655;background:#bcfa760d}
+.apply-chip.waiting{color:#7cb7ff;border-color:#7cb7ff55}
+.apply-chip.offline,.apply-chip.dirty{color:#ffc861;border-color:#ffc86155}
+.pc-status{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;padding:18px 22px 4px}
+.pc-line{display:flex;gap:10px;align-items:flex-start;padding:12px;border:1px solid var(--border);border-radius:12px;background:#0f1318;min-width:0}
+.pc-line>svg{flex-shrink:0;margin-top:2px;color:var(--muted)}
+.pc-line.ok>svg{color:var(--lime)}
+.pc-line.bad>svg,.pc-line.bad strong{color:#ff7a7a}
+.pc-line.warn>svg{color:#ffc861}
+.pc-line>div{display:flex;flex-direction:column;min-width:0}
+.pc-line strong{font-size:14px;line-height:1.35}
+.pc-line small{color:var(--muted);font-size:12px;line-height:1.4}
+.pc-line .pc-error{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+@media (max-width:900px){.pc-status{padding:16px 16px 0}.apply-chip{margin-left:0}}

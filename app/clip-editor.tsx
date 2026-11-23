@@ -336,7 +336,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
       const result = await response.json() as { error?: string; text: string | null; source: string | null; message: string };
       if (!response.ok) throw new Error(result.error);
       setPostText(result.text ?? ""); setCaptionSource(result.source); setCaptionNote(result.message);
-    } catch (e) { setCaptionNote(e instanceof Error ? e.message : "Couldn't update the caption."); }
+    } catch (e) { setCaptionNote(e instanceof Error ? e.message : "Couldn't update the post text."); }
     finally { setCaptionBusy(""); }
   };
 
@@ -359,14 +359,14 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
     const generated = applyAutomaticHook({ ...edit, hook: { ...edit.hook, text: "" } }, words);
     setTab("extras");
     if (!generated.hook.text) {
-      setHookNote("No usable speech in the current trim. Correct the transcript, widen the trim, or type a hook below. Your current hook has been kept.");
+      setHookNote("No usable speech in the current trim. Correct the transcript, widen the trim, or type an opening title below. Your current opening title has been kept.");
       return;
     }
     change("generate-hook", e => ({ ...e, hook: generated.hook }));
     video.current?.pause();
     if (video.current) video.current.currentTime = edit.trim.start;
     setPlaying(false); setTime(edit.trim.start);
-    setHookNote("Hook generated locally from the current transcript. Preview it, then Save edit to render it into the video. Undo restores the previous hook.");
+    setHookNote("Opening title written locally from the current transcript. Preview it, then Save edit to render it into the video. Undo restores the previous one.");
   };
   const c = edit.captions, len = edit.trim.end - edit.trim.start, finished = tl?.length ?? len, pace = { cuts: "off", zooms: false, ...edit.pace } as Pace;
   const cutTotal = Math.round((len - finished) * 10) / 10;
@@ -397,8 +397,8 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
         <button className="icon-button" aria-label="Undo" title="Undo (Ctrl+Z)" disabled={!past.length} onClick={undo}><Undo2 size={17} /></button>
         <button className="icon-button" aria-label="Redo" title="Redo (Ctrl+Shift+Z)" disabled={!future.length} onClick={redo}><Redo2 size={17} /></button>
         <button className="icon-button" aria-label="Discard changes" title="Discard changes" disabled={!dirty} onClick={() => { if (!opened) return; setPast(p => [...p, edit]); setFuture([]); setEditState(JSON.parse(opened)); }}><RotateCcw size={16} /></button>
-        {onCopied && <button className="secondary" disabled={saving || copying || dirty} title={dirty ? "Save or discard your changes first: the copy starts from the saved clip" : "A second clip from the same footage, to give another hook or look and post to other accounts"} onClick={() => void makeCopy()}>{copying ? <Loader2 className="spin" size={16} /> : <Copy size={16} />}Make a copy</button>}
-        <label className="editor-check" title={"New clips from " + (bundle.streamer ?? "this streamer") + " start with this framing, look and caption style"}><input type="checkbox" checked={saveStyle} onChange={e => setSaveStyle(e.target.checked)} />Use this look for {bundle.streamer ?? "this streamer"}&apos;s new clips</label>
+        {onCopied && <button className="secondary" disabled={saving || copying || dirty} title={dirty ? "Save or discard your changes first: the copy starts from the saved clip" : "A second clip from the same footage, to give another opening title or look and post to other accounts"} onClick={() => void makeCopy()}>{copying ? <Loader2 className="spin" size={16} /> : <Copy size={16} />}Make a copy</button>}
+        <label className="editor-check" title={"New clips from " + (bundle.streamer ?? "this streamer") + " start with this framing, look and subtitle style"}><input type="checkbox" checked={saveStyle} onChange={e => setSaveStyle(e.target.checked)} />Use this look for {bundle.streamer ?? "this streamer"}&apos;s new clips</label>
         {dirty && !saving && <span className="unsaved-dot" title="Changes not saved yet">Unsaved</span>}<button className="primary" disabled={saving || !!bundle.pruned || (!dirty && !saveStyle)} title={bundle.pruned ? "This clip's editable copy was removed to save storage" : !dirty && !saveStyle ? "Nothing to save yet" : "Save and re-render the clip"} onClick={() => void save()}>{saving ? <Loader2 className="spin" size={16} /> : <Check size={16} />}Save &amp; render</button>
       </div>
     </header>
@@ -409,8 +409,8 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
     <div className="editor-body">
       <section className="editor-stage">
         <div className={"phone" + (stacks(edit.frame) ? "" : " landscape")} style={{ aspectRatio: frameSize(edit.frame).W + " / " + frameSize(edit.frame).H }}>
-          <canvas ref={canvas} width={frameSize(edit.frame).W} height={frameSize(edit.frame).H} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={() => { drag.current = null; }} title="Drag to reposition the picture, or drag the hook to move it" />
-          {safe && <div className="safe-zones" aria-hidden><span className="sz-top" /><span className="sz-right">App buttons</span><span className="sz-bottom">Username &amp; caption</span></div>}
+          <canvas ref={canvas} width={frameSize(edit.frame).W} height={frameSize(edit.frame).H} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={() => { drag.current = null; }} title="Drag to reposition the picture, or drag the opening title to move it" />
+          {safe && <div className="safe-zones" aria-hidden><span className="sz-top" /><span className="sz-right">App buttons</span><span className="sz-bottom">Username &amp; post text</span></div>}
         </div>
         {edit.frame.mode === "split" && bgPreview && bgIsImage && <img ref={bgImage} key={bgPreview} src={"/api/backgrounds/" + bgPreview + "/file"} alt="" hidden />}
         {edit.frame.mode === "split" && bgPreview && !bgIsImage && <video ref={bgVideo} className="editor-video" key={bgPreview} src={bgPreview.startsWith("clip:") ? "/api/clips/" + bgPreview.slice(5) + "/source" : "/api/backgrounds/" + bgPreview + "/file"} muted loop playsInline preload="auto" />}
@@ -439,18 +439,18 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
         </div>
         <div className="editor-tabs" role="tablist">{(["captions", "frame", "extras", "transcript", "post"] as Tab[]).map(t => <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "active" : ""} onClick={() => setTab(t)}>{{ captions: "Subtitles", frame: "Frame & look", extras: "Opening title & extras", transcript: "Transcript", post: "Post text" }[t]}</button>)}</div>
         <div className="editor-controls">
-          {bundle.legacy && (tab === "captions" || tab === "transcript") && <div className="subtle-note">This clip was captured before the editor existed, so its captions are part of the picture and can&apos;t be restyled or corrected. You can still trim it, reframe it, adjust its colour, and add a hook title and progress bar. Clips captured from now on are fully editable.</div>}
+          {bundle.legacy && (tab === "captions" || tab === "transcript") && <div className="subtle-note">This clip was captured before the editor existed, so its subtitles are part of the picture and can&apos;t be restyled or corrected. You can still trim it, reframe it, adjust its colour, and add a hook title and progress bar. Clips captured from now on are fully editable.</div>}
           {tab === "post" && <>
             <p className="hint">The text posted with this clip on Instagram, TikTok and YouTube. The first line is also the YouTube title. {bundle.caption.ai ? "Written automatically from the saved transcript; edit it here." : "Automatic post text is off in Settings. Type your own here."} The title on the video itself is under Opening title &amp; extras.</p>
             <label className="wide">Post text <small>{captionSource === "local" ? "Created from transcript" : captionSource === "ai" ? "Written by the AI writer on your PC" : captionSource === "edited" ? "Your text: never automatically replaced" : "Not written yet: " + (bundle.caption.ai ? "created from the transcript before posting" : "the template is used")}</small>
-              <textarea rows={9} maxLength={2200} value={postText} onChange={e => setPostText(e.target.value)} placeholder={bundle.caption.ai ? "Leave empty to use an automatic caption or fallback" : "Type the caption to post with this clip"} /></label>
+              <textarea rows={9} maxLength={2200} value={postText} onChange={e => setPostText(e.target.value)} placeholder={bundle.caption.ai ? "Leave empty to use automatic post text or the fallback" : "Type the text to post with this clip"} /></label>
             <div className="caption-actions"><span className="muted">{postText.length} / 2200</span>
               <button className="primary" disabled={!!captionBusy} onClick={() => void captionAction({ action: "save", text: postText })}>{captionBusy === "save" ? <Loader2 className="spin" size={15} /> : <Check size={15} />}Save post text</button></div>
             {captionNote && <p className="hint" role="status">{captionNote}</p>}
           </>}
           {tab === "captions" && !bundle.legacy && <>
             <label className="switch-row"><input type="checkbox" checked={c.on} onChange={e => setCaption({ on: e.target.checked, preset: c.preset })} />Show subtitles</label>
-            <div className={"caption-controls" + (c.on ? "" : " off")} title={c.on ? undefined : "Captions are off: pick a style to turn them on"}>
+            <div className={"caption-controls" + (c.on ? "" : " off")} title={c.on ? undefined : "Subtitles are off: pick a style to turn them on"}>
             <div className="presets">{Object.entries(PRESETS).map(([key, p]) => <button key={key} className={c.preset === key ? "preset active" : "preset"} onClick={() => { const { label: _label, ...values } = p as typeof p & { label: string }; void _label; setCaption({ ...values, preset: key, on: true }); }} style={{ fontFamily: `"${p.font}", sans-serif`, color: p.box ? p.color : p.color, background: p.box ? p.boxColor : undefined, textShadow: p.box ? "none" : `0 0 3px ${p.outlineColor}, 0 0 3px ${p.outlineColor}` }}>{p.uppercase ? p.label.toUpperCase() : p.label}</button>)}</div>
             <div className="control-grid">
               <label>Font<select value={c.font} onChange={e => setCaption({ font: e.target.value })}>{FONTS.map((f: string) => <option key={f} style={{ fontFamily: f }}>{f}</option>)}</select></label>
@@ -469,7 +469,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
               <label><input type="checkbox" checked={c.box} onChange={e => setCaption({ box: e.target.checked })} />Background box</label>
               <label><input type="checkbox" checked={c.uppercase} onChange={e => setCaption({ uppercase: e.target.checked })} />ALL CAPS</label>
               <label title="Each line's most important word (a strong word, a number, a name, or one that was shouted) in its own colour and a little bigger"><input type="checkbox" checked={c.keywords} onChange={e => setCaption({ keywords: e.target.checked })} />Highlight key words</label>
-              <label title="Replaces swear words with asterisks, e.g. f***, which keeps clips safer for brand-friendly accounts"><input type="checkbox" checked={c.mask} onChange={e => setCaption({ mask: e.target.checked })} />Bleep swear words in captions</label>
+              <label title="Replaces swear words with asterisks, e.g. f***, which keeps clips safer for brand-friendly accounts"><input type="checkbox" checked={c.mask} onChange={e => setCaption({ mask: e.target.checked })} />Bleep swear words in subtitles</label>
             </div>
             </div>
           </>}
@@ -573,14 +573,14 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
                 onKeyDown={e => { if (e.key === "Enter" && edit.hook.text.split("\n").length >= HOOK_LINES) e.preventDefault(); }}
                 onChange={e => set("hook", { text: e.target.value.split("\n").slice(0, HOOK_LINES).join("\n") })} /></label>
             <div className="control-grid">
-              <label>Hook length <span>{edit.hook.seconds >= len ? "Whole clip" : edit.hook.seconds + "s"}</span><input type="range" min={1} max={Math.max(1, Math.min(30, Math.floor(len)))} step={0.5} value={Math.min(edit.hook.seconds, Math.max(1, Math.min(30, Math.floor(len))))} disabled={edit.hook.seconds >= len} onChange={e => set("hook", { seconds: Number(e.target.value) })} />
+              <label>Title length <span>{edit.hook.seconds >= len ? "Whole clip" : edit.hook.seconds + "s"}</span><input type="range" min={1} max={Math.max(1, Math.min(30, Math.floor(len)))} step={0.5} value={Math.min(edit.hook.seconds, Math.max(1, Math.min(30, Math.floor(len))))} disabled={edit.hook.seconds >= len} onChange={e => set("hook", { seconds: Number(e.target.value) })} />
                 <span className="check-inline"><input type="checkbox" checked={edit.hook.seconds >= len} onChange={e => set("hook", { seconds: e.target.checked ? 90 : 5 })} />Keep for the whole clip</span></label>
-              <label>Hook size <span>{edit.hook.size}px</span><input type="range" min={HOOK_SIZE[0]} max={HOOK_SIZE[1]} step={2} value={edit.hook.size} onChange={e => set("hook", { size: Number(e.target.value) })} /></label>
-              <label>Hook left / right <span>{Math.round(edit.hook.x * 100)}%</span><input type="range" min={HOOK_X[0]} max={HOOK_X[1]} step={0.005} value={edit.hook.x} onChange={e => set("hook", { x: Number(e.target.value) })} /></label>
-              <label>Hook up / down <span>{Math.round(edit.hook.y * 100)}% down</span><input type="range" min={HOOK_Y[0]} max={HOOK_Y[1]} step={0.005} value={edit.hook.y} onChange={e => set("hook", { y: Number(e.target.value) })} />
-                <span className="check-inline"><button type="button" className="text-button" onClick={() => set("hook", { ...HOOK_DEFAULT })}>Reset hook size and place</button></span></label>
-              <label className="color">Hook text<input type="color" value={edit.hook.color} onChange={e => set("hook", { color: e.target.value })} /></label>
-              <label className="color" title="Turn off for the text alone, with an outline so it stays readable">Hook background<div className="color-pair"><input type="checkbox" aria-label="Show a hook background" checked={!!edit.hook.bg} onChange={e => set("hook", { bg: e.target.checked ? "#ffffff" : null })} />{edit.hook.bg && <input type="color" value={edit.hook.bg} onChange={e => set("hook", { bg: e.target.value })} />}</div></label>
+              <label>Title size <span>{edit.hook.size}px</span><input type="range" min={HOOK_SIZE[0]} max={HOOK_SIZE[1]} step={2} value={edit.hook.size} onChange={e => set("hook", { size: Number(e.target.value) })} /></label>
+              <label>Title left / right <span>{Math.round(edit.hook.x * 100)}%</span><input type="range" min={HOOK_X[0]} max={HOOK_X[1]} step={0.005} value={edit.hook.x} onChange={e => set("hook", { x: Number(e.target.value) })} /></label>
+              <label>Title up / down <span>{Math.round(edit.hook.y * 100)}% down</span><input type="range" min={HOOK_Y[0]} max={HOOK_Y[1]} step={0.005} value={edit.hook.y} onChange={e => set("hook", { y: Number(e.target.value) })} />
+                <span className="check-inline"><button type="button" className="text-button" onClick={() => set("hook", { ...HOOK_DEFAULT })}>Reset title size and place</button></span></label>
+              <label className="color">Title text<input type="color" value={edit.hook.color} onChange={e => set("hook", { color: e.target.value })} /></label>
+              <label className="color" title="Turn off for the text alone, with an outline so it stays readable">Title background<div className="color-pair"><input type="checkbox" aria-label="Show a title background" checked={!!edit.hook.bg} onChange={e => set("hook", { bg: e.target.checked ? "#ffffff" : null })} />{edit.hook.bg && <input type="color" value={edit.hook.bg} onChange={e => set("hook", { bg: e.target.value })} />}</div></label>
             </div>
             <div className="pace-controls">
               <label className="wide">Jump cuts <small>Takes quiet pauses out between words. Pauses full of game sound or shouting are kept, and so are the opening and ending.</small>
@@ -597,7 +597,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
             {edit.progress.on && <label className="color inline">Bar colour<input type="color" value={edit.progress.color} onChange={e => set("progress", { color: e.target.value })} /></label>}
           </>}
           {tab === "transcript" && !bundle.legacy && <>
-            <p className="hint">Click a word to jump to it. Fix a mis-heard word by editing it; clear a word to hide it from the captions. Words outside the trim are dimmed.</p>
+            <p className="hint">Click a word to jump to it. Fix a mis-heard word by editing it; clear a word to hide it from the subtitles. Words outside the trim are dimmed.</p>
             {words.length ? <div className="transcript">{words.map((w, i) => {
               const inside = w[0] >= edit.trim.start - 0.05 && w[1] <= edit.trim.end + 0.05, now = time >= w[0] && time < w[1];
               return selected === i

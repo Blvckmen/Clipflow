@@ -30,7 +30,7 @@ export function PostClipForm({ accounts, posts, linked, rendering, busy, brand, 
       </label>;
     })}</div>
     {rendering && <div className="subtle-note">Your latest edit is still rendering. The post waits for it, so the new version goes out.</div>}
-    {anyPosted && <div className="subtle-note">This posts a new copy; the earlier post stays up. Platforms may refuse an identical caption within a day, so consider changing it in the editor first.</div>}
+    {anyPosted && <div className="subtle-note">This posts a new copy; the earlier post stays up. Platforms may refuse identical post text within a day, so consider changing it in the editor first.</div>}
     <div className="post-buttons">
       <button className="primary" type="submit" disabled={busy || !chosen.length}>{busy ? <Loader2 size={15} className="spin" /> : <Send size={15} />}{anyPosted ? "Post again" : "Post now"}{chosen.length > 1 ? " to " + chosen.length + " accounts" : ""}</button>
       {/* TikTok only: the clip lands in the account's drafts in the TikTok app, to finish and post from there. */}
