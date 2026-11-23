@@ -93,7 +93,11 @@ export async function runPublisher(env: Env, now = Date.now()) {
   for (const account of results) {
     owners.add(account.owner);
     // Paused, or no way to post right now: this account didn't look at the flagged clips, so they stay flagged.
-    if (account.control !== "running") unfinished.add(account.owner);
+    const paused = account.control !== "running";
+    if (paused) unfinished.add(account.owner);
+    // A paused Zernio account has nothing to do, so its key isn't decrypted. A paused Instagram account still goes
+    // through instagramAdapter, which keeps its 60-day sign-in refreshed so it still works when unpaused.
+    if (paused && account.provider === "zernio") continue;
     try {
       // An account connected with a workspace key posts with that key; one from the site key, with the site key.
       const zn = account.provider !== "zernio" ? null : account.zernio_key_id ? (account.key_enc ? await keyConnection(env, { id: account.zernio_key_id, label: account.key_label ?? "", key_enc: account.key_enc }) : null) : siteConnection(env);
