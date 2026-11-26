@@ -64,7 +64,7 @@ export const CHAT_LINES = 4, CHAT_HOLD = 8, CHAT_SIZE = 30;
 export const PRESETS = {
   clean: { label: "Clean", font: "Arial", size: 54, color: "#ffffff", highlight: "#ffffff", outline: 4, outlineColor: "#000000", box: false, boxColor: "#000000", uppercase: false, animation: "none", words: 4, keywordColor: "#ffe14d" },
   bold: { label: "Bold pop", font: "Impact", size: 74, color: "#ffffff", highlight: "#ffe14d", outline: 6, outlineColor: "#000000", box: false, boxColor: "#000000", uppercase: true, animation: "pop", words: 3, keywordColor: "#ffe14d" },
-  karaoke: { label: "Karaoke", font: "Arial", size: 60, color: "#ffffff", highlight: "#ff6a55", outline: 5, outlineColor: "#000000", box: false, boxColor: "#000000", uppercase: false, animation: "karaoke", words: 4, keywordColor: "#ffe14d" },
+  karaoke: { label: "Karaoke", font: "Arial", size: 60, color: "#ffffff", highlight: "#bcfa76", outline: 5, outlineColor: "#000000", box: false, boxColor: "#000000", uppercase: false, animation: "karaoke", words: 4, keywordColor: "#ffe14d" },
   boxed: { label: "Boxed", font: "Verdana", size: 46, color: "#111111", highlight: "#e0245e", outline: 0, outlineColor: "#000000", box: true, boxColor: "#ffffff", uppercase: false, animation: "karaoke", words: 5, keywordColor: "#1d4ed8" },
   neon: { label: "Neon", font: "Trebuchet MS", size: 62, color: "#7df9ff", highlight: "#ff4fd8", outline: 3, outlineColor: "#1a0033", box: false, boxColor: "#000000", uppercase: true, animation: "karaoke", words: 3, keywordColor: "#fff35c" },
   single: { label: "One word", font: "Impact", size: 96, color: "#ffffff", highlight: "#ffffff", outline: 7, outlineColor: "#000000", box: false, boxColor: "#000000", uppercase: true, animation: "word", words: 1, keywordColor: "#ffe14d" },
@@ -79,7 +79,7 @@ export function defaultStyle({ framing = "blur", captions = true } = {}) {
     // Split screen puts captions on the seam between the two videos.
     captions: { on: !!captions, preset: "bold", ...preset, keywords: true, y: framing === "split" ? 0.5 : framing === "cam" ? DEFAULT_FACECAM.share : 0.72, mask: false },
     hook: { color: "#111111", bg: "#ffffff", seconds: DEFAULT_HOOK_SECONDS, ...HOOK_DEFAULT },
-    progress: { on: false, color: "#ff6a55" },
+    progress: { on: false, color: "#bcfa76" },
     chat: { ...DEFAULT_CHAT },
     audio: { ...DEFAULT_AUDIO },
     pace: { ...DEFAULT_PACE },
