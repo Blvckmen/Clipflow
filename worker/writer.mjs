@@ -15,6 +15,34 @@ export function inTurn(signal, send) {
   turn = mine.catch(() => {});
   return mine;
 }
+// ---- Two models on a small graphics card ----
+// Every clip asks the smaller model (rating moments) and then the bigger one (writing). On a GPU too small for both
+// (this laptop's GTX 960M holds part of one), Ollama unloaded one to load the other each time: 31s for a rating and
+// 59s for a writing instead of 8s and 25s, about a minute a clip spent loading models. With the smaller model on the
+// CPU only (num_gpu 0, it needs no graphics memory) both stay loaded: 10s and 12s (26 Nov). That happens once the
+// writer's model is seen not to fit in graphics memory on its own (Ollama's /api/ps after a writing), so a big GPU
+// keeps both on it. OLLAMA_PICKER_CPU=on / off decides it instead.
+const writerModel = () => process.env.OLLAMA_MODEL || MODEL_DEFAULT, pickerModel = () => process.env.OLLAMA_PICKER_MODEL || PICKER_MODEL_DEFAULT;
+let writerSpills = false;
+export function pickerOnCpu({ setting = process.env.OLLAMA_PICKER_CPU, spills = writerSpills, writer = writerModel(), picker = pickerModel() } = {}) {
+  const s = String(setting ?? "auto").toLowerCase();
+  if (s === "on") return true;
+  if (s === "off") return false;
+  return spills && writer !== picker;
+}
+// Whether `model` is only partly in graphics memory, from Ollama's /api/ps answer; null when it isn't loaded.
+export function spillsOver(ps, model) {
+  const m = (ps?.models ?? []).find(x => x?.name === model || x?.name === model + ":latest" || x?.model === model);
+  return m && Number.isFinite(m.size) && Number.isFinite(m.size_vram) ? m.size_vram < m.size : null;
+}
+async function noteWriterFit(base) {
+  try {
+    const spills = spillsOver(await (await fetch(base + "/api/ps", { signal: AbortSignal.timeout(3_000) })).json(), writerModel());
+    if (spills !== null) writerSpills = spills;
+  } catch { /* unknown: leave it */ }
+}
+const pickerOptions = options => pickerOnCpu() ? { ...options, num_gpu: 0 } : options;
+
 // The dashboard's "Write post text with AI" choice (setWriterEnabled, from each settings load) wins over AI_WRITER.
 let writerChoice = null;
 export function setWriterEnabled(on) { writerChoice = typeof on === "boolean" ? on : null; }
@@ -91,6 +119,7 @@ export async function writeClipText(input, { signal, timeoutMs = seconds(process
     }));
     if (!response.ok) return null;
     const body = await response.json();
+    void noteWriterFit(base);
     return tidy(JSON.parse(body?.message?.content ?? "null"), input);
   } catch { return null; }
 }
@@ -130,7 +159,7 @@ export async function rateMoments(texts, context = {}, { signal, timeoutMs = sec
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({
         model: process.env.OLLAMA_PICKER_MODEL || PICKER_MODEL_DEFAULT, stream: false, format: rateSchema, keep_alive: "30m",
-        options: { temperature: 0.2, num_ctx: 4096, num_predict: 60 },
+        options: pickerOptions({ temperature: 0.2, num_ctx: 4096, num_predict: 60 }),
         messages: [
           { role: "system", content: "You pick the best moments of live streams for short clips. You answer with JSON." },
           { role: "user", content: buildRatePrompt(texts, context) },
@@ -210,6 +239,7 @@ export async function translateClip(input, lang, { signal, timeoutMs = 240_000 }
     }));
     if (!response.ok) return null;
     const out = JSON.parse((await response.json())?.message?.content ?? "null");
+    void noteWriterFit(base);
     if (!out || !Array.isArray(out.sentences) || out.sentences.length !== input.sentences.length || out.sentences.some(s => typeof s !== "string")) return null;
     return { sentences: out.sentences, hook: clean(out.hook).slice(0, 90), caption: String(out.caption ?? "").replace(/[{}\\<>]/g, "").trim().slice(0, 2000) };
   } catch { return null; }
@@ -245,7 +275,7 @@ export async function rateSegments(texts, context = {}, { signal, timeoutMs = 18
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({
         model: process.env.OLLAMA_PICKER_MODEL || PICKER_MODEL_DEFAULT, stream: false, format: segmentSchema, keep_alive: "30m",
-        options: { temperature: 0.2, num_ctx: 8192, num_predict: 60 * texts.length },
+        options: pickerOptions({ temperature: 0.2, num_ctx: 8192, num_predict: 60 * texts.length }),
         messages: [
           { role: "system", content: "You find the best moments of live streams for short clips. You answer with JSON." },
           { role: "user", content: buildSegmentPrompt(texts, context) },

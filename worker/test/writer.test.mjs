@@ -1,7 +1,40 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { buildPrompt, chatSample, tidy, writeClipText } from "../writer.mjs";
+import { buildPrompt, chatSample, pickerOnCpu, rateMoments, spillsOver, tidy, writeClipText } from "../writer.mjs";
+
+test("the rating model goes on the CPU only when the writer's model doesn't fit in graphics memory", () => {
+  const ps = { models: [{ name: "qwen2.5:7b", size: 5_000, size_vram: 600 }, { name: "llama3:latest", size: 4_000, size_vram: 4_000 }] };
+  assert.equal(spillsOver(ps, "qwen2.5:7b"), true);
+  assert.equal(spillsOver(ps, "llama3"), false, "fits");
+  assert.equal(spillsOver(ps, "qwen2.5:3b"), null, "not loaded: unknown");
+  assert.equal(pickerOnCpu({ setting: undefined, spills: true, writer: "a", picker: "b" }), true);
+  assert.equal(pickerOnCpu({ setting: undefined, spills: false, writer: "a", picker: "b" }), false, "a big GPU keeps both");
+  assert.equal(pickerOnCpu({ setting: undefined, spills: true, writer: "a", picker: "a" }), false, "one model: nothing to swap");
+  assert.equal(pickerOnCpu({ setting: "on", spills: false }), true);
+  assert.equal(pickerOnCpu({ setting: "OFF", spills: true, writer: "a", picker: "b" }), false);
+});
+
+test("after a writing shows the writer's model spilling out of graphics memory, ratings ask for the CPU", async () => {
+  const chats = [];
+  const server = createServer((req, res) => {
+    if (req.url === "/api/ps") return res.end(JSON.stringify({ models: [{ name: "qwen2.5:7b", size: 5e9, size_vram: 6e8 }] }));
+    let body = ""; req.on("data", c => body += c); req.on("end", () => {
+      const ask = JSON.parse(body); chats.push(ask);
+      res.end(JSON.stringify({ message: { content: JSON.stringify(ask.format.properties.scores ? { scores: [7, 2] } : { hook: "Chat called it first", caption: "Nobody believed him.", hashtags: [] }) } }));
+    });
+  });
+  await new Promise(r => server.listen(0, "127.0.0.1", r));
+  process.env.OLLAMA_URL = "http://127.0.0.1:" + server.address().port;
+  try {
+    assert.deepEqual(await rateMoments(["a joke lands", "reading donations"]), [7, 2]);
+    assert.equal(chats.at(-1).options.num_gpu, undefined, "nothing known yet: as before");
+    await writeClipText({ transcript: "watch this" });
+    await new Promise(r => setTimeout(r, 100));  // the /api/ps check runs after the writing
+    await rateMoments(["a joke lands", "reading donations"]);
+    assert.equal(chats.at(-1).options.num_gpu, 0);
+  } finally { server.close(); delete process.env.OLLAMA_URL; }
+});
 
 test("tidy keeps a short hook, strips hashtags and quotes, and adds credit and tags to the caption", () => {
   const out = tidy({ hook: "\"He did NOT see that coming #fail\"", caption: "Chat lost it when the boss came back. #gaming", hashtags: ["#EldenRing", "boss fight", "clips"] }, { streamer: "Kaicenat", platform: "Twitch" });
