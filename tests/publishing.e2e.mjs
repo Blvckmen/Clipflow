@@ -467,3 +467,30 @@ test("recording uploads keep parts private, queue only complete files and clean 
   assert.equal((await fetch(url+"/"+cancelled.id,{method:"DELETE",headers:who})).status,200);
   assert.equal((await fetch(url+"/"+cancelled.id,{method:"POST",headers:who})).status,404);
 });
+
+test("a pairing code gives a PC a worker token once, and replaces the earlier token", async () => {
+  // Its own workspace, so the token the other tests use isn't replaced.
+  const other = { "oai-authenticated-user-id": owner + "_pair", "oai-authenticated-user-email": owner + "_pair@test.local" };
+  const as = async body => { const r = await fetch(base + "/api/dashboard", { method: "POST", headers: { ...other, "content-type": "application/json" }, body: JSON.stringify(body) }); return { status: r.status, body: await r.json() }; };
+  const redeem = code => fetch(base + "/api/worker/pair", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) });
+  const config = token => fetch(base + "/api/worker/config", { headers: { authorization: "Bearer " + token } });
+  const old = (await as({ action: "token" })).body.token;
+  assert.equal((await config(old)).status, 200);
+  const first = (await as({ action: "pairCode" })).body;
+  assert.match(first.pairCode, /^[2-9A-Z]{4}-[2-9A-Z]{4}$/);
+  assert.ok(Date.parse(first.pairExpires) > Date.now() + 9 * 60_000, "valid for about 10 minutes");
+  // A newer code replaces it.
+  const second = (await as({ action: "pairCode" })).body;
+  assert.equal((await redeem(first.pairCode)).status, 400, "the replaced code no longer works");
+  assert.equal((await redeem("2222-2222")).status, 400);
+  assert.equal((await redeem("not a code")).status, 400);
+  // Typed any way: lower case, without the dash.
+  const paired = await redeem(second.pairCode.toLowerCase().replace("-", ""));
+  assert.equal(paired.status, 200);
+  const { token, url } = await paired.json();
+  assert.match(token, /^cfw_[0-9a-f]{64}$/);
+  assert.equal(url, base);
+  assert.equal((await config(token)).status, 200, "the new token works");
+  assert.equal((await config(old)).status, 401, "the earlier token is revoked");
+  assert.equal((await redeem(second.pairCode)).status, 400, "a code works once");
+});

@@ -21,6 +21,7 @@ import { env } from "cloudflare:workers";
 import { isDiscordWebhook, sendDiscord } from "../../../lib/alerts";
 import { createHighlight } from "../../../lib/highlights";
 import { hashToken, newToken } from "../../../lib/worker-auth";
+import { PAIR_TTL_MS, hashPairCode, newPairCode, normalizePairCode } from "../../../lib/pairing.mjs";
 import { z } from "zod";
 const accountIds=z.array(z.string().uuid()).max(50).transform(x=>[...new Set(x)]);
 const clipIds=z.array(z.string().uuid()).min(1).max(200).transform(x=>[...new Set(x)]);
@@ -37,6 +38,8 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("settings"),settings:settingsSchema}),
  z.object({action:z.literal("control"),control:z.enum(["running","paused","stopped"])}),
  z.object({action:z.literal("token")}),
+ // A one-time pairing code (lib/pairing.mjs) the PC trades for a token through POST /api/worker/pair.
+ z.object({action:z.literal("pairCode")}),
  z.object({action:z.literal("deleteClip"),id:z.string().uuid()}),
  // Discord alerts: connect a webhook (sends a test message first), send a test, or remove it.
  z.object({action:z.literal("discord"),op:z.enum(["connect","test","remove"]),url:z.string().trim().max(300).optional()}),
@@ -651,7 +654,14 @@ export async function POST(request:Request){
    statements.push(db.prepare("UPDATE viewer_clip_candidates SET state=?,error=NULL,updated_at=? WHERE owner=? AND state IN "+from+" AND clip_id IN ("+marks+")").bind(payload.op==="make"?"wanted":"dismissed",iso,owner,...ids));
    message=payload.op==="make"?"Making "+found+" viewer clip"+(found===1?"":"s")+". The worker PC downloads "+(found===1?"it":"them")+" on its next check (within a minute).":"Dismissed "+found+" viewer clip"+(found===1?"":"s")+".";
   }
-  let token:string|undefined;
+  let token:string|undefined,pairCode:string|undefined,pairExpires:string|undefined;
+  if(payload.action==="pairCode"){
+   pairCode=newPairCode();pairExpires=new Date(Date.now()+PAIR_TTL_MS).toISOString();
+   // One code at a time: a new one replaces the last. The token is only made when a PC uses the code.
+   statements.push(db.prepare("DELETE FROM pairing_codes WHERE owner=? OR expires_at<?").bind(owner,iso));
+   statements.push(db.prepare("INSERT INTO pairing_codes (code_hash,owner,created_at,expires_at) VALUES (?,?,?,?)").bind(await hashPairCode(normalizePairCode(pairCode)!),owner,iso,pairExpires));
+   message="Created a pairing code for a PC. It works once, for 10 minutes.";
+  }
   if(payload.action==="token"){
    token=newToken();
    // Replacing the hash revokes any previous token for this owner.
@@ -659,7 +669,7 @@ export async function POST(request:Request){
    message="Created a new worker token. Any previous token was revoked.";
   }
   statements.push(db.prepare("INSERT INTO events (id,owner,message,created_at) VALUES (?,?,?,?)").bind(crypto.randomUUID(),owner,message,iso));
-  await db.batch(statements);return Response.json({ok:true,message,token,streamerId,clipId},{headers:{"Cache-Control":"private, no-store"}});
+  await db.batch(statements);return Response.json({ok:true,message,token,pairCode,pairExpires,streamerId,clipId},{headers:{"Cache-Control":"private, no-store"}});
  }catch(error){
   if(String(error).includes("UNIQUE constraint"))return Response.json({error:"This streamer is already in your workspace."},{status:409});
   console.error("Dashboard save failed",error);return Response.json({error:"Changes weren't saved. Please try again."},{status:503});

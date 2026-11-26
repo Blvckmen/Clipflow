@@ -660,6 +660,10 @@ button.account-streamers{max-width:none;justify-self:start}
 .input-suffix input{max-width:110px}
 .input-suffix span{font-size:13px;color:var(--muted);font-weight:400}
 .settings-more summary{cursor:pointer;font-size:14px;color:#b9c4d0;padding:4px 0}
+/* Connect worker → Pair this PC: the one-time code, large enough to read off one screen and type on another. */
+.pair-box{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
+.pair-box>button{align-self:flex-start}
+.pair-code{font:600 30px/1.2 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.12em;color:var(--text,#edf2f7);padding:10px 14px;border:1px dashed #ffffff30;border-radius:8px;align-self:flex-start;user-select:all}
 .settings-more[open] summary{margin-bottom:10px}
 .save-bar{position:fixed;left:calc(240px + 50%);transform:translate(-50%,140%);bottom:22px;z-index:20;display:flex;align-items:center;gap:10px;padding:10px 12px 10px 18px;border:1px solid #3a4655;border-radius:12px;background:#171c23f2;backdrop-filter:blur(10px);box-shadow:0 12px 40px #0008;transition:transform .2s ease;font-size:14px}
 .save-bar{left:calc(50% + 120px)}

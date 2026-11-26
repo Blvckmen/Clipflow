@@ -66,6 +66,9 @@ export const preferences=sqliteTable("preferences",{
  zernioKeyEnc:text("zernio_key_enc"),zernioLabel:text("zernio_label"),
 });
 export const events=sqliteTable("events",{id:text("id").primaryKey(),owner:text("owner").notNull(),message:text("message").notNull(),createdAt:text("created_at").notNull()},t=>[index("events_owner_created").on(t.owner,t.createdAt)]);
+// Pairing codes (lib/pairing.ts): a short one-time code from Connect worker that a PC trades for a worker token
+// (POST /api/worker/pair). Only its SHA-256 is stored; one per owner, gone once used or after PAIR_TTL_MS.
+export const pairingCodes=sqliteTable("pairing_codes",{codeHash:text("code_hash").primaryKey(),owner:text("owner").notNull(),createdAt:text("created_at").notNull(),expiresAt:text("expires_at").notNull()},t=>[index("pairing_codes_owner").on(t.owner)]);
 // Only the SHA-256 of a worker token is stored; the plaintext is shown once on creation.
 export const workerTokens=sqliteTable("worker_tokens",{owner:text("owner").primaryKey(),tokenHash:text("token_hash").notNull(),createdAt:text("created_at").notNull(),lastSeen:text("last_seen"),
  // Most recent problem the worker reported, shown in the dashboard.

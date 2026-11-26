@@ -21,7 +21,10 @@ then run `node main.mjs` with the same variables plus `DATA_DIR` pointing to a w
 
 ### Windows, always on
 
-1. Create `worker\.env` (git-ignored) with `CLIPFLOW_URL=https://your-site` and `CLIPFLOW_TOKEN=cfw_...`.
+1. Pair the PC: in the dashboard open **Connect worker → Make a pairing code**, then run the command it shows,
+   `node worker/pair.mjs https://your-site XXXX-XXXX`. It writes `CLIPFLOW_URL` and `CLIPFLOW_TOKEN` into
+   `worker\.env` (git-ignored), keeping any other lines there. A code works once, for 10 minutes, and pairing
+   replaces any earlier worker token. (Or write `worker\.env` by hand with a token from **Use a token instead**.)
 2. `powershell -ExecutionPolicy Bypass -File worker\install-windows.ps1` registers a "Clipflow worker"
    task that starts `run-windows.ps1` hidden at sign-in; start it now with
    `Start-ScheduledTask -TaskName 'Clipflow worker'`. `-Remove` unregisters it.
