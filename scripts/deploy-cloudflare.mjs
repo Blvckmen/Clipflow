@@ -7,6 +7,7 @@ import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { packWorker } from "./pack-worker.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const checkOnly = process.argv.includes("--check");
@@ -105,7 +106,9 @@ else warn("TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET not set; only workers with th
 
 if (checkOnly) { console.log("\nAll prerequisites look good. Run without --check to deploy.\n"); return; }
 
-// 5. Build
+// 5. Build, with the worker download (Connect worker → Download the worker) packed into public/ first.
+const pack = packWorker("https://" + host);
+ok("Worker download packed: " + pack.files + " files at " + pack.commit);
 console.log("\nBuilding…");
 const build = spawnSync(process.execPath, [join(root, "scripts/run-framework.mjs"), "build"], { cwd: root, stdio: "inherit", env });
 if (build.status !== 0) fail("build failed");

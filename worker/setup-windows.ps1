@@ -121,6 +121,9 @@ if ($paired -and -not $Code) { Ok "already paired (worker\.env). To pair again, 
 elseif ($Check) { if ($paired) { Ok "already paired" } else { Missing "not paired yet" } }
 elseif (-not (Node-Ready)) { Bad "Can't pair without Node.js." }
 else {
+  # The download from the dashboard says which site it came from (site.txt, from scripts/pack-worker.mjs).
+  $siteFile = Join-Path $here "site.txt"
+  if (-not $Site -and (Test-Path $siteFile)) { $Site = (Get-Content $siteFile -TotalCount 1).Trim(); if ($Site) { Say "  Site: $Site" } }
   if (-not $Site) { $Site = Read-Host "  Your Clipflow site address (e.g. https://clipflow.example.com)" }
   if (-not $Code) { $Code = Read-Host "  Pairing code (dashboard: Connect worker -> Make a pairing code)" }
   & node (Join-Path $here "pair.mjs") $Site $Code
