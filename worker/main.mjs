@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { availableParallelism, totalmem } from "node:os";
-import { Store, allowed, channelUrl, clipTextFor, dueForProbe, limitFor, plan, queuedClip, retryDelay, shownStatus, validateControl, workerTuning } from "./core.mjs";
+import { Store, allowed, channelUrl, clipTextFor, dueForProbe, limitFor, plan, queuedClip, retryDelay, stageAfter, clipsInProgress, shownStatus, validateControl, workerTuning } from "./core.mjs";
 // A streamer's transcription, subtitles and automatic hook with these settings (its own choices, else the workspace's).
 const textOf = (settings, id) => clipTextFor(settings, settings.streamers.find(s => s.id === id));
 import { chatSpike, commandTrigger, perSecond } from "./highlights.mjs";
@@ -164,8 +164,17 @@ function deviceReport() {
     uses: { maxCaptures: tuning.maxCaptures, clipWorkers: tuning.clipWorkers, whisperModel: tuning.whisperModel, aiWriter: tuning.aiWriter, retentionHours: tuning.retentionHours },
     cores: availableParallelism(), memoryGb: Math.round(totalmem() / 2 ** 30 * 10) / 10,
     health, restartPending,
+    // Each clip being made or about to be (Clips → Being made): its stage, and failures from the last two hours.
+    clips: clipsInProgress({
+      making: [...running].map(r => r.job).filter(j => !j.kind),
+      uploading: store.uploading(),
+      queued: jobs.filter(j => !j.kind), held: j => !startable(j),
+      failed: recentFailures.filter(f => Date.now() - f.at < 2 * 3600_000),
+    }),
   };
 }
+// The last few clips that failed to be made (newest first), for deviceReport.
+const recentFailures = [];
 
 // Health checks (health.mjs): when the worker starts, every HEALTH_EVERY_MS, and again soon after the transcription
 // quality or the AI writer changes. They run alongside the cycle, never holding it up.
@@ -226,7 +235,7 @@ async function refresh() {
     config = validateControl(await response.json());
     configAt = Date.now();
     tuning = workerTuning(config, env);
-    useTwitchFrom(config);
+    pickTwitchFrom(config);
     setWriterEnabled(tuning.aiWriter);
     // Transcription quality: from the next transcription (one already running finishes with its model).
     setWhisperModel(tuning.whisperModel);
@@ -376,6 +385,9 @@ async function clipJob(job) {
     }
     const controller = new AbortController(), untrack = track(job, controller);
     let made = false, why = null;
+    // Its stage for the dashboard's "Being made" list (stageAfter in core.mjs), moved on as each step finishes.
+    job.stage = "transcribing"; job.stageAt = Date.now();
+    const onStep = step => { const next = stageAfter(step, writerEnabled()); if (next && next !== job.stage) { job.stage = next; job.stageAt = Date.now(); } };
     try {
       // The streamer's name and stream title help Whisper spell them and give the AI writer context.
       // An imported viewer's clip brings its own title.
@@ -391,7 +403,7 @@ async function clipJob(job) {
         messages: (job.chatLines ?? []).map(l => [(l.t - job.rawStartMs) / 1000, l.name ?? "", l.text, l.color ?? null]),
         // Clips with no other sign of a moment (the every-10-minutes check on streams without chat) are skipped when the
         // AI rates every candidate below AI_MIN_RATING (default 6 of 10); chat spikes, !clip and viewers' clips never are.
-        minRating: job.reason === "audio" ? tuning.minRating || null : null, autoHooks: tuning.autoHooks,
+        minRating: job.reason === "audio" ? tuning.minRating || null : null, autoHooks: tuning.autoHooks, onStep,
         rater: pickerEnabled() && !job.exact ? texts => rateMoments(texts, { streamer: who.name, title, chat: job.chatLines?.length ? chatSample(job.chatLines, job.rawStartMs, job.rawStartMs + 120_000, 15) : [] }, { signal: controller.signal }) : null, findFacecam, background: edit => backgroundFor(edit, job.id, title ?? "") }, job.dir, controller.signal);
       store.ready(job.id, result.sha, Math.min(90, Math.max(15, Math.round(result.end - result.start))));
       made = true;
@@ -405,7 +417,12 @@ async function clipJob(job) {
       await rm(job.dir, { recursive: true, force: true });
       // Skipped on purpose (nothing worth a clip): not a problem, and it doesn't count towards the daily limit.
       if (error.skip) console.log("Skipped a", reasonLabel[job.reason], "on", job.streamer.url + ":", error.message, "(after " + Math.round((Date.now() - startedAt) / 1000) + "s)");
-      else if (!controller.signal.aborted) problem("Clip processing failed for " + job.streamer.url + ": " + error.message);
+      else if (!controller.signal.aborted) {
+        problem("Clip processing failed for " + job.streamer.url + ": " + error.message);
+        // Shown in "Being made" for a while, so a clip that never arrives isn't a mystery.
+        recentFailures.unshift({ id: job.id, streamer: job.streamer.id, reason: job.reason ?? null, at: Date.now(), why: error.message });
+        recentFailures.length = Math.min(recentFailures.length, 5);
+      }
       else console.log("Cancelled a", reasonLabel[job.reason] ?? job.reason, "clip from", job.streamer.url, stopping ? "(worker stopping; it resumes on start)" : "(streamer paused, stopped or disabled)");
     } finally { untrack(); }
     if (job.tracker) settleRequest(job.tracker, made, why);
@@ -520,7 +537,7 @@ async function checkSessions() {
 // week in viewer-clips.json, with their moment, so none comes twice and no moment twice (see sameMoment).
 const ownTwitch = Twitch.fromEnv(env), siteTwitch = Twitch.viaSite((resource, params) => api("/api/worker/twitch?" + new URLSearchParams([["resource", resource], ...params])));
 let twitch = ownTwitch;
-const useTwitchFrom = settings => { if (!ownTwitch) twitch = settings?.twitchApp === true ? siteTwitch : null; };
+const pickTwitchFrom = settings => { if (!ownTwitch) twitch = settings?.twitchApp === true ? siteTwitch : null; };
 const importEveryMs = seconds(env.IMPORT_MINUTES, 30) * 60, seenFile = join(dataDir, "viewer-clips.json");
 let lastImport = 0, importing = false, twitchWarned = false, seenCache = null;
 // Each entry: when it was taken or offered and its moment ({ at, ...momentOf, offered?, clip? }); older entries are

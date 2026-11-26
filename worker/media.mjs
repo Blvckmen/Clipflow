@@ -97,13 +97,14 @@ export function sourceSignals(energy,chat,from,to) {
 // the editor, and fills in the webcam box when the clip's look uses a facecam layout and has none yet.
 // `rater(texts)` (rateMoments in writer.mjs) scores candidate moments by what was said in them, 0..10 each; with it and
 // a transcript, the clip is the candidate that's best on loudness, chat and what was said together.
-export async function processWindow(raw,{settings,text=null,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false,hint="",writer=null,rater=null,findFacecam=null,messages=[],chatWeight=0.5,minRating=null,autoHooks=process.env.AUTO_HOOKS!=="false"},dir,signal) {
+export async function processWindow(raw,{settings,text=null,style,focusFrom=0,focusTo=Infinity,chat=[],background=null,exact=false,hint="",writer=null,rater=null,findFacecam=null,messages=[],chatWeight=0.5,minRating=null,onStep=null,autoHooks=process.env.AUTO_HOOKS!=="false"},dir,signal) {
   const source=join(dir,"source.mp4"), energyFile=join(dir,"energy.json"), wordsFile=join(dir,"words.json");
   await mkdir(dir,{recursive:true});
   try {
     if(signal.aborted)throw new Error("Cancelled");
     // How long each step takes (seconds), returned as result.timings for the worker's log.
-    const timings={};let lap=Date.now();const took=name=>{const now=Date.now();timings[name]=Math.round((now-lap)/100)/10;lap=now;};
+    // onStep(name): each step as it finishes, for the dashboard's "Being made" stages (core.mjs stageAfter).
+    const timings={};let lap=Date.now();const took=name=>{const now=Date.now();timings[name]=Math.round((now-lap)/100)/10;lap=now;try{onStep?.(name);}catch{}};
     await command(python,[script("highlight.py"),raw,energyFile],{signal,timeout:120_000}).done;
     took("loudness");
     const {energy}=JSON.parse(await readFile(energyFile,"utf8"));

@@ -4,7 +4,36 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { Store, allowed, channelUrl, dueForProbe, limitFor, plan, probeResult, retryDelay, shownStatus, validateControl, workerTuning, queuedClip } from "../core.mjs";
+import { Store, allowed, channelUrl, dueForProbe, limitFor, plan, probeResult, retryDelay, shownStatus, validateControl, workerTuning, queuedClip, stageAfter, clipsInProgress } from "../core.mjs";
+
+test("a clip being made moves through the stages as processWindow's steps finish", () => {
+  assert.equal(stageAfter("loudness"), "transcribing");
+  assert.equal(stageAfter("transcription"), "choosing");
+  assert.equal(stageAfter("rating"), "choosing");
+  assert.equal(stageAfter("source", true), "choosing", "the AI writer still has to write");
+  assert.equal(stageAfter("source", false), "rendering");
+  assert.equal(stageAfter("writing"), "rendering");
+  assert.equal(stageAfter("render"), "uploading");
+  assert.equal(stageAfter("something new"), null);
+});
+
+test("the Being made list: making first, then uploading, waiting or held, then failures", () => {
+  const s = "11111111-1111-1111-1111-111111111111", id = n => n.repeat(8) + "-" + n.repeat(4) + "-" + n.repeat(4) + "-" + n.repeat(4) + "-" + n.repeat(12);
+  const at = Date.parse("2026-11-26T12:34:56Z");
+  const list = clipsInProgress({
+    making: [{ id: id("a"), streamer: { id: s }, reason: "chat", stage: "rendering", stageAt: at }],
+    uploading: [{ id: id("b"), streamer: s, reason: "audio", created_at: "2026-11-26T12:30:00Z" }],
+    queued: [{ id: id("c"), streamer: { id: s }, reason: "command", queuedAt: at }, { id: id("d"), streamer: { id: s }, reason: "chat", queuedAt: at }],
+    held: j => j.id === id("d"),
+    failed: [{ id: id("e"), streamer: s, reason: "chat", at, why: "x".repeat(300) }],
+  });
+  assert.deepEqual(list.map(c => c.stage), ["rendering", "uploading", "waiting", "held", "failed"]);
+  assert.equal(list[0].since, "2026-11-26T12:34:00.000Z", "rounded to the minute, so the report doesn't change every second");
+  assert.equal(list[0].streamer, s);
+  assert.equal(list[4].why.length, 200);
+  assert.equal(clipsInProgress({ queued: Array.from({ length: 30 }, (_, i) => ({ id: id(String(i % 10)), streamer: { id: s } })) }).length, 12, "capped");
+  assert.deepEqual(clipsInProgress({ queued: [{ id: 5, streamer: { id: s } }] }), [], "malformed entries are left out");
+});
 
 test("queued clips wait while paused and are dropped only once stopped", () => {
   const id = "11111111-1111-1111-1111-111111111111", c = (control, status) => ({ control, streamers: [{ id, status }] });

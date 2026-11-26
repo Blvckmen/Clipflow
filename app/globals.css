@@ -662,6 +662,18 @@ button.account-streamers{max-width:none;justify-self:start}
 .settings-more summary{cursor:pointer;font-size:14px;color:#b9c4d0;padding:4px 0}
 /* Connect worker → Pair this PC: the one-time code, large enough to read off one screen and type on another. */
 .pair-box{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
+/* Clips → Library: "Being made", one row per clip the PC is working on, with its stage. */
+.being-made{margin-bottom:16px}
+.being-made-list{list-style:none;margin:0;padding:0 23px 16px;display:flex;flex-direction:column;gap:10px}
+.being-made-list>li{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:10px 12px;border:1px solid var(--border);border-radius:8px}
+.being-made-who{display:flex;flex-direction:column;min-width:160px}
+.being-made-who small{color:var(--muted)}
+.being-made-state{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:13px;min-width:0}
+.being-made-state.bad{color:#ff8a8a}
+.stage-track{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+.stage-track li{display:flex;align-items:center;gap:4px;font-size:12px;padding:3px 9px;border-radius:999px;border:1px solid var(--border);color:var(--muted)}
+.stage-track li.done{color:var(--text,#edf2f7)}
+.stage-track li.now{color:#0b0f14;background:var(--lime);border-color:var(--lime);font-weight:600}
 .pair-box>button{align-self:flex-start}
 .pair-code{font:600 30px/1.2 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.12em;color:var(--text,#edf2f7);padding:10px 14px;border:1px dashed #ffffff30;border-radius:8px;align-self:flex-start;user-select:all}
 .settings-more[open] summary{margin-bottom:10px}

@@ -189,6 +189,33 @@ export function workerTuning(c, env = {}) {
     whisperModel: TRANSCRIPTION[w.transcription] ?? (env.WHISPER_MODEL || "small"),
   };
 }
+// Where a clip being made is, for the dashboard's "Being made" list: after each step processWindow finishes (its
+// timings names, media.mjs), the stage that comes next. Loudness is quick, so a started clip shows as transcribing.
+export const CLIP_STAGES = ["waiting", "held", "transcribing", "choosing", "rendering", "uploading", "failed"];
+export function stageAfter(step, writing = false) {
+  if (step === "loudness") return "transcribing";
+  if (step === "transcription" || step === "rating") return "choosing";
+  // The clip's source is cut; with the AI writer its title and post text come next, otherwise framing and the render.
+  if (step === "source") return writing ? "choosing" : "rendering";
+  if (step === "writing" || step === "framing") return "rendering";
+  if (step === "render") return "uploading";
+  return null;
+}
+// The clips this PC is making or about to make, newest first, at most `max`: { id, streamer, reason, stage, since },
+// with since rounded to the minute so the report only changes when something does. `queued`: jobs not yet started,
+// `held` tells which of those wait for Resume; `making`: running clip jobs (with job.stage/job.stageAt); `uploading`:
+// clips made but not yet sent; `failed`: recent failures ({ id, streamer, reason, at, why }).
+export function clipsInProgress({ queued = [], held = () => false, making = [], uploading = [], failed = [], max = 12 }) {
+  const minute = t => new Date(Math.floor((Number.isFinite(t) ? t : Date.now()) / 60_000) * 60_000).toISOString();
+  const clip = (j, stage, at) => ({ id: j.id, streamer: j.streamer?.id ?? j.streamer, reason: j.reason ?? null, stage, since: minute(at) });
+  const out = [
+    ...making.map(j => clip(j, j.stage ?? "transcribing", j.stageAt)),
+    ...uploading.map(r => clip(r, "uploading", Date.parse(r.created_at))),
+    ...queued.map(j => clip(j, held(j) ? "held" : "waiting", j.queuedAt)),
+    ...failed.map(f => ({ ...clip(f, "failed", f.at), why: String(f.why ?? "").slice(0, 200) })),
+  ];
+  return out.filter(c => typeof c.id === "string" && typeof c.streamer === "string").slice(0, max);
+}
 export function retryDelay(attempt) { return Math.min(300_000, 30_000 * 2 ** Math.min(attempt, 4)); }
 export function clipHash(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
 export class Store {
@@ -230,6 +257,8 @@ export class Store {
   retry(id,attempt) {this.db.prepare("UPDATE clips SET attempts=?,next_try=? WHERE id=?").run(attempt,Date.now()+retryDelay(attempt),id);}
   get(id) {return this.db.prepare("SELECT * FROM clips WHERE id=?").get(id)??null;}
   pending() {return this.db.prepare("SELECT * FROM clips WHERE state='ready' AND next_try<=? ORDER BY created_at LIMIT 10").all(Date.now());}
+  // Clips made but not yet sent to the dashboard, waiting or retrying (for the "Being made" list).
+  uploading(limit = 10) {return this.db.prepare("SELECT id,streamer,reason,created_at FROM clips WHERE state='ready' ORDER BY created_at DESC LIMIT ?").all(limit);}
   // Clips cut but not finished when the worker last stopped (marked interrupted on start), newest first.
   interrupted(sinceIso, limit = 30) {return this.db.prepare("SELECT * FROM clips WHERE state='interrupted' AND created_at>=? ORDER BY created_at DESC LIMIT ?").all(sinceIso, limit);}
   resume(id) {this.db.prepare("UPDATE clips SET state='capturing' WHERE id=? AND state='interrupted'").run(id);}
