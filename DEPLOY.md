@@ -62,6 +62,15 @@ Everything is set up in the dashboard, under **Connections → Social accounts**
 Optionally, `ZERNIO_API_KEY=sk_...` in `.env` (uploaded by `npm run deploy`) is a site-wide key for workspaces
 that have not entered their own.
 
+## Viewers' Twitch clips
+
+To import the clips viewers make on Twitch, the site needs one Twitch app for everyone: register one at
+dev.twitch.tv (no OAuth redirect is used; any URL works), then put `TWITCH_CLIENT_ID=...` and
+`TWITCH_CLIENT_SECRET=...` in `.env`. `npm run deploy` sends the ID as a setting and the secret as a secret. Workers
+then look clips up through `/api/worker/twitch` (worker token only; users, clips and videos lookups only), so no
+customer creates a Twitch app. A worker with its own `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` in `worker/.env`
+keeps using those.
+
 Each approved clip is sent to Zernio as a signed video link (valid 24 hours) and published right away. Retries,
 the daily limit and pausing work as below. YouTube gets the caption's first line as its title and the account's
 visibility (public by default). TikTok asks that the creator has seen each post, so by default clips you approve

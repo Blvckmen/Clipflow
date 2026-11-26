@@ -226,6 +226,7 @@ async function refresh() {
     config = validateControl(await response.json());
     configAt = Date.now();
     tuning = workerTuning(config, env);
+    useTwitchFrom(config);
     setWriterEnabled(tuning.aiWriter);
     // Transcription quality: from the next transcription (one already running finishes with its model).
     setWhisperModel(tuning.whisperModel);
@@ -513,10 +514,14 @@ async function checkSessions() {
 // (30) the most-viewed clips viewers made on each running Twitch streamer's channel are looked at: at least minViews
 // views, a moment from the last maxHours hours, not a moment already taken. Up to 2 at a time and perDay a day become
 // clips (they don't use the daily clip limit), or with "ask me first" up to 5 at a time are listed in the dashboard,
-// where picked ones come back as config.viewerClipPicks. Needs this worker's own Twitch app (TWITCH_CLIENT_ID,
-// TWITCH_CLIENT_SECRET). Clips taken or offered are remembered for a week in viewer-clips.json, with their moment, so
-// none comes twice and no moment twice (see sameMoment).
-const twitch = Twitch.fromEnv(env), importEveryMs = seconds(env.IMPORT_MINUTES, 30) * 60, seenFile = join(dataDir, "viewer-clips.json");
+// where picked ones come back as config.viewerClipPicks. Uses this worker's own Twitch app when .env has one
+// (TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET), otherwise the dashboard's, through /api/worker/twitch, once its settings
+// say it has one (config.twitchApp); `twitch` is null until either is there. Clips taken or offered are remembered for a
+// week in viewer-clips.json, with their moment, so none comes twice and no moment twice (see sameMoment).
+const ownTwitch = Twitch.fromEnv(env), siteTwitch = Twitch.viaSite((resource, params) => api("/api/worker/twitch?" + new URLSearchParams([["resource", resource], ...params])));
+let twitch = ownTwitch;
+const useTwitchFrom = settings => { if (!ownTwitch) twitch = settings?.twitchApp === true ? siteTwitch : null; };
+const importEveryMs = seconds(env.IMPORT_MINUTES, 30) * 60, seenFile = join(dataDir, "viewer-clips.json");
 let lastImport = 0, importing = false, twitchWarned = false, seenCache = null;
 // Each entry: when it was taken or offered and its moment ({ at, ...momentOf, offered?, clip? }); older entries are
 // just the time.
@@ -539,7 +544,7 @@ async function importViewerClips() {
   const wanted = settings.streamers.map(s => [s, viewerSettings(settings, s)]).filter(([s, v]) => v.on && twitchLogin(s.url) && allowed(settings, s.id));
   if (!wanted.length) return;
   if (!twitch) {
-    if (!twitchWarned) { twitchWarned = true; problem("Viewers' Twitch clips are switched on, but this worker has no Twitch app: set TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET (see the worker README) and restart it."); }
+    if (!twitchWarned) { twitchWarned = true; problem("Viewers' Twitch clips are switched on, but this site has no Twitch app set up yet, and this worker has none of its own (see the worker README)."); }
     return;
   }
   importing = true; lastImport = Date.now();

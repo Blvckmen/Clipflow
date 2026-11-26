@@ -70,13 +70,35 @@ export function pickClips(list, { minViews, seen, max, minSeconds = 15, taken = 
   return out;
 }
 
+// Why a Helix request failed. Through the dashboard its own reason is kept (e.g. the site has no Twitch app yet);
+// Twitch's own answers are never quoted, since a bad request can echo credentials back.
+async function failure(response, what) {
+  const reason = response.headers.get("x-clipflow") ? (await response.json().catch(() => null))?.error : null;
+  return typeof reason === "string" ? reason : what + " failed (HTTP " + response.status + ")";
+}
+
 export class Twitch {
-  constructor({ clientId, clientSecret, fetch = globalThis.fetch }) {
-    this.clientId = clientId; this.clientSecret = clientSecret; this.fetch = fetch;
+  // Either this worker's own Twitch app (clientId + clientSecret), or `via`: the dashboard's Twitch app, reached through
+  // GET /api/worker/twitch (via(resource, URLSearchParams) -> Response), so a PC needs no Twitch app of its own.
+  constructor({ clientId, clientSecret, fetch = globalThis.fetch, via = null }) {
+    this.clientId = clientId; this.clientSecret = clientSecret; this.fetch = fetch; this.via = via;
     this.access = null; this.users = new Map(); this.videoStarts = new Map();
   }
   static fromEnv(env = process.env) {
     return env.TWITCH_CLIENT_ID && env.TWITCH_CLIENT_SECRET ? new Twitch({ clientId: env.TWITCH_CLIENT_ID, clientSecret: env.TWITCH_CLIENT_SECRET }) : null;
+  }
+  static viaSite(via) { return new Twitch({ via }); }
+  // One Helix request (resource: "users" | "clips" | "videos"), through the dashboard or with this app's own token.
+  async send(resource, params) {
+    if (this.via) return this.via(resource, params);
+    const url = new URL("https://api.twitch.tv/helix/" + resource);
+    url.search = params.toString();
+    for (let attempt = 0; ; attempt++) {
+      const response = await this.fetch(url, { headers: { "Client-Id": this.clientId, Authorization: "Bearer " + await this.token(attempt > 0) }, signal: AbortSignal.timeout(20_000) });
+      // An expired or revoked token: sign in again once.
+      if (response.status === 401 && attempt === 0) continue;
+      return response;
+    }
   }
   async token(renew = false) {
     if (!renew && this.access && this.access.until > Date.now()) return this.access.token;
@@ -90,15 +112,11 @@ export class Twitch {
     return this.access.token;
   }
   async get(path, params) {
-    const url = new URL("https://api.twitch.tv/helix/" + path);
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
-    for (let attempt = 0; ; attempt++) {
-      const response = await this.fetch(url, { headers: { "Client-Id": this.clientId, Authorization: "Bearer " + await this.token(attempt > 0) }, signal: AbortSignal.timeout(20_000) });
-      // An expired or revoked token: sign in again once.
-      if (response.status === 401 && attempt === 0) continue;
-      if (!response.ok) throw new Error("Twitch " + path + " failed (HTTP " + response.status + ")");
-      return (await response.json()).data ?? [];
-    }
+    const search = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) search.set(k, String(v));
+    const response = await this.send(path, search);
+    if (!response.ok) throw new Error(await failure(response, "Twitch " + path));
+    return (await response.json()).data ?? [];
   }
   async userId(login) {
     if (!this.users.has(login)) {
@@ -117,11 +135,11 @@ export class Twitch {
   async startsOf(clips) {
     const ids = [...new Set((clips ?? []).map(c => c?.video_id).filter(id => typeof id === "string" && /^\d{1,20}$/.test(id) && !this.videoStarts.has(id)))];
     for (let i = 0; i < ids.length; i += 100) {
-      const url = new URL("https://api.twitch.tv/helix/videos");
-      for (const id of ids.slice(i, i + 100)) url.searchParams.append("id", id);
-      const response = await this.fetch(url, { headers: { "Client-Id": this.clientId, Authorization: "Bearer " + await this.token() }, signal: AbortSignal.timeout(20_000) });
+      const search = new URLSearchParams();
+      for (const id of ids.slice(i, i + 100)) search.append("id", id);
+      const response = await this.send("videos", search);
       // 404: none of them exist any more.
-      if (!response.ok) { if (response.status === 404) continue; throw new Error("Twitch videos failed (HTTP " + response.status + ")"); }
+      if (!response.ok) { if (response.status === 404) continue; throw new Error(await failure(response, "Twitch videos")); }
       for (const v of (await response.json()).data ?? []) { const t = Date.parse(v.created_at); if (Number.isFinite(t)) this.videoStarts.set(v.id, t); }
     }
     return this.videoStarts;

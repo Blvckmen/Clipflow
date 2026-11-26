@@ -146,7 +146,7 @@ troubleshooting only.
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | Where Ollama runs |
 | `OLLAMA_MODEL` | `qwen2.5:7b` | Model the AI writer uses (`ollama pull` it first); `qwen2.5:3b` is twice as fast with weaker hooks |
 | `PYTHON` | `python` | Python executable |
-| `TWITCH_CLIENT_ID` | none | Your Twitch app's Client ID, for importing viewers' Twitch clips (see below) |
+| `TWITCH_CLIENT_ID` | none | Optional: your own Twitch app's Client ID for viewers' Twitch clips; without one the site's app is used (see below) |
 | `TWITCH_CLIENT_SECRET` | none | That app's Client Secret. Keep it in `.env` on this PC; it never goes to the dashboard |
 | `IMPORT_MINUTES` | `30` | How often viewers' Twitch clips are looked for |
 | `YTDLP` | `yt-dlp`, then `python -m yt_dlp` | yt-dlp, for imported videos (needed for YouTube; see below) |
@@ -165,7 +165,9 @@ time and "Most a day" a day; these don't use the daily clip limit. With "Ask me 
 at the top of the Clip library instead, and only the ones you pick are made (within a minute). Kick clips aren't
 imported.
 
-It uses Twitch's official API with your own Twitch app (free, about 5 minutes to set up):
+It uses Twitch's official API. Normally nothing needs setting up on the PC: the worker borrows the site's Twitch app
+(see DEPLOY.md, "Viewers' Twitch clips") through `/api/worker/twitch`. To use a Twitch app of your own instead (it
+then wins over the site's):
 
 1. Sign in at [dev.twitch.tv/console/apps](https://dev.twitch.tv/console/apps) and choose **Register Your Application**.
 2. Name: anything (for example "Clipflow worker"). OAuth Redirect URL: `http://localhost`. Category: **Application

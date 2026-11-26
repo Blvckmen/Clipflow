@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { database } from "../../../../db/raw";
 import { defaults, readWorkerSettings, workerSettingsRev } from "../../../../lib/clipflow";
 import { workerOwner } from "../../../../lib/worker-auth";
@@ -39,6 +40,8 @@ export async function GET(request:Request){
    // Settings → This PC; each choice left out follows the worker's .env (worker/core.mjs workerTuning).
    // workerRev: their fingerprint, which the worker reports back once it runs with them (Saved → Applied).
    restartAt:wt?.restart_at??null,
+   // Whether this site lends its Twitch app to workers without one (app/api/worker/twitch).
+   twitchApp:!!((env as {TWITCH_CLIENT_ID?:string}).TWITCH_CLIENT_ID&&(env as {TWITCH_CLIENT_SECRET?:string}).TWITCH_CLIENT_SECRET),
    worker:readWorkerSettings(p?.worker_settings),workerRev:workerSettingsRev(readWorkerSettings(p?.worker_settings)),
    streamers:s.results.map(x=>({id:x.id,url:x.url,status:x.status,style:parse(x.style),captureMode:x.capture_mode??"clip",text:clipText(x.clip_text),viewerClips:readStreamerViewerClips(x.viewer_clips),dailyLimit:x.daily_limit??null,...chatWeightOf(x.learned,p?.learn)})),
    recordingDays:(p?.recording_days as number|undefined)??defaults.recordingDays,importClips:(p?.import_clips as number|undefined)??defaults.importClips,viewerClips:readViewerClips(p?.viewer_clips),

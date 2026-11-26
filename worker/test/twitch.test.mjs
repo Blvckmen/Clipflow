@@ -3,6 +3,46 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Twitch, clipUrl, momentOf, momentTime, pickClips, sameMoment, twitchLogin, viewerSettings } from "../twitch.mjs";
 import { validateControl } from "../core.mjs";
+import { helixQuery } from "../../lib/twitch-app.mjs";
+
+test("without its own Twitch app the worker looks clips up through the site, with the site's reasons", async () => {
+  const calls = [];
+  const via = async (resource, params) => {
+    calls.push(resource + "?" + params);
+    if (resource === "users") return Response.json({ data: [{ id: "42", login: params.get("login") }] });
+    if (resource === "clips") return Response.json({ data: [{ id: "c1", view_count: 50, video_id: "9" }] });
+    if (resource === "videos") return Response.json({ data: [{ id: "9", created_at: "2026-11-26T10:00:00Z" }] });
+  };
+  const t = Twitch.viaSite(via);
+  const clips = await t.clips("somechannel", new Date("2026-11-26T09:00:00Z"));
+  assert.equal(clips[0].id, "c1");
+  assert.equal((await t.startsOf(clips)).get("9"), Date.parse("2026-11-26T10:00:00Z"));
+  assert.deepEqual(calls.map(c => c.split("?")[0]), ["users", "clips", "videos"]);
+  assert.ok(helixQuery(new URLSearchParams([["resource", "clips"], ...new URLSearchParams(calls[1].split("?")[1])])), "what the worker sends is what the site allows");
+  // The site's own reason (x-clipflow) is shown; a plain failure isn't quoted.
+  const noApp = Twitch.viaSite(async () => Response.json({ error: "This site has no Twitch app set up yet." }, { status: 501, headers: { "x-clipflow": "1" } }));
+  await assert.rejects(noApp.userId("x_y"), /no Twitch app set up yet/);
+  const down = Twitch.viaSite(async () => new Response(null, { status: 502 }));
+  await assert.rejects(down.userId("x_y"), /^Error: Twitch users failed \(HTTP 502\)$/);
+});
+
+test("the site lends its Twitch app only for the lookups viewers' clips need", () => {
+  const q = (...pairs) => helixQuery(new URLSearchParams(pairs));
+  assert.equal(q(["resource", "users"], ["login", "kaicenat"]).params.toString(), "login=kaicenat");
+  assert.ok(q(["resource", "clips"], ["broadcaster_id", "123"], ["started_at", "2026-11-26T09:00:00.000Z"], ["ended_at", "2026-11-26T10:00:00.000Z"], ["first", "20"]));
+  assert.equal(q(["resource", "videos"], ["id", "1"], ["id", "2"]).params.getAll("id").length, 2);
+  for (const bad of [
+    [["resource", "streams"], ["user_login", "x"]],
+    [["resource", "users"]],
+    [["resource", "users"], ["login", "x"], ["login", "y"]],
+    [["resource", "users"], ["login", "Bad Name"]],
+    [["resource", "users"], ["id", "1"]],
+    [["resource", "clips"], ["broadcaster_id", "1"], ["first", "500"]],
+    [["resource", "clips"], ["broadcaster_id", "1"], ["started_at", "yesterday"]],
+    [["resource", "toString"], ["login", "x"]],
+    [["login", "x"]],
+  ]) assert.equal(helixQuery(new URLSearchParams(bad)), null, JSON.stringify(bad));
+});
 
 test("only Twitch channels have viewer clips to import", () => {
   assert.equal(twitchLogin("https://www.twitch.tv/Some_Streamer"), "some_streamer");

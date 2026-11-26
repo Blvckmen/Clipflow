@@ -98,6 +98,10 @@ const zernioReady = !!env.ZERNIO_API_KEY;
 if (zernioReady) ok("Zernio API key present; posting to TikTok, Instagram and YouTube will be enabled");
 else warn("ZERNIO_API_KEY not set; deploying with publishing through Zernio switched off (see DEPLOY.md).");
 ok("Post captions are generated locally from transcripts; no AI API key needed.");
+// ClipFlow's own Twitch app, lent to workers for viewers' Twitch clips (app/api/worker/twitch), so customers need none.
+const twitchReady = !!(env.TWITCH_CLIENT_ID && env.TWITCH_CLIENT_SECRET);
+if (twitchReady) ok("Twitch app keys present; workers without their own can import viewers' Twitch clips");
+else warn("TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET not set; only workers with their own Twitch app can import viewers' clips (see DEPLOY.md).");
 
 if (checkOnly) { console.log("\nAll prerequisites look good. Run without --check to deploy.\n"); return; }
 
@@ -160,7 +164,7 @@ const deployConfig = {
   ...(env.CLIPFLOW_HOSTNAME && { routes: [{ pattern: env.CLIPFLOW_HOSTNAME, custom_domain: true }] }),
   d1_databases: [{ binding: "DB", database_name: dbName, database_id: db.uuid, migrations_dir: "../../drizzle" }],
   r2_buckets: bucketReady ? [{ binding: "BUCKET", bucket_name: bucketName }] : [],
-  vars: { ...built.vars, AUTH_MODE: "access", CF_ACCESS_TEAM_DOMAIN: teamDomain, CF_ACCESS_AUD: dashboardApp.aud, PUBLIC_URL: "https://" + host, ...(instagramReady && { INSTAGRAM_APP_ID: env.INSTAGRAM_APP_ID }) },
+  vars: { ...built.vars, AUTH_MODE: "access", CF_ACCESS_TEAM_DOMAIN: teamDomain, CF_ACCESS_AUD: dashboardApp.aud, PUBLIC_URL: "https://" + host, ...(instagramReady && { INSTAGRAM_APP_ID: env.INSTAGRAM_APP_ID }), ...(twitchReady && { TWITCH_CLIENT_ID: env.TWITCH_CLIENT_ID }) },
   // The publisher runs once a minute.
   triggers: { crons: ["* * * * *"] },
 };
@@ -176,7 +180,7 @@ wrangler(["deploy", "--config", deployConfigPath], auth);
 console.log("\nUploading secrets…");
 const secretsFile = join(root, "dist/server/secrets.json");
 try {
-  writeFileSync(secretsFile, JSON.stringify({ TOKEN_KEY: env.TOKEN_KEY, MEDIA_KEY: env.MEDIA_KEY, ...(instagramReady && { INSTAGRAM_APP_SECRET: env.INSTAGRAM_APP_SECRET }), ...(zernioReady && { ZERNIO_API_KEY: env.ZERNIO_API_KEY }) }));
+  writeFileSync(secretsFile, JSON.stringify({ TOKEN_KEY: env.TOKEN_KEY, MEDIA_KEY: env.MEDIA_KEY, ...(instagramReady && { INSTAGRAM_APP_SECRET: env.INSTAGRAM_APP_SECRET }), ...(zernioReady && { ZERNIO_API_KEY: env.ZERNIO_API_KEY }), ...(twitchReady && { TWITCH_CLIENT_SECRET: env.TWITCH_CLIENT_SECRET }) }));
   wrangler(["secret", "bulk", secretsFile, "--config", deployConfigPath], auth);
 } finally { rmSync(secretsFile, { force: true }); }
 
