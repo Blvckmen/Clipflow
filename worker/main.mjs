@@ -9,7 +9,7 @@ import { Store, allowed, channelUrl, clipTextFor, dueForProbe, limitFor, plan, q
 const textOf = (settings, id) => clipTextFor(settings, settings.streamers.find(s => s.id === id));
 import { chatSpike, commandTrigger, perSecond } from "./highlights.mjs";
 import { openChat } from "./chat.mjs";
-import { PROBE_TIMEOUT_MS, probeLive, processWindow, streamlink } from "./media.mjs";
+import { PROBE_TIMEOUT_MS, lift, probeLive, processWindow, streamlink } from "./media.mjs";
 import { checkHealth, codeStamp } from "./health.mjs";
 import { normalizeEdit } from "./edit.mjs";
 import { makeHighlightVideo } from "./highlights-video.mjs";
@@ -25,7 +25,7 @@ import { downloadUpload } from "./uploaded-video.mjs";
 import { PLATFORM_NAMES, downloadVideo, findYtDlp, videoLink, videoTitle } from "./vod.mjs";
 import { setWhisperModel, stopTranscriber, transcribe as whisper } from "./whisper.mjs";
 import { AI_BATCH, autoClipPicks, mergeAiMoments, transcriptWindows } from "./stream-pass.mjs";
-import { coverageRoom, coverageWindow, enqueueTrigger, jobRank } from "./triggers.mjs";
+import { coverageRoom, coverageWindow, enqueueTrigger, jobRank, pickJob } from "./triggers.mjs";
 
 // Every log line starts with the time (HH:MM:SS), so how long things take can be read off worker.log.
 for (const level of ["log", "warn", "error"]) {
@@ -319,7 +319,9 @@ async function clipWindow(session, fromMs, toMs, reason) {
     const style = settings.streamers.find(s => s.id === streamer.id)?.style ?? settings.style ?? null;
     // What chat said during the window (Twitch), for the AI writer.
     const chatLines = session.chat?.lines.filter(l => l.t >= rawStartMs && l.t <= toMs + 15_000) ?? [];
-    jobs.push({ queuedAt: Date.now(), id, dir, raw, streamer, settings, style, reason, rawStartMs, chatLines, chat: session.chat ? perSecond(session.chat.times, rawStartMs, length) : [], focusFrom: (fromMs - rawStartMs) / 1000, focusTo: (toMs - rawStartMs) / 1000 });
+    const chat = session.chat ? perSecond(session.chat.times, rawStartMs, length) : [], focusFrom = (fromMs - rawStartMs) / 1000, focusTo = (toMs - rawStartMs) / 1000;
+    // strength: how far chat jumped in this moment, so a backlog makes the biggest moments first (triggers.mjs pickJob).
+    jobs.push({ queuedAt: Date.now(), id, dir, raw, streamer, settings, style, reason, rawStartMs, chatLines, chat, focusFrom, focusTo, strength: lift(chat, focusFrom, focusTo) ?? 0 });
     void processJobs();
   } catch (error) {
     store.fail(id);
@@ -348,7 +350,7 @@ async function lane() {
     // Moments people reacted to before coverage checks, fresh before resumed, highlight videos last (triggers.mjs).
     const ready = jobs.filter(startable);
     if (!ready.length) return;
-    const best = Math.min(...ready.map(jobRank)), job = ready.find(j => jobRank(j) === best);
+    const job = pickJob(ready);
     jobs.splice(jobs.indexOf(job), 1);
     if (job.kind === "render") await rerender(job);
     else if (job.kind === "translate") await translateJob(job);
@@ -359,12 +361,13 @@ async function lane() {
 async function clipJob(job) {
   const startedAt = Date.now();
   {
-    // Live captures are dropped once their streamer or automation is stopped (paused ones wait in the queue, see
+    // Live captures are dropped once automation is stopped or their streamer removed (paused ones wait in the queue, and a
+    // streamer stopped on its own still finishes the ones it captured; see
     // startable); clips asked for from a recording were asked for by hand.
     if (!job.fromRecording && queuedClip(config, job.streamer.id) !== "run") {
       if (queuedClip(config, job.streamer.id) === "hold") { jobs.push(job); return; }
       store.fail(job.id); await rm(job.dir, { recursive: true, force: true });
-      console.log("Dropped a queued", reasonLabel[job.reason] ?? job.reason, "clip from", job.streamer.url + ":", config ? "the streamer or automation is stopped" : "no settings from the dashboard");
+      console.log("Dropped a queued", reasonLabel[job.reason] ?? job.reason, "clip from", job.streamer.url + ":", config ? "automation was stopped and the queue cleared, or the streamer was removed" : "no settings from the dashboard");
       return;
     }
     const controller = new AbortController(), untrack = track(job, controller);

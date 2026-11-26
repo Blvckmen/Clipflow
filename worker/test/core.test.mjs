@@ -12,7 +12,10 @@ test("queued clips wait while paused and are dropped only once stopped", () => {
   assert.equal(queuedClip(c("paused", "armed"), id), "hold");
   assert.equal(queuedClip(c("running", "paused"), id), "hold");
   assert.equal(queuedClip(c("stopped", "armed"), id), "drop");
-  assert.equal(queuedClip(c("paused", "stopped"), id), "drop");
+  // A channel stopped on its own finishes the clips it already captured (held while everything is paused).
+  assert.equal(queuedClip(c("running", "stopped"), id), "run");
+  assert.equal(queuedClip(c("paused", "stopped"), id), "hold");
+  assert.equal(queuedClip(c("stopped", "stopped"), id), "drop");
   assert.equal(queuedClip(c("running", "armed"), "22222222-2222-2222-2222-222222222222"), "drop");
   assert.equal(queuedClip(null, id), "drop");
 });

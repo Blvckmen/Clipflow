@@ -40,3 +40,20 @@ test("chat spikes, !clip and viewers' clips go before coverage checks, even resu
   ].sort((a, b) => jobRank(a) - jobRank(b)).map(j => j.name);
   assert.deepEqual(order, ["chat", "render", "viewer", "resumed chat", "coverage", "resumed coverage", "highlight"]);
 });
+
+test("in a backlog the biggest moments are made first: chosen ones, then the strongest chat spikes", async () => {
+  const { pickJob } = await import("../triggers.mjs");
+  const job = (id, extra = {}) => ({ id, reason: "chat", ...extra });
+  // Arrival order a, b, c: the strongest spike wins, not the oldest.
+  assert.equal(pickJob([job("a", { strength: 2.1 }), job("b", { strength: 6.4 }), job("c", { strength: 3 })]).id, "b");
+  // Someone typed !clip or a viewer clipped it: ahead of any chat spike.
+  assert.equal(pickJob([job("a", { strength: 19 }), job("v", { reason: "viewer" })]).id, "v");
+  assert.equal(pickJob([job("a", { strength: 19 }), job("k", { reason: "command", strength: 1 })]).id, "k");
+  // Ties (or no strength measured) keep arrival order.
+  assert.equal(pickJob([job("a", { strength: 3 }), job("b", { strength: 3 })]).id, "a");
+  assert.equal(pickJob([job("a"), job("b")]).id, "a");
+  // The rank still comes first: a strong coverage check waits behind a weak chat spike, a highlight video last.
+  assert.equal(pickJob([job("cov", { reason: "audio", strength: 20 }), job("weak", { strength: 1.1 })]).id, "weak");
+  assert.equal(pickJob([{ id: "h", kind: "highlight" }, job("x", { reason: "audio" })]).id, "x");
+  assert.equal(pickJob([]), null);
+});

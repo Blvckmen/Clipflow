@@ -97,8 +97,8 @@ export function StreamerForm({ streamer, hasAccounts, busy, workspaceMode, works
       <small>{moved ? "Changing it follows a different channel from the next check. Clips already captured stay with this streamer." : "Twitch, YouTube, Kick or TikTok LIVE."}</small></label>
     <label>Clipping<select value={status} onChange={e => setStatus(e.target.value)}>
       <option value="armed">Enabled: clip whenever they are live</option>
-      <option value="paused">Paused</option>
-      <option value="stopped">Stopped</option>
+      <option value="paused">Paused: no recording; clips already caught wait until you enable it</option>
+      <option value="stopped">Stopped: no recording; clips already caught are still made</option>
     </select></label>
     <label>When they go live<select value={mode} onChange={e => setMode(e.target.value)}>{Object.entries(captureModes).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
       <small>{mode === "clip" ? "Clips are cut while they stream." : mode === "record" ? "The whole stream is saved on your worker PC (about 1 to 3 GB an hour) and clipped when it ends. Pick your own clips under Channels → Recordings." : "Clips are cut while they stream, and the whole stream is saved so you can pick more later."}{mode !== (streamer.capture_mode ?? "clip") ? " Applies from their next stream." : ""}</small></label>

@@ -52,3 +52,19 @@ export function jobRank(job) {
   const coverage = !job.kind && job.reason === "audio";
   return (coverage ? 2 : 0) + (job.resumed ? 1 : 0);
 }
+
+// The next clip to make from those ready: the best jobRank, and within it the moments people chose (!clip, a viewer's
+// clip) first, then chat spikes by how far chat jumped (strength, media.mjs lift), so in a backlog (a big channel
+// spiking faster than the PC can make clips) the biggest moments come out first rather than in arrival order. Ties
+// keep arrival order.
+const chosen = job => job.reason === "command" || job.reason === "viewer";
+const pull = job => chosen(job) ? 100 : (Number.isFinite(job.strength) ? job.strength : 0);
+export function pickJob(ready) {
+  let best = null;
+  for (const job of ready) {
+    if (!best) { best = job; continue; }
+    const a = jobRank(job), b = jobRank(best);
+    if (a < b || (a === b && pull(job) > pull(best))) best = job;
+  }
+  return best;
+}

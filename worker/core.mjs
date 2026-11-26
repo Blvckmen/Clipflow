@@ -109,11 +109,14 @@ export function validateControl(c) {
 }
 export function allowed(c, id) { return c?.control === "running" && c.streamers.some(s => s.id === id && s.status === "armed"); }
 // What happens to a clip already queued for a streamer: "run" it, "hold" it while automation or the streamer is paused
-// (it's made after Resume), or "drop" it once either is stopped, the streamer is gone, or there are no settings.
+// (it's made after Resume), or "drop" it (see below).
 export function queuedClip(c, id) {
   const s = c?.streamers?.find(x => x.id === id);
-  if (!c || !s || c.control === "stopped" || s.status === "stopped") return "drop";
-  return c.control === "running" && s.status === "armed" ? "run" : "hold";
+  // Only "Stop and clear queue" (automation stopped), a removed streamer or no settings drop a captured clip. A
+  // streamer stopped on its own stops recording (allowed, plan), but the moments it already captured are still made:
+  // stopping one channel used to throw away its whole backlog (24 clips once, a 9,109-view moment among them).
+  if (!c || !s || c.control === "stopped") return "drop";
+  return c.control === "running" && (s.status === "armed" || s.status === "stopped") ? "run" : "hold";
 }
 // Classifies `streamlink --json` output. Only "No playable streams" means offline; other errors are not proof either way.
 export function probeResult(json) {
