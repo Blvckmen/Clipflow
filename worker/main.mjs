@@ -25,7 +25,7 @@ import { downloadUpload } from "./uploaded-video.mjs";
 import { PLATFORM_NAMES, downloadVideo, findYtDlp, videoLink, videoTitle } from "./vod.mjs";
 import { setWhisperModel, stopTranscriber, transcribe as whisper } from "./whisper.mjs";
 import { AI_BATCH, autoClipPicks, mergeAiMoments, transcriptWindows } from "./stream-pass.mjs";
-import { coverageRoom, coverageWindow, enqueueTrigger, jobRank, pickJob } from "./triggers.mjs";
+import { coverageRoom, coverageWindow, crowdMoments, enqueueTrigger, jobRank, pickJob } from "./triggers.mjs";
 
 // Every log line starts with the time (HH:MM:SS), so how long things take can be read off worker.log.
 for (const level of ["log", "warn", "error"]) {
@@ -55,7 +55,10 @@ const bufferSeconds = seconds(env.BUFFER_SECONDS, 240) / 1000;
 const liveCheckMs = seconds(env.LIVE_CHECK_SECONDS, 120), probeConcurrency = 3, probesPerCycle = 15;
 const postRollMs = 20_000;
 // Why a clip was cut; the code is sent to the dashboard with the clip.
-const reasonLabel = { command: "!clip in chat", chat: "chat spike", audio: "loudest moment", best: "best moment of a recording", manual: "picked in a recording", viewer: "a viewer's Twitch clip" };
+const reasonLabel = { command: "!clip in chat", chat: "chat spike", crowd: "viewers clipping it live", audio: "loudest moment", best: "best moment of a recording", manual: "picked in a recording", viewer: "a viewer's Twitch clip" };
+// How often a live Twitch channel is asked for the clips viewers just made (each becomes a trigger, see crowdMoments in
+// triggers.mjs). 0 turns it off. Needs the worker's Twitch app (the same one viewers' clips use).
+const crowdEveryMs = Math.max(0, Number(env.CROWD_CHECK_SECONDS ?? 30) || 0) * 1000;
 // Whole-stream recordings: background work (joining, measuring, previews) runs one recording step at a time beside
 // clip processing; `recordingRetry` holds a failed step's retry time. `requestsSeen`: clip requests already taken on.
 let backgroundBusy = false, backgroundRow = null;
@@ -248,7 +251,7 @@ async function startSession(streamer) {
   const recording = keep ? { id: crypto.randomUUID(), chat: [], chatSeen: 0, startMs: 0, marks: [] } : null;
   if (recording) recording.dir = join(dataDir, "recordings", recording.id);
   const recorder = new Recorder(channelUrl(streamer.url), keep ? join(recording.dir, "segments") : join(dataDir, "buffer", streamer.id), { bufferSeconds, streamlink, keep });
-  const session = { streamer, mode, recording, recorder, chat: null, startedMs: Date.now(), lastClipMs: Date.now(), queue: [], coveredUntil: Date.now(), lastSpikeMs: 0, busy: false, commandSeen: Date.now() };
+  const session = { streamer, mode, recording, recorder, chat: null, startedMs: Date.now(), lastClipMs: Date.now(), queue: [], coveredUntil: Date.now(), lastSpikeMs: 0, busy: false, commandSeen: Date.now(), crowd: { lastPoll: 0, polling: false, seen: new Set(), warned: false } };
   sessions.set(streamer.id, session);
   try { await recorder.start(); }
   catch (error) { sessions.delete(streamer.id); problem("Could not start recording " + streamer.url + ": " + error.message); return; }
@@ -409,6 +412,32 @@ async function clipJob(job) {
   }
 }
 
+// Asks Twitch (every crowdEveryMs) for the clips viewers just made on a live channel and queues each one's moment while
+// it's still in the buffer, like a chat spike (crowdMoments in triggers.mjs). Runs alongside checkSessions, not in it.
+async function pollCrowd(session) {
+  const c = session.crowd, login = twitchLogin(session.streamer.url);
+  // Through the site's Twitch app (shared by every workspace's worker, one rate limit) at most once a minute.
+  const everyMs = twitch?.via ? Math.max(60_000, crowdEveryMs) : crowdEveryMs;
+  if (!twitch || !crowdEveryMs || !login || c.polling || Date.now() - c.lastPoll < everyMs) return;
+  c.polling = true; c.lastPoll = Date.now();
+  try {
+    const list = await twitch.clips(login, new Date(Date.now() - 6 * 60_000));
+    const starts = await twitch.startsOf(list).catch(() => new Map());
+    if (sessions.get(session.streamer.id) !== session) return;
+    // The moment's end must still be in the buffer, a little after its oldest footage.
+    const latest = session.recorder.latestMs(), earliestMs = latest - session.recorder.buffered() * 1000 + 15_000, now = Date.now();
+    for (const m of crowdMoments(list, { seen: c.seen, starts, earliestMs, nowMs: now })) {
+      const what = enqueueTrigger(session.queue, session.coveredUntil, { atMs: m.atMs, reason: "crowd" });
+      console.log("A viewer clipped", session.streamer.url, Math.round((now - m.atMs) / 1000) + "s ago" + (what === "queued" ? "" : what === "merged" ? " (same moment)" : " (already in a clip)"));
+    }
+    // Only what Twitch still lists (the last 6 minutes) needs remembering.
+    const listed = new Set(list.map(x => x.id));
+    for (const id of c.seen) if (!listed.has(id)) c.seen.delete(id);
+  } catch (error) {
+    if (!c.warned) { c.warned = true; console.log("Couldn't check viewers' live clips on", session.streamer.url + ":", error.message); }
+  } finally { c.polling = false; }
+}
+
 // Runs every few seconds: ends sessions that should stop and turns chat spikes or quiet periods into clips.
 async function checkSessions() {
   const now = Date.now();
@@ -437,6 +466,8 @@ async function checkSessions() {
     if (command && session.mode === "record") { session.commandSeen = command.atMs; session.recording.marks.push(command.atMs); console.log("!clip from", command.by, "on", name + ": marked for when the stream ends"); }
     // Record-only streams are clipped when they end, from the whole recording.
     if (session.busy || session.mode === "record" || limitReached) continue;
+    // Viewers clipping a moment live (Twitch): queued like a chat spike when the answer comes back.
+    if (session.chat) void pollCrowd(session);
     const latest = session.recorder.latestMs(), preRollMs = Math.max(45, settings.duration + 15) * 1000;
     // "!clip" and chat spikes queue up (triggers.mjs): none is lost to a cool-down, ones close together become one clip.
     if (command) {

@@ -6,15 +6,18 @@
 
 export const MERGE_MS = 20_000;
 
+// Which trigger names a merged clip: "!clip", then a viewer's live Twitch clip, then a chat spike.
+const NAMES = { command: 2, crowd: 1 };
+
 /**
  * Adds a trigger ({ atMs, reason }) to `queue` unless it falls in what's already been clipped (before `coveredUntil`,
- * wall-clock ms) or within MERGE_MS of a queued one (merged into it: "!clip" names the clip over a chat spike).
+ * wall-clock ms) or within MERGE_MS of a queued one (merged into it, named by the stronger reason: see NAMES).
  * @returns {"queued" | "merged" | "covered"}
  */
 export function enqueueTrigger(queue, coveredUntil, trigger) {
   if (trigger.atMs <= coveredUntil) return "covered";
   const near = queue.find(q => Math.abs(q.atMs - trigger.atMs) < MERGE_MS);
-  if (near) { if (trigger.reason === "command") near.reason = "command"; return "merged"; }
+  if (near) { if ((NAMES[trigger.reason] ?? 0) > (NAMES[near.reason] ?? 0)) near.reason = trigger.reason; return "merged"; }
   queue.push({ atMs: trigger.atMs, reason: trigger.reason });
   queue.sort((a, b) => a.atMs - b.atMs);
   return "queued";
@@ -53,11 +56,31 @@ export function jobRank(job) {
   return (coverage ? 2 : 0) + (job.resumed ? 1 : 0);
 }
 
+/**
+ * Moments viewers are clipping right now (a "crowd" trigger): the Twitch clips in `list` not in `seen` (their ids are
+ * added to it) whose moment ended at or after `earliestMs` (still in the recording buffer), as { atMs, id }, oldest
+ * first. A clip's moment ends at its broadcast's start (`starts`: video id -> ms) plus vod_offset plus its length;
+ * until Twitch knows its place in the broadcast, at when it was made (a live clip ends where the viewer pressed clip).
+ * Chat spikes missed most of what viewers clipped (25 Nov comparison: 218 of 571 moments, 94% of their views, never
+ * triggered); a viewer making a clip while it's live caught 170 of those 218.
+ */
+export function crowdMoments(list, { seen, starts, earliestMs, nowMs }) {
+  const out = [];
+  for (const c of list ?? []) {
+    if (!c || typeof c.id !== "string" || seen.has(c.id)) continue;
+    seen.add(c.id);
+    const start = c.video_id ? starts?.get(c.video_id) : undefined, len = Math.max(0, Number(c.duration) || 0) * 1000;
+    const atMs = Number.isFinite(start) && Number.isFinite(c.vod_offset) ? start + c.vod_offset * 1000 + len : Date.parse(c.created_at);
+    if (Number.isFinite(atMs) && atMs >= earliestMs && atMs <= nowMs + 5_000) out.push({ atMs, id: c.id });
+  }
+  return out.sort((a, b) => a.atMs - b.atMs);
+}
+
 // The next clip to make from those ready: the best jobRank, and within it the moments people chose (!clip, a viewer's
 // clip) first, then chat spikes by how far chat jumped (strength, media.mjs lift), so in a backlog (a big channel
 // spiking faster than the PC can make clips) the biggest moments come out first rather than in arrival order. Ties
 // keep arrival order.
-const chosen = job => job.reason === "command" || job.reason === "viewer";
+const chosen = job => job.reason === "command" || job.reason === "viewer" || job.reason === "crowd";
 const pull = job => chosen(job) ? 100 : (Number.isFinite(job.strength) ? job.strength : 0);
 export function pickJob(ready) {
   let best = null;

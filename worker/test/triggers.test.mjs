@@ -1,6 +1,35 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { coverageWindow, enqueueTrigger, MERGE_MS } from "../triggers.mjs";
+import { coverageWindow, crowdMoments, enqueueTrigger, MERGE_MS } from "../triggers.mjs";
+
+test("a viewer's live Twitch clip names a merged moment over a chat spike, but not over !clip", () => {
+  const q = [];
+  enqueueTrigger(q, 0, { atMs: 100_000, reason: "chat" });
+  assert.equal(enqueueTrigger(q, 0, { atMs: 105_000, reason: "crowd" }), "merged");
+  assert.equal(q[0].reason, "crowd");
+  enqueueTrigger(q, 0, { atMs: 108_000, reason: "command" });
+  assert.equal(q[0].reason, "command");
+  enqueueTrigger(q, 0, { atMs: 110_000, reason: "crowd" });
+  assert.equal(q[0].reason, "command", "!clip stays");
+});
+
+test("crowdMoments: new viewer clips whose moment is still buffered, timed by the broadcast when known", () => {
+  const now = Date.parse("2026-11-26T12:00:00Z"), seen = new Set(["old"]);
+  const starts = new Map([["v1", now - 3_600_000]]);
+  const list = [
+    { id: "old", created_at: new Date(now - 30_000).toISOString(), duration: 30 },
+    // Placed in the broadcast: 3600s - 100s in, 30s long, so it ended 70s ago (made later doesn't matter).
+    { id: "vod", video_id: "v1", vod_offset: 3500, duration: 30, created_at: new Date(now - 10_000).toISOString() },
+    // Not placed yet: its moment ends when it was made.
+    { id: "new", video_id: "", vod_offset: null, duration: 25, created_at: new Date(now - 20_000).toISOString() },
+    // Ended before the buffer starts.
+    { id: "gone", created_at: new Date(now - 300_000).toISOString(), duration: 30 },
+    { id: "bad", created_at: "nope" },
+  ];
+  assert.deepEqual(crowdMoments(list, { seen, starts, earliestMs: now - 200_000, nowMs: now }), [{ atMs: now - 70_000, id: "vod" }, { atMs: now - 20_000, id: "new" }]);
+  assert.ok(seen.has("gone") && seen.has("vod"), "remembered, so none comes twice");
+  assert.deepEqual(crowdMoments(list, { seen, starts, earliestMs: 0, nowMs: now }), [], "nothing new the second time");
+});
 
 test("triggers queue up instead of being dropped; close ones merge and clipped stretches are skipped", () => {
   const q = [];
@@ -48,6 +77,7 @@ test("in a backlog the biggest moments are made first: chosen ones, then the str
   assert.equal(pickJob([job("a", { strength: 2.1 }), job("b", { strength: 6.4 }), job("c", { strength: 3 })]).id, "b");
   // Someone typed !clip or a viewer clipped it: ahead of any chat spike.
   assert.equal(pickJob([job("a", { strength: 19 }), job("v", { reason: "viewer" })]).id, "v");
+  assert.equal(pickJob([job("a", { strength: 19 }), job("c", { reason: "crowd" })]).id, "c", "a moment viewers clipped live comes before chat spikes");
   assert.equal(pickJob([job("a", { strength: 19 }), job("k", { reason: "command", strength: 1 })]).id, "k");
   // Ties (or no strength measured) keep arrival order.
   assert.equal(pickJob([job("a", { strength: 3 }), job("b", { strength: 3 })]).id, "a");

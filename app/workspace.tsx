@@ -46,7 +46,7 @@ type Review="pending"|"approved"|"rejected";
 type Clip={id:string;streamer_id:string;streamer:string|null;created_at:string;duration:number;captions:boolean;size:number;stored:boolean;review:Review;reason:string|null;editable:boolean;source_stored:boolean;render_state:string|null;render_error:string|null;rendered_at:string|null;edit_rev:number;thumb_rev?:number|null;score?:number;scoreWhy?:string|null;post_caption?:string|null;targets?:Record<string,Post["state"]>};
 type ClipFilter="all"|Review;
 const reviewFilters:Record<ClipFilter,string>={pending:"Needs review",approved:"Approved",rejected:"Rejected",all:"All"};
-const reasonLabels:Record<string,string>={command:"!clip in chat",chat:"Chat spike",audio:"Loudest moment",best:"Best of a recording",manual:"Picked from a recording",viewer:"Viewer's Twitch clip"};
+const reasonLabels:Record<string,string>={command:"!clip in chat",chat:"Chat spike",audio:"Loudest moment",best:"Best of a recording",manual:"Picked from a recording",viewer:"Viewer's Twitch clip",crowd:"Viewers clipped it live"};
 const renderPreview=(template?:string)=>(template||"").replace(/\{streamer\}/g,"sodapoppin").replace(/\{platform\}/g,"Twitch").slice(0,120)||"—";
 function ReviewTag({review}:{review:Review}){return <span className={"tag "+(review==="approved"?"lime":review==="pending"?"amber":"")}>{review==="approved"?"Approved":review==="pending"?"Needs review":"Rejected"}</span>}
 type Engine={connected:boolean;lastSeen:string|null;tokenCreated:string|null;status:string;lastError:string|null;lastErrorAt:string|null;device?:Device|null;deviceAt?:string|null;settingsRev?:string};
