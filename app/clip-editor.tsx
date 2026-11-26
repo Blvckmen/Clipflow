@@ -260,7 +260,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
       hookBox.current = e.hook.text && (out < e.hook.seconds || placing) ? drawText(ctx, e.hook.text.split("\n").flatMap((l, i) => [...(i ? [{ t: "\n", color: e.hook.color }] : []), ...l.split(" ").filter(Boolean).map(t => ({ t, color: e.hook.color }))]),
         e.hook.bg ? { font: c.font, size: hp.size, outline: 0, outlineColor: "#000000", box: true, boxColor: e.hook.bg } : { font: c.font, size: hp.size, outline: Math.max(3, Math.round(hp.size * HOOK_OUTLINE / 52)), outlineColor: hookOutlineColor(e.hook.color), box: false, boxColor: "#000000" },
         hp.x, hp.y, "top", placing ? 1 : pop(out), 60, hp.wrap) : null;
-      if (hookBox.current && placing) { const b = hookBox.current; ctx.save(); ctx.setLineDash([10, 8]); ctx.lineWidth = 3; ctx.strokeStyle = "#bcfa76"; ctx.strokeRect(b.left - 16, b.top - 8, b.right - b.left + 32, b.bottom - b.top + 16); ctx.restore(); }
+      if (hookBox.current && placing) { const b = hookBox.current; ctx.save(); ctx.setLineDash([10, 8]); ctx.lineWidth = 3; ctx.strokeStyle = "#ff6a55"; ctx.strokeRect(b.left - 16, b.top - 8, b.right - b.left + 32, b.bottom - b.top + 16); ctx.restore(); }
       if (e.progress.on) { ctx.fillStyle = e.progress.color; ctx.fillRect(0, H - 10, W * clamp(out / clipLen, 0, 1), 10); }
       ctx.restore();
     };
@@ -426,7 +426,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
         <div className="editor-timeline">
           <div className="timeline-head"><span><Scissors size={14} /> Trim · {fmt(edit.trim.start)} to {fmt(edit.trim.end)}</span><span className="muted">Drag the handles, or press I and O at the playhead</span></div>
           <div className="heat" ref={strip} onPointerDown={ev => seek(timeAt(ev.clientX))}>
-            <div className="heat-bars" aria-hidden>{Array.from({ length: Math.max(1, Math.ceil(duration)) }, (_, i) => { const e = bundle.signals?.energy[i] ?? 0, ch = (bundle.signals?.chat[i] ?? 0) / maxChat; return <span key={i} style={{ height: Math.max(6, e * 100) + "%", background: ch > 0.05 ? `color-mix(in srgb, #ff7a59 ${Math.round(ch * 100)}%, #4b5a6b)` : undefined }} />; })}</div>
+            <div className="heat-bars" aria-hidden>{Array.from({ length: Math.max(1, Math.ceil(duration)) }, (_, i) => { const e = bundle.signals?.energy[i] ?? 0, ch = (bundle.signals?.chat[i] ?? 0) / maxChat; return <span key={i} style={{ height: Math.max(6, e * 100) + "%", background: ch > 0.05 ? `color-mix(in srgb, #ff7a59 ${Math.round(ch * 100)}%, #61555a)` : undefined }} />; })}</div>
             <div className="heat-shade" style={{ left: 0, width: pct(edit.trim.start) + "%" }} />
             <div className="heat-shade" style={{ left: pct(edit.trim.end) + "%", right: 0 }} />
             <div className="heat-range" style={{ left: pct(edit.trim.start) + "%", width: pct(len) + "%" }}>

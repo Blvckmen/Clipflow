@@ -83,7 +83,7 @@ function SplitCard({ streamer, base, own, backgrounds, workspaceFraming, busy, c
   const summary = on
     ? [d.top === "stream" ? "Stream on top" : "Background on top", "stream " + pct(d.share), chosen.length ? chosen.length + (chosen.length === 1 ? " background" : " backgrounds") : "any background", d.volume ? "sound " + pct(d.volume) : "sound off"].join(" · ")
     : "Off · " + (FRAMING_NAMES[base.frame.mode] ?? base.frame.mode);
-  const hue = PLATFORM_HUES[streamer.platform] ?? "#bcfa76";
+  const hue = PLATFORM_HUES[streamer.platform] ?? "#ff6a55";
   return <article className={"split-card" + (on ? " on" : "") + (open && on ? " open" : "")}>
     <header className="split-card-head">
       <button type="button" className="split-card-title" disabled={!on} aria-expanded={open && on} onClick={() => setOpen(!open)}>
@@ -151,7 +151,7 @@ function SplitCard({ streamer, base, own, backgrounds, workspaceFraming, busy, c
 
 // A small 9:16 picture of the clip: the stream and the background stacked as the draft says, subtitles where they will be.
 function Preview({ d, background, name, hue, captionY }: { d: Draft; background?: Background; name: string; hue: string; captionY: number | null }) {
-  const stream = <div className="pv-stream" style={{ flexBasis: pct(d.share), background: `linear-gradient(160deg, ${hue}55, #0c0f13 75%)` }}>
+  const stream = <div className="pv-stream" style={{ flexBasis: pct(d.share), background: `linear-gradient(160deg, ${hue}55, #110e0f 75%)` }}>
     <span className="pv-live">LIVE</span><span className="pv-name">{name}</span>
   </div>;
   const bg = <div className="pv-bg" style={{ flexBasis: pct(1 - d.share) }}>

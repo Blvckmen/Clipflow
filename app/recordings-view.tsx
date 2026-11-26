@@ -197,7 +197,7 @@ function RecordingPlayer({ r, requests, storage, busy, workerOnline, duration, m
         : <div className="subtle-note">{storage ? (r.uploading ? "The preview is uploading from the worker PC." : "The worker PC is making a small preview to watch here. Meanwhile, pick moments from the heat strip below.") : "Clip storage is off on this site, so there is no preview. Pick moments from the heat strip below."}</div>)}
       {ready && total > 0 && <div>
         <div className="heat recording-heat" ref={strip} onPointerDown={e => seek(timeAt(e.clientX))} title="Click to jump there">
-          <div className="heat-bars" aria-hidden>{(signals?.energy ?? []).map((e, i) => { const ch = (signals?.chat[i] ?? 0) / maxChat; return <span key={i} style={{ height: Math.max(4, e * 100) + "%", background: ch > 0.05 ? `color-mix(in srgb, #ff7a59 ${Math.round(ch * 100)}%, #4b5a6b)` : undefined }} />; })}</div>
+          <div className="heat-bars" aria-hidden>{(signals?.energy ?? []).map((e, i) => { const ch = (signals?.chat[i] ?? 0) / maxChat; return <span key={i} style={{ height: Math.max(4, e * 100) + "%", background: ch > 0.05 ? `color-mix(in srgb, #ff7a59 ${Math.round(ch * 100)}%, #61555a)` : undefined }} />; })}</div>
           {(signals?.moments ?? []).map(m => <i key={m.start} className="heat-moment" style={{ left: pct(m.start), width: pct(m.end - m.start) }} aria-hidden />)}
           {start != null && end != null && <div className="heat-range" style={{ left: pct(start), width: pct(Math.max(1, end - start)) }} />}
           <div className="heat-cursor" style={{ left: pct(at) }} />
