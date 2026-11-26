@@ -21,6 +21,17 @@ then run `node main.mjs` with the same variables plus `DATA_DIR` pointing to a w
 
 ### Windows, always on
 
+**Easiest:** in the dashboard open **Connect worker → Make a pairing code**, then double-click
+`worker\Setup Clipflow.cmd`. It installs what's missing with winget (Node.js 24, Python, ffmpeg, Ollama and its
+model), the Python packages (streamlink, faster-whisper, OpenCV, Pillow, freetype-py, yt-dlp, RapidOCR), asks for the
+site address and the code, registers the always-on task, starts the worker and offers to keep the PC awake on mains
+power. Running it again keeps what's there. Options (`powershell -ExecutionPolicy Bypass -File worker\setup-windows.ps1
+...`): `-Check` reports what's installed and missing without changing anything; `-NoAI` skips Ollama; `-WithMusic` adds
+Demucs (about 2 GB) for turning music down; `-Site` and `-Code` skip the questions; `-Yes` takes the defaults. PCs
+with less than 16 GB of memory get the smaller `qwen2.5:3b` model.
+
+By hand instead:
+
 1. Pair the PC: in the dashboard open **Connect worker → Make a pairing code**, then run the command it shows,
    `node worker/pair.mjs https://your-site XXXX-XXXX`. It writes `CLIPFLOW_URL` and `CLIPFLOW_TOKEN` into
    `worker\.env` (git-ignored), keeping any other lines there. A code works once, for 10 minutes, and pairing
