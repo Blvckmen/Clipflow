@@ -71,6 +71,9 @@ export const events=sqliteTable("events",{id:text("id").primaryKey(),owner:text(
 // Clipflow's own sign-in (lib/app-auth.mjs). Each sign-in account (Twitch, later Google) belongs to one workspace owner;
 // an Access user who signs in with Twitch links it to their existing workspace.
 export const authIdentities=sqliteTable("auth_identities",{provider:text("provider").notNull(),providerId:text("provider_id").notNull(),owner:text("owner").notNull(),login:text("login"),email:text("email"),displayName:text("display_name"),createdAt:text("created_at").notNull(),lastSignIn:text("last_sign_in")},t=>[primaryKey({columns:[t.provider,t.providerId]}),index("auth_identities_owner").on(t.owner)]);
+// A workspace's plan (lib/plans.mjs), kept in step with Stripe by app/api/stripe/webhook. status: trial (until
+// trial_ends_at), comped (workspaces from before billing; never limited), or Stripe's subscription status.
+export const billing=sqliteTable("billing",{owner:text("owner").primaryKey(),plan:text("plan"),status:text("status").notNull(),trialEndsAt:text("trial_ends_at"),stripeCustomer:text("stripe_customer"),stripeSubscription:text("stripe_subscription"),periodEnd:text("period_end"),updatedAt:text("updated_at").notNull()},t=>[index("billing_customer").on(t.stripeCustomer)]);
 // A signed-in browser: only the SHA-256 of its cookie's token is kept.
 export const sessions=sqliteTable("sessions",{tokenHash:text("token_hash").primaryKey(),owner:text("owner").notNull(),displayName:text("display_name"),createdAt:text("created_at").notNull(),expiresAt:text("expires_at").notNull()},t=>[index("sessions_owner").on(t.owner)]);
 export const pairingCodes=sqliteTable("pairing_codes",{codeHash:text("code_hash").primaryKey(),owner:text("owner").notNull(),createdAt:text("created_at").notNull(),expiresAt:text("expires_at").notNull()},t=>[index("pairing_codes_owner").on(t.owner)]);
