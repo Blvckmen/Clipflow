@@ -15,7 +15,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const port = 8790 + Math.floor(Math.random() * 100), base = "http://127.0.0.1:" + port;
 const owner = "pubtest_" + Date.now().toString(36);
 const who = { "oai-authenticated-user-id": owner, "oai-authenticated-user-email": owner + "@test.local" };
-let fake, dev, workerToken, streamer;
+let fake, dev, directRuntime, workerToken, streamer;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const dash = async body => {
   const r = await fetch(base + "/api/dashboard", body ? { method: "POST", headers: { ...who, "content-type": "application/json" }, body: JSON.stringify(body) } : { headers: who });
@@ -43,10 +43,20 @@ before(async () => {
 
   const graph = "http://127.0.0.1:" + fake.port;
   const vars = { AUTH_MODE: "sites", ZERNIO_API_KEY: "", ENABLE_TEST_CRON: "1", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "", INSTAGRAM_APP_ID: "test-app", INSTAGRAM_APP_SECRET: "test-secret", TOKEN_KEY: randomBytes(32).toString("base64"), MEDIA_KEY: randomBytes(32).toString("base64"), PUBLIC_URL: base, INSTAGRAM_AUTH_URL: graph, INSTAGRAM_API_URL: graph, INSTAGRAM_GRAPH_URL: graph };
+  if(process.env.E2E_DIRECT === "1") {
+    const { Miniflare } = await import("miniflare");
+    const { resolve } = await import("node:path");
+    const {readdirSync}=await import("node:fs");
+    const modules=["index.js",...readdirSync("dist/server",{recursive:true}).filter(p=>/\.m?js$/.test(p)&&p!=="index.js")].map(p=>({type:"ESModule",path:resolve("dist/server",p)}));
+    const persist=resolve(process.env.E2E_PERSIST_DIR || ".wrangler/state", "v3");
+    directRuntime=new Miniflare({port,host:"127.0.0.1",modules,modulesRoot:resolve("dist/server"),compatibilityDate:"2026-05-15",compatibilityFlags:["nodejs_compat"],bindings:vars,d1Databases:{DB:"00000000-0000-4000-8000-000000000000"},d1Persist:resolve(persist,"d1"),r2Buckets:{BUCKET:"site-creator-r2"},r2Persist:resolve(persist,"r2")});
+    await directRuntime.ready;
+  } else {
   dev = spawn(process.execPath, ["--import", "./scripts/sites-env.mjs", "./node_modules/wrangler/bin/wrangler.js", "dev", "--config", "dist/server/wrangler.json", "--local", "--persist-to", process.env.E2E_PERSIST_DIR || ".wrangler/state", "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", "0", ...Object.entries(vars).flatMap(([k, v]) => ["--var", k + ":" + v])], { cwd: root, stdio: process.env.E2E_DEV_LOG ? ["ignore", openSync(process.env.E2E_DEV_LOG, "w"), "pipe"] : "ignore", env: { ...process.env, CI: "true" } });
   // E2E_DEV_LOG=<file> keeps the Worker's own log (console.error from the publisher and the caption writer).
   if (process.env.E2E_DEV_LOG) dev.stderr.on("data", d => appendFileSync(process.env.E2E_DEV_LOG, d));
   for (let i = 0; i < 90; i++) { if (dev.exitCode !== null) throw new Error("Local test server exited with code " + dev.exitCode + "; inspect E2E_DEV_LOG."); try { await fetch(base + "/api/worker/config", {signal:AbortSignal.timeout(2000)}); break; } catch { await sleep(1000); } }
+  }
   assert.equal((await dash({ action: "settings", settings: { mode: "automatic", duration: 30, dailyLimit: 2, captions: true, framing: "blur", destinations: ["Instagram"], captionTemplate: "{streamer} on {platform} #test", aiCaptions: false } })).status, 200);
   assert.equal((await dash({ action: "control", control: "running" })).status, 200);
   assert.equal((await dash({ action: "add", url: "https://twitch.tv/" + owner })).status, 200);
@@ -61,7 +71,7 @@ after(async () => {
     for (const a of body.accounts ?? []) await dash({ action: "disconnect", id: a.id });
     for (const s of body.streamers ?? []) await dash({ action: "remove", id: s.id });
     await dash({ action: "control", control: "paused" });
-  } finally { dev?.kill(); fake?.server.close(); }
+  } finally { dev?.kill(); await directRuntime?.dispose(); fake?.server.close(); }
 });
 
 test("dashboard reports Instagram publishing as available", async () => {
@@ -410,3 +420,50 @@ test("disconnecting removes the account and its links, and drops unsent posts", 
   assert.ok(body.posts.every(p => p.state === "published"), "only published history is kept");
 });
 
+
+test("recording uploads keep parts private, queue only complete files and clean up", async () => {
+  const url=base+"/api/recording-uploads";
+  const start=body=>fetch(url,{method:"POST",headers:{...who,"content-type":"application/json"},body:JSON.stringify(body)});
+  const bytes=Buffer.alloc(16*1024*1024+17,7);bytes.write("ftyp",4);
+  const options={name:"my recording.mp4",size:bytes.length,streamerId:streamer.id,count:3};
+  assert.equal((await fetch(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(options)})).status,401);
+  assert.equal((await start({...options,size:2*1024**3+1})).status,400);
+  assert.equal((await start({...options,name:"not-video.exe"})).status,400);
+  assert.equal((await start({...options,streamerId:randomUUID()})).status,404);
+  const created=await start(options);assert.equal(created.status,200);
+  const {id,partSize}=await created.json(),endpoint=url+"/"+id;
+  const put=async(part,body,identity=who)=>{
+    // A rejected body may close the local runtime socket; don't reuse it for the next test request.
+    const response=await fetch(endpoint,{method:"PUT",headers:{...identity,"x-part":String(part),"content-type":"application/octet-stream","connection":"close"},body});
+    return new Response(await response.text(),{status:response.status});
+  };
+  try{
+    const outOfOrder=await put(2,bytes.subarray(partSize));assert.equal(outOfOrder.status,400,await outOfOrder.text());
+    assert.equal((await put(1,Buffer.from("private"),{"oai-authenticated-user-id":"another-user","oai-authenticated-user-email":"another@test.local"})).status,404);
+    assert.equal((await put(1,Buffer.from("short"))).status,400);
+    assert.equal((await fetch(endpoint,{method:"POST",headers:who})).status,409);
+    assert.ok(!(await (await worker("/api/worker/config")).json()).uploads.some(x=>x.id===id));
+    assert.equal((await worker("/api/worker/recordings/"+id+"/source")).status,404);
+    assert.equal((await put(1,Buffer.alloc(partSize,0))).status,415,"reject non-video containers");
+    assert.equal((await put(1,bytes.subarray(0,partSize))).status,200);
+    assert.equal((await put(1,bytes.subarray(0,partSize))).status,200,"part retries are idempotent");
+    assert.equal((await put(2,bytes.subarray(partSize))).status,200);
+    assert.equal((await fetch(endpoint,{method:"POST",headers:who})).status,200);
+    assert.equal((await fetch(endpoint,{method:"POST",headers:who})).status,200,"completion retries are idempotent");
+    const config=await (await worker("/api/worker/config")).json();
+    assert.ok(config.uploads.some(x=>x.id===id&&x.streamerId===streamer.id));
+    assert.ok(!config.imports.some(x=>x.id===id),"old workers never receive an invalid URL");
+    const dashboard=(await dash()).body;
+    assert.equal(dashboard.recordings.find(r=>r.id===id).title,options.name);
+    assert.equal(dashboard.recordingRequests.filter(q=>q.recording_id===id).length,1);
+    const download=await worker("/api/worker/recordings/"+id+"/source");assert.equal(download.status,200);
+    assert.deepEqual(Buffer.from(await download.arrayBuffer()),bytes);
+    assert.equal((await fetch(base+"/api/worker/recordings/"+id+"/source")).status,401);
+    assert.equal((await dash({action:"deleteRecording",id})).status,200);
+    assert.equal((await worker("/api/worker/recordings/"+id+"/source")).status,404);
+    assert.equal((await fetch(endpoint,{method:"POST",headers:who})).status,404);
+  }finally{await dash({action:"deleteRecording",id}).catch(()=>{});await fetch(endpoint,{method:"DELETE",headers:who});}
+  const cancelled=await (await start({...options,size:100,count:0})).json();
+  assert.equal((await fetch(url+"/"+cancelled.id,{method:"DELETE",headers:who})).status,200);
+  assert.equal((await fetch(url+"/"+cancelled.id,{method:"POST",headers:who})).status,404);
+});

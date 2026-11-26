@@ -42,6 +42,7 @@ export async function POST(request:Request){
     .bind(body.title??null,body.endedAt??null,body.duration??null,body.size??null,body.state,body.error??null,signals,body.id,owner));
    if(body.state==="ready"&&existing.state!=="ready")statements.push(db.prepare("INSERT INTO events (id,owner,message,created_at) VALUES (?,?,?,?)").bind(crypto.randomUUID(),owner,(existing.source_url?"Imported a ":"Saved a ")+Math.max(1,Math.round((body.duration??0)/60))+"-minute "+(existing.source_url?"video":"recording")+" of "+streamer.name+". Pick clips from it under Recordings.",now));
   }
+  if(body.state==="failed")statements.push(db.prepare("UPDATE recording_requests SET state='failed',error=?,updated_at=? WHERE recording_id=? AND owner=? AND state IN ('queued','working')").bind(body.error??"The source recording failed.",now,body.id,owner));
   await db.batch(statements);
   return Response.json({ok:true});
  }catch(error){console.error("Recording report failed",error);return Response.json({error:"Recording report not saved."},{status:503});}

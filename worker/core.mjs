@@ -87,6 +87,8 @@ export function validateControl(c) {
   }
   // Videos pasted on the Recordings page, waiting to be downloaded ({ id, streamerId, url }). Each link is rebuilt by
   // videoLink() and must come back the same; dashboards that predate imports omit the list.
+  c.uploads ??= [];
+  if (!Array.isArray(c.uploads) || c.uploads.length > 20 || c.uploads.some(v => !/^[0-9a-f-]{36}$/i.test(v?.id) || !/^[0-9a-f-]{36}$/i.test(v.streamerId))) throw new Error("Invalid uploaded video");
   c.imports ??= [];
   if (!Array.isArray(c.imports) || c.imports.length > 20) throw new Error("Invalid imports");
   for (const v of c.imports) if (!/^[0-9a-f-]{36}$/i.test(v?.id) || !/^[0-9a-f-]{36}$/i.test(v.streamerId) || videoLink(v.url)?.url !== v.url) throw new Error("Invalid import");

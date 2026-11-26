@@ -1,7 +1,9 @@
+import { discardUpload } from "./recording-upload";
 import { bucket, previewKey, transcriptKey } from "../db/raw";
 // A recording's stored preview (or its unfinished upload). The full-quality file is on the worker PC, which
 // deletes it once the recording is gone from the dashboard.
 export async function removeRecordingFiles(id: string, rec: { preview_key: string | null; upload_id: string | null }, store = bucket()) {
+  await discardUpload(id,store);
   if (!store) return;
   if (rec.upload_id) await store.resumeMultipartUpload(previewKey(id), rec.upload_id).abort().catch(() => {});
   await store.delete([rec.preview_key ?? previewKey(id), transcriptKey(id)]);
@@ -10,6 +12,8 @@ export async function removeRecordingFiles(id: string, rec: { preview_key: strin
 // Deletes recordings past their workspace's retention period. Runs from the once-a-minute cron, a few at a time.
 export async function expireRecordings(env: Cloudflare.Env, now = Date.now()) {
   if (!env.DB) return;
+  const stale=await env.DB.prepare("SELECT id FROM recording_uploads WHERE complete=0 AND created_at<? LIMIT 10").bind(new Date(now-86400000).toISOString()).all<{id:string}>();
+  for(const row of stale.results)await discardUpload(row.id,env.BUCKET??null,env.DB);
   const { results } = await env.DB.prepare("SELECT id,owner,preview_key,upload_id FROM recordings WHERE expires_at<? AND state!='recording' LIMIT 25").bind(new Date(now).toISOString()).all<{ id: string; owner: string; preview_key: string | null; upload_id: string | null }>();
   for (const rec of results) {
     await removeRecordingFiles(rec.id, rec, env.BUCKET ?? null);

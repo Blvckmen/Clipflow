@@ -225,3 +225,5 @@ export const viewerClipCandidates=sqliteTable("viewer_clip_candidates",{
  clipCreatedAt:text("clip_created_at").notNull(),momentAt:text("moment_at"),videoId:text("video_id"),vodOffset:integer("vod_offset"),
  state:text("state").notNull(),error:text("error"),madeClip:text("made_clip"),createdAt:text("created_at").notNull(),updatedAt:text("updated_at").notNull(),
 },t=>[primaryKey({columns:[t.owner,t.clipId]}),index("viewer_clip_candidates_owner_state").on(t.owner,t.state)]);
+
+export const recordingUploads=sqliteTable("recording_uploads",{id:text("id").primaryKey(),owner:text("owner").notNull(),streamerId:text("streamer_id").notNull(),name:text("name").notNull(),size:integer("size").notNull(),clipCount:integer("clip_count").notNull().default(0),uploadId:text("upload_id"),parts:text("parts").notNull().default("[]"),complete:integer("complete").notNull().default(0),createdAt:text("created_at").notNull()},t=>[index("recording_uploads_owner").on(t.owner,t.complete)]);

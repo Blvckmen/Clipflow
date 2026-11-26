@@ -64,3 +64,28 @@ test("the worker config accepts imports only with links in their rebuilt form", 
     assert.throws(() => validateControl({ ...base(), imports: [{ id, streamerId, url }] }), /Invalid import/, url);
   assert.throws(() => validateControl({ ...base(), imports: [{ id: "x", streamerId, url: "https://www.twitch.tv/videos/2290123456" }] }), /Invalid import/);
 });
+
+
+test("YouTube authentication is opt-in and not passed to other sources", async () => {
+  const { authenticationArgs } = await import("../vod.mjs");
+  const youtube=videoLink("https://youtu.be/dQw4w9WgXcQ");
+  const ytdlp={binary:"yt-dlp",prefix:[],cookiesFile:"C:/private folder/youtube.txt"};
+  assert.deepEqual(authenticationArgs(youtube,{binary:"yt-dlp",prefix:[]}),[]);
+  assert.deepEqual(authenticationArgs(youtube,ytdlp),["--cookies",ytdlp.cookiesFile]);
+  assert.deepEqual(authenticationArgs({platform:"twitch"},ytdlp),[]);
+  const plan=downloadPlan(youtube,"D",{ytdlp});
+  assert.equal(plan.args[plan.args.indexOf("--cookies")+1],ytdlp.cookiesFile);
+  assert.ok(!plan.args.includes("--cookies-from-browser"));
+});
+
+test("YouTube login failures retain an actionable reason even with truncated diagnostics", async () => {
+  const { downloadFailure } = await import("../vod.mjs");
+  for(const message of ["Sign in to confirm you're not a bot. Use --cookies for the authentication.","yt-dlp failed (exit 1): -from-browser or --cookies for the authentication. See FAQ"]){
+    const reason=downloadFailure({platform:"youtube"},new Error(message));
+    assert.match(reason,/YouTube requires a signed-in session/);
+    assert.match(reason,/YTDLP_COOKIES/);
+    assert.ok(reason.length<250);
+  }
+  assert.equal(downloadFailure({platform:"youtube"},new Error("HTTP Error 404")),"HTTP Error 404");
+  assert.equal(downloadFailure({platform:"twitch"},new Error("authentication failed")),"authentication failed");
+});

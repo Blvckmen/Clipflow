@@ -1,10 +1,12 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { Clock3, Download, Film, Link2, Loader2, Radio, Scissors, Search, Sparkles, Trash2 } from "lucide-react";
+import { UploadRecording } from "./upload-recording";
 import { PLATFORM_NAMES, videoLink } from "../worker/video-link.mjs";
 // "queued" and "importing": a video pasted below, waiting for the worker PC and then downloading.
 export type Recording = { id: string; streamer_id: string; streamer: string | null; title: string | null; started_at: string; ended_at: string | null; duration: number | null; size: number | null; state: "queued" | "importing" | "recording" | "processing" | "ready" | "failed"; error: string | null; preview: boolean; uploading: boolean; expires_at: string; source_url?: string | null; transcript?: boolean };
 type StreamerChoice = { id: string; name: string };
+const isUpload = (r: Recording) => r.source_url === "upload:" + r.id;
 const sourceName = (r: Recording) => { const link = r.source_url ? videoLink(r.source_url) as { platform: keyof typeof PLATFORM_NAMES } | null : null; return link ? PLATFORM_NAMES[link.platform] : null; };
 export type RecordingRequest = { id: string; recording_id: string; kind: "moment" | "best"; start: number | null; end: number | null; count: number | null; state: "queued" | "working" | "done" | "failed"; error: string | null; clips: number; created_at: string };
 type Moment = { start: number; end: number; score: number; why: string[] };
@@ -26,7 +28,7 @@ const when = (iso: string) => new Date(iso).toLocaleString(undefined, { month: "
 
 function StateTag({ r }: { r: Recording }) {
   if (r.state === "queued") return <span className="tag amber">Waiting for the worker PC</span>;
-  if (r.state === "importing") return <span className="tag amber"><Loader2 size={11} className="spin" />&nbsp;Downloading</span>;
+  if (r.state === "importing") return <span className="tag amber"><Loader2 size={11} className="spin" />&nbsp;{isUpload(r) ? "Preparing uploaded video" : "Downloading"}</span>;
   if (r.state === "recording") return <span className="tag lime"><Radio size={11} />&nbsp;Recording now</span>;
   if (r.state === "processing") return <span className="tag amber">Saving on the worker PC</span>;
   if (r.state === "failed") return <span className="tag" title={r.error ?? ""}>Failed</span>;
@@ -75,12 +77,12 @@ export function RecordingsView({ recordings, requests, streamers, storage, busy,
   const active = recordings.some(r => r.state === "queued" || r.state === "importing" || r.state === "recording" || r.state === "processing" || (r.state === "ready" && !r.preview)) || requests.some(q => q.state === "queued" || q.state === "working");
   // Only while the tab is in view: a phone or a background tab left open shouldn't keep reading the database.
   useEffect(() => { if (!active) return; const timer = setInterval(() => { if (document.visibilityState === "visible") onRefresh(); }, 60_000); return () => clearInterval(timer); }, [active, onRefresh]);
-  const importer = <ImportVideo streamers={streamers} busy={busy} duration={duration} mutate={mutate} onImported={onRefresh} />;
+  const importer = <><UploadRecording streamers={streamers} storage={storage} workerOnline={workerOnline} onUploaded={onRefresh}/><ImportVideo streamers={streamers} busy={busy} duration={duration} mutate={mutate} onImported={onRefresh} /></>;
   if (!recordings.length) return <section className="panel"><div className="empty tall"><div className="empty-icon"><Film size={30} /></div><h3>No recordings yet</h3>
     <p>Set a streamer to <strong>Record the whole stream</strong> (or clip live and record) under Channels → Edit. Their next stream is saved on your worker PC, and you can pick clips from it here. Or import a stream that already happened:</p>{importer}</div></section>;
   return <div className="recordings-layout">
     <section className="panel recording-list" aria-label="Recordings">
-      <div className="panel-heading"><div><h2>Recordings <span className="count">{recordings.length}</span></h2><p>Whole streams and imported videos kept on your worker PC</p></div></div>
+      <div className="panel-heading"><div><h2>Recordings <span className="count">{recordings.length}</span></h2><p>Whole streams, uploaded videos and imported links processed on your worker PC</p></div></div>
       {importer}
       {recordings.map(r => { const mine = requests.filter(q => q.recording_id === r.id), made = mine.reduce((a, q) => a + q.clips, 0);
         return <button key={r.id} className={"recording-row" + (r.id === open?.id ? " active" : "")} onClick={() => {
@@ -89,7 +91,7 @@ export function RecordingsView({ recordings, requests, streamers, storage, busy,
           if (window.matchMedia("(max-width: 900px)").matches) requestAnimationFrame(() => document.querySelector(".recording-player")?.scrollIntoView({ behavior: "smooth", block: "start" }));
         }}>
           <div className="recording-row-top"><strong>{r.streamer ?? "Removed streamer"}</strong><StateTag r={r} /></div>
-          <small>{sourceName(r) ? "Imported from " + sourceName(r) + " " : ""}{when(r.started_at)}{r.duration ? " · " + length(r.duration) : ""}{made ? " · " + made + " clip" + (made === 1 ? "" : "s") + " made" : ""}</small>
+          <small>{isUpload(r) ? "Uploaded video " : sourceName(r) ? "Imported from " + sourceName(r) + " " : ""}{when(r.started_at)}{r.duration ? " · " + length(r.duration) : ""}{made ? " · " + made + " clip" + (made === 1 ? "" : "s") + " made" : ""}</small>
           {r.title && <small className="recording-title">{r.title}</small>}
         </button>; })}
       <div className="panel-foot"><span className="small-dot" />Kept until the dates shown, then deleted from the worker PC and here. Change it in Settings.</div>
@@ -186,7 +188,7 @@ function RecordingPlayer({ r, requests, storage, busy, workerOnline, duration, m
         ? <div className="row-actions"><button className="secondary" onClick={() => setConfirmDelete(false)}>Keep</button><button className="danger" disabled={busy} onClick={async () => { if (await mutate({ action: "deleteRecording", id: r.id })) onDeleted(); }}><Trash2 size={14} />Delete recording</button></div>
         : <button className="icon-button" aria-label="Delete recording" title="Delete recording" onClick={() => setConfirmDelete(true)}><Trash2 size={16} /></button>)}</div>
     <div className="form-body">
-      {(r.state === "queued" || r.state === "importing") && <div className="subtle-note">{r.state === "importing" && <Loader2 size={14} className="spin" />} {r.state === "queued" ? "Waiting for your worker PC to start downloading this " + (sourceName(r) ?? "") + " video" + (workerOnline ? " (it checks every minute)." : ". It is offline right now; the download starts when it is back.") : "Your worker PC is downloading this video. A long stream can take a while; then it is saved like a recording and the clips you asked for are made."}{r.source_url && <> <a href={r.source_url} target="_blank" rel="noreferrer">Open the original</a></>}</div>}
+      {(r.state === "queued" || r.state === "importing") && <div className="subtle-note">{r.state === "importing" && <Loader2 size={14} className="spin" />} {r.state === "queued" ? "Waiting for your worker PC to start downloading this " + (sourceName(r) ?? "") + " video" + (workerOnline ? " (it checks every minute)." : ". It is offline right now; the download starts when it is back.") : (isUpload(r) ? "Your worker PC is retrieving and preparing the uploaded video, then making the clips you requested." : "Your worker PC is downloading this video. A long stream can take a while; then it is saved like a recording and the clips you asked for are made.")}{r.source_url && !isUpload(r) && <> <a href={r.source_url} target="_blank" rel="noreferrer">Open the original</a></>}</div>}
       {r.state === "recording" && <div className="subtle-note">This stream is being recorded right now. Once it ends, the worker PC saves it{storage ? " and uploads a small preview here so you can watch it" : ""}.</div>}
       {r.state === "processing" && <div className="subtle-note"><Loader2 size={14} className="spin" /> The worker PC is saving this recording. The heat strip and preview appear in a few minutes.</div>}
       {r.state === "failed" && <div className="error" role="status">This recording failed{r.error ? ": " + r.error : "."}</div>}

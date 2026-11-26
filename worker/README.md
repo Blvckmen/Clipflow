@@ -234,3 +234,16 @@ waits on it.
 npm test                # scheduling, validation, edit model (layout, captions, ffmpeg graph), highlight detection
 npm run test:captions   # caption chunking (Python; on Windows: py test/test_captions.py)
 ```
+
+
+### YouTube imports that require sign in
+
+If a YouTube import asks for authentication, the worker needs an explicitly provided session; a public link alone may not be sufficient. In worker/.env, set YTDLP_COOKIES to the full path of a local Netscape-format YouTube cookies file, restart the worker, and import the link again. Both title lookup and download use this file for YouTube only. Clipflow does not automatically read browser cookies.
+
+Treat the file like a password: keep it outside the repository and do not upload it to the dashboard, Git, or chat. Follow the official yt-dlp instructions at https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies. Sessions can expire, and authentication does not guarantee that every video can be downloaded. Only import videos you are authorised to use.
+
+## Uploading local videos
+
+Recordings also accepts MP4, MOV, MKV and WebM files up to 2 GB. Choose the channel whose style and accounts to use, then Just import or Best moments. Keep the page open while the browser uploads 16 MB parts to private R2 storage. An updated worker downloads the completed file through its authenticated API, validates/converts it, and uses the normal recording pipeline. Uploads can finish while the worker is offline; processing waits for it to return.
+
+Apply migration 0041_recording_uploads.sql with the web deployment and restart the worker with the updated code. Older workers ignore uploaded-video jobs. At most five uploaded videos are retained per workspace. Uploaded originals are deleted with their recordings or on recording expiry; abandoned upload sessions expire after 24 hours. A failed network part is retried up to three times; closing the page does not support resuming the upload.

@@ -12,11 +12,24 @@ let found;
 export function findYtDlp(env = process.env, python = env.PYTHON || "python") {
   found ??= (async () => {
     for (const [binary, prefix] of [[env.YTDLP || "yt-dlp", []], [python, ["-m", "yt_dlp"]]]) {
-      try { await run(binary, [...prefix, "--version"], { timeout: 30_000, windowsHide: true }); return { binary, prefix }; } catch { /* try the next */ }
+      try { await run(binary, [...prefix, "--version"], { timeout: 30_000, windowsHide: true }); return { binary, prefix, cookiesFile: env.YTDLP_COOKIES?.trim() || null }; } catch { /* try the next */ }
     }
     return null;
   })();
   return found;
+}
+
+// Session credentials are opt-in and stay on the worker. Never discover browser cookies automatically.
+export function authenticationArgs(link, ytdlp) {
+  return link.platform === "youtube" && ytdlp?.cookiesFile ? ["--cookies", ytdlp.cookiesFile] : [];
+}
+
+export function downloadFailure(link, error) {
+  const message = String(error?.message ?? error);
+  if (link.platform === "youtube" && /sign in|authentication|cookies-for-the-authentication|cookies for the authentication|cookies-from-browser|exporting-youtube-cookies/i.test(message)) {
+    return "YouTube requires a signed-in session to download this video. Configure YTDLP_COOKIES on the worker with a local YouTube cookies file, restart the worker, then import the link again.";
+  }
+  return message;
 }
 
 // H.264 and AAC at up to 720p where the site offers them: clips are cut from the file without re-encoding.
@@ -25,7 +38,7 @@ const QUALITY = "720p,720p60,480p,best";
 
 // The downloader for a link: yt-dlp when installed (it is the only option for YouTube), else streamlink.
 export function downloadPlan(link, dir, { ytdlp, streamlink = "streamlink" }) {
-  if (ytdlp) return { binary: ytdlp.binary, args: [...ytdlp.prefix, "--no-playlist", "--no-progress", "--newline", "-f", FORMAT, "--merge-output-format", "mp4", "-o", join(dir, "download.%(ext)s"), "--", link.url] };
+  if (ytdlp) return { binary: ytdlp.binary, args: [...ytdlp.prefix, ...authenticationArgs(link, ytdlp), "--no-playlist", "--no-progress", "--newline", "-f", FORMAT, "--merge-output-format", "mp4", "-o", join(dir, "download.%(ext)s"), "--", link.url] };
   if (link.platform === "youtube") return null;
   return { binary: streamlink, args: ["--http-timeout", "20", "--stream-segment-threads", "3", "--force", "-o", join(dir, "download.ts"), link.url, QUALITY] };
 }
@@ -34,7 +47,7 @@ export function downloadPlan(link, dir, { ytdlp, streamlink = "streamlink" }) {
 export async function videoTitle(link, { ytdlp, streamlink = "streamlink", signal }) {
   try {
     if (ytdlp) {
-      const { stdout } = await run(ytdlp.binary, [...ytdlp.prefix, "--no-playlist", "--skip-download", "--print", "title", "--", link.url], { timeout: 60_000, windowsHide: true, signal, maxBuffer: 1 << 20 });
+      const { stdout } = await run(ytdlp.binary, [...ytdlp.prefix, ...authenticationArgs(link, ytdlp), "--no-playlist", "--skip-download", "--print", "title", "--", link.url], { timeout: 60_000, windowsHide: true, signal, maxBuffer: 1 << 20 });
       return stdout.trim().split(/\r?\n/)[0]?.slice(0, 200) || null;
     }
     const { stdout } = await run(streamlink, ["--json", "--http-timeout", "20", link.url], { timeout: 60_000, windowsHide: true, signal, maxBuffer: 4 << 20 });
@@ -66,7 +79,8 @@ export async function toRecording(input, out, { signal, seconds = 3600 } = {}) {
 export async function downloadVideo(link, dir, out, { ytdlp, streamlink, signal, timeout = 8 * 3600_000 }) {
   const plan = downloadPlan(link, dir, { ytdlp, streamlink });
   if (!plan) throw new Error("YouTube videos need yt-dlp on the worker PC (run: py -m pip install yt-dlp), then try again");
-  await command(plan.binary, plan.args, { signal, timeout }).done;
+  try { await command(plan.binary, plan.args, { signal, timeout }).done; }
+  catch (error) { if (signal?.aborted) throw error; throw new Error(downloadFailure(link, error), { cause: error }); }
   const file = (await readdir(dir)).find(f => /^download\.(mp4|ts|mkv|webm)$/.test(f));
   if (!file) throw new Error("the download finished without a video file");
   await toRecording(join(dir, file), out, { signal });

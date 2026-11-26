@@ -44,7 +44,8 @@ export async function GET(request:Request){
    recordingDays:(p?.recording_days as number|undefined)??defaults.recordingDays,importClips:(p?.import_clips as number|undefined)??defaults.importClips,viewerClips:readViewerClips(p?.viewer_clips),
    viewerClipPicks:vc.results.map(x=>({id:x.clip_id,streamerId:x.streamer_id,title:x.title,duration:x.duration,views:x.views,createdAt:x.clip_created_at,videoId:x.video_id,vodOffset:x.vod_offset})),clipCommand:(p?.clip_command as string|undefined)??defaults.clipCommand,recordings:rec.results.map(x=>x.id),
    // Oldest first, so the worker downloads them in the order they were pasted.
-   imports:rec.results.filter(x=>x.source_url&&(x.state==="queued"||x.state==="importing")).reverse().slice(0,20).map(x=>({id:x.id,streamerId:x.streamer_id,url:x.source_url})),
+   uploads:rec.results.filter(x=>x.source_url==="upload:"+x.id&&(x.state==="queued"||x.state==="importing")).reverse().slice(0,20).map(x=>({id:x.id,streamerId:x.streamer_id})),
+   imports:rec.results.filter(x=>x.source_url&&!x.source_url.startsWith("upload:")&&(x.state==="queued"||x.state==="importing")).reverse().slice(0,20).map(x=>({id:x.id,streamerId:x.streamer_id,url:x.source_url})),
    clipRequests:req.results.map(x=>x.kind==="moment"?{id:x.id,recordingId:x.recording_id,kind:x.kind,start:x.start,end:x.end}:{id:x.id,recordingId:x.recording_id,kind:x.kind,count:x.count}),
    // kind: a looping video, or a still image (rendered for the clip's whole length).
    backgrounds:b.results.map(({content_type,...x})=>({...x,kind:content_type.startsWith("image/")?"image":"video",type:content_type})),

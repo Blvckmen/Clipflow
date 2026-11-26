@@ -21,6 +21,7 @@ import { command } from "./process.mjs";
 import { bucketSignals, encodePreview, extractRange, joinSegments, parts, pickMoments, scanRanges, suggestMoments } from "./recordings.mjs";
 import { screenText, screenTextAvailable } from "./screentext.mjs";
 import { Twitch, clipUrl, momentOf, momentTime, pickClips, twitchLogin, viewerSettings } from "./twitch.mjs";
+import { downloadUpload } from "./uploaded-video.mjs";
 import { PLATFORM_NAMES, downloadVideo, findYtDlp, videoLink, videoTitle } from "./vod.mjs";
 import { setWhisperModel, stopTranscriber, transcribe as whisper } from "./whisper.mjs";
 import { AI_BATCH, autoClipPicks, mergeAiMoments, transcriptWindows } from "./stream-pass.mjs";
@@ -98,8 +99,8 @@ function problem(message) {
 }
 
 // Redirects are refused so a sign-in wall in front of the dashboard surfaces as an error, not a silent HTML page.
-function api(path, { timeout = 20_000, headers = {}, ...init } = {}) {
-  return fetch(new URL(path, origin), { ...init, redirect: "error", signal: AbortSignal.timeout(timeout), headers: { authorization: "Bearer " + token, "content-type": "application/json", ...headers } });
+function api(path, { timeout = 20_000, headers = {}, signal, ...init } = {}) {
+  return fetch(new URL(path, origin), { ...init, redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout), headers: { authorization: "Bearer " + token, "content-type": "application/json", ...headers } });
 }
 
 function setLive(id, status, title = null) {
@@ -603,7 +604,7 @@ function takeImports(list) {
   if (next) void importVideo(next);
 }
 async function importVideo(item) {
-  const link = videoLink(item.url), dir = join(dataDir, "recordings", item.id), controller = new AbortController();
+  const link = item.uploaded ? { url: "uploaded video " + item.id } : videoLink(item.url), dir = join(dataDir, "recordings", item.id), controller = new AbortController();
   const signal = AbortSignal.any([controller.signal, backgroundController.signal]);
   videoDownload = { id: item.id, controller };
   if (!store.recording(item.id)) store.addRecording(item.id, item.streamerId, dir, "import");
@@ -612,11 +613,15 @@ async function importVideo(item) {
     await rm(dir, { recursive: true, force: true });
     await mkdir(dir, { recursive: true });
     void syncRecordings();
+    if (item.uploaded) {
+      await downloadUpload(item.id, dir, api, signal);
+    } else {
     const ytdlp = await findYtDlp(env, python);
     const title = await videoTitle(link, { ytdlp, streamlink, signal });
     if (title) store.setRecording(item.id, { title, reported: 0 });
     console.log("Importing", PLATFORM_NAMES[link.platform], "video", link.url, "with", ytdlp ? "yt-dlp" : "streamlink");
     await downloadVideo(link, dir, join(dir, "recording.mp4"), { ytdlp, streamlink, signal });
+    }
     store.setRecording(item.id, { state: "ended", ended_at: new Date().toISOString(), reported: 0 });
     console.log("Imported", link.url);
   } catch (error) {
@@ -1262,7 +1267,7 @@ async function tick() {
   for (const streamer of start) await startSession(streamer);
   await importViewerClips();
   void makeViewerPicks().catch(error => problem("Making picked viewer clips failed: " + error.message));
-  if (config) takeImports(config.imports);
+  if (config) takeImports([...config.imports,...config.uploads.map(v=>({...v,uploaded:true}))]);
   await reportStatus();
   void report();
   await syncRecordings();
