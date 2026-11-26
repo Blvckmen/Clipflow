@@ -38,11 +38,28 @@ async function addClip(streamerId = streamer.id, extra = {}) {
 }
 const posts = async () => (await dash()).body.posts;
 
+// A stand-in for Twitch's sign-in (token) and API (who signed in), for Sign in with Twitch.
+let fakeTwitch;
+const twitchUser = { id: "4242" + Date.now().toString().slice(-6), login: "tester", display_name: "Tester", email: "tester@test.local" };
+async function startFakeTwitch() {
+  const { createServer } = await import("node:http");
+  const server = createServer((req, res) => {
+    let body = ""; req.on("data", c => body += c); req.on("end", () => {
+      if (req.url === "/oauth2/token") { const p = new URLSearchParams(body); return res.end(JSON.stringify(p.get("client_secret") === "twitch-secret" && p.get("code") === "good-code" ? { access_token: "user-token" } : {})); }
+      if (req.url === "/helix/users" && req.headers.authorization === "Bearer user-token") return res.end(JSON.stringify({ data: [twitchUser] }));
+      res.statusCode = 401; res.end("{}");
+    });
+  });
+  await new Promise(r => server.listen(0, "127.0.0.1", r));
+  return { server, url: "http://127.0.0.1:" + server.address().port };
+}
+
 before(async () => {
   fake = await startFakeInstagram();
+  fakeTwitch = await startFakeTwitch();
 
   const graph = "http://127.0.0.1:" + fake.port;
-  const vars = { AUTH_MODE: "sites", ZERNIO_API_KEY: "", ENABLE_TEST_CRON: "1", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "", INSTAGRAM_APP_ID: "test-app", INSTAGRAM_APP_SECRET: "test-secret", TOKEN_KEY: randomBytes(32).toString("base64"), MEDIA_KEY: randomBytes(32).toString("base64"), PUBLIC_URL: base, INSTAGRAM_AUTH_URL: graph, INSTAGRAM_API_URL: graph, INSTAGRAM_GRAPH_URL: graph };
+  const vars = { TWITCH_CLIENT_ID: "twitch-app", TWITCH_CLIENT_SECRET: "twitch-secret", TWITCH_AUTH_URL: fakeTwitch.url, TWITCH_API_URL: fakeTwitch.url, AUTH_MODE: "sites", ZERNIO_API_KEY: "", ENABLE_TEST_CRON: "1", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "", INSTAGRAM_APP_ID: "test-app", INSTAGRAM_APP_SECRET: "test-secret", TOKEN_KEY: randomBytes(32).toString("base64"), MEDIA_KEY: randomBytes(32).toString("base64"), PUBLIC_URL: base, INSTAGRAM_AUTH_URL: graph, INSTAGRAM_API_URL: graph, INSTAGRAM_GRAPH_URL: graph };
   if(process.env.E2E_DIRECT === "1") {
     const { Miniflare } = await import("miniflare");
     const { resolve } = await import("node:path");
@@ -71,7 +88,7 @@ after(async () => {
     for (const a of body.accounts ?? []) await dash({ action: "disconnect", id: a.id });
     for (const s of body.streamers ?? []) await dash({ action: "remove", id: s.id });
     await dash({ action: "control", control: "paused" });
-  } finally { dev?.kill(); await directRuntime?.dispose(); fake?.server.close(); }
+  } finally { dev?.kill(); await directRuntime?.dispose(); fake?.server.close(); fakeTwitch?.server.close(); }
 });
 
 test("dashboard reports Instagram publishing as available", async () => {
@@ -315,6 +332,46 @@ test("This PC health: the worker's checks reach the dashboard, and a restart ask
   assert.equal((await dash()).body.engine.device.restartPending, true);
 });
 
+
+test("Sign in with Twitch: closed to strangers, links to a signed-in workspace, then signs in alone and out", async () => {
+  // Through Twitch and back: the start sets a state cookie; the callback needs it, the state and Twitch's code.
+  const signIn = async (headers = {}, code = "good-code") => {
+    const start = await fetch(base + "/api/auth/twitch/start?return_to=/", { redirect: "manual" });
+    assert.equal(start.status, 302);
+    const to = new URL(start.headers.get("location"));
+    assert.equal(to.origin, fakeTwitch.url);
+    assert.equal(to.searchParams.get("redirect_uri"), base + "/api/auth/twitch/callback");
+    const state = to.searchParams.get("state"), cookie = start.headers.getSetCookie().map(c => c.split(";")[0]).join("; ");
+    const back = await fetch(base + "/api/auth/twitch/callback?code=" + code + "&state=" + state, { headers: { ...headers, cookie }, redirect: "manual" });
+    return { back, location: back.headers.get("location") ?? "", session: back.headers.getSetCookie().find(c => c.startsWith("cf_session=") && !c.startsWith("cf_session=;"))?.split(";")[0] ?? null };
+  };
+  // A forged state is refused.
+  const start = await fetch(base + "/api/auth/twitch/start", { redirect: "manual" });
+  const forged = await fetch(base + "/api/auth/twitch/callback?code=good-code&state=" + "a".repeat(64), { headers: { cookie: start.headers.getSetCookie()[0].split(";")[0] }, redirect: "manual" });
+  assert.match(decodeURIComponent(forged.headers.get("location")), /expired/);
+  // Sign-ups are closed by default: a stranger gets no workspace and no session.
+  const stranger = await signIn();
+  assert.equal(stranger.session, null);
+  assert.match(decodeURIComponent(stranger.location), /isn't open for new sign-ups/);
+  // Signed in another way (here the Sites headers, in production Cloudflare Access): Twitch is linked to this workspace.
+  const linked = await signIn(who);
+  assert.ok(linked.session, "a session cookie");
+  assert.equal(linked.location, base + "/");
+  assert.equal((await dash()).body.account.twitchLogin, "tester");
+  // Later, with nothing but the Twitch session (no Access, no Sites headers): the same workspace.
+  const alone = await signIn();
+  const mine = await fetch(base + "/api/dashboard", { headers: { cookie: alone.session } });
+  assert.equal(mine.status, 200);
+  const body = await mine.json();
+  assert.ok(body.streamers.some(s => s.id === streamer.id), "the workspace that was linked");
+  assert.deepEqual(body.account, { twitch: true, twitchLogin: "tester", session: true });
+  // A made-up cookie is signed out; Sign out ends the real one.
+  assert.equal((await fetch(base + "/api/dashboard", { headers: { cookie: "cf_session=" + "b".repeat(64) } })).status, 401);
+  const out = await fetch(base + "/api/auth/signout", { method: "POST", headers: { cookie: alone.session }, redirect: "manual" });
+  assert.equal(out.status, 303);
+  assert.equal((await fetch(base + "/api/dashboard", { headers: { cookie: alone.session } })).status, 401);
+  assert.equal((await fetch(base + "/api/dashboard", { headers: { cookie: linked.session } })).status, 200, "other browsers stay signed in");
+});
 
 test("an account set to Spanish posts the Spanish version the worker made, or fails with the reason", async () => {
   const words = [[6.2, 6.6, "No"], [6.7, 7.0, "way"], [7.1, 8.6, "that!"]];

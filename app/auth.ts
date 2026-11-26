@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { headers } from "next/headers";
 import { getChatGPTUser } from "./chatgpt-auth";
 import { verifyAccessJwt, type Jwk } from "../lib/access-jwt";
+import { SESSION_COOKIE, isToken, readCookie, sha256 } from "../lib/app-auth.mjs";
 
 export type User = { userId: string; displayName: string };
 
@@ -23,7 +24,23 @@ async function accessKeys(teamDomain: string, refresh = false) {
   return certs.keys;
 }
 
+// Clipflow's own sign-in (Sign in with Twitch, app/api/auth/*): a session cookie whose token's hash is in sessions.
+// Checked first in every mode; the database decides, so a made-up cookie is just signed out.
+async function sessionUser(): Promise<User | null> {
+  const token = readCookie((await headers()).get("cookie"), SESSION_COOKIE);
+  if (!isToken(token) || !config.DB) return null;
+  try {
+    const row = await config.DB.prepare("SELECT owner,display_name FROM sessions WHERE token_hash=? AND expires_at>?").bind(await sha256(token), new Date().toISOString()).first<{ owner: string; display_name: string | null }>();
+    return row && { userId: row.owner, displayName: row.display_name || "you" };
+  } catch (error) { console.error("Session lookup failed", error); return null; }
+}
+
+// Signed in with Clipflow's own sign-in (not Access or Sites): the dashboard then offers Sign out.
+export async function signedInWithApp() { return !!(await sessionUser()); }
+
 export async function currentUser(): Promise<User | null> {
+  const own = await sessionUser();
+  if (own) return own;
   if (authMode() === "sites") {
     const user = await getChatGPTUser();
     return user && { userId: user.userId, displayName: user.displayName };
@@ -46,4 +63,7 @@ export async function currentUser(): Promise<User | null> {
 }
 
 // Where the dashboard should send a signed-out visitor.
-export const signInPath = () => (authMode() === "access" ? "/" : "/signin-with-chatgpt?return_to=/");
+// With the site's Twitch app set up, Sign in with Twitch; else as before.
+export const twitchApp = () => { const e = config as { TWITCH_CLIENT_ID?: string; TWITCH_CLIENT_SECRET?: string }; return e.TWITCH_CLIENT_ID && e.TWITCH_CLIENT_SECRET ? { clientId: e.TWITCH_CLIENT_ID, clientSecret: e.TWITCH_CLIENT_SECRET } : null; };
+export const twitchSignIn = () => !!twitchApp();
+export const signInPath = () => (twitchSignIn() ? "/api/auth/twitch/start" : authMode() === "access" ? "/" : "/signin-with-chatgpt?return_to=/");
