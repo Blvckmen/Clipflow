@@ -89,6 +89,8 @@ export const clips=sqliteTable("clips",{
  fileKey:text("file_key"),
  // pending | approved | rejected. Review mode makes new clips pending; automatic mode approves them on arrival.
  review:text("review").notNull().default("approved"),reviewedAt:text("reviewed_at"),
+ // Why a rejected clip was rejected (lib/reject-reasons.mjs): boring | context | subtitles | framing; null when not given.
+ rejectReason:text("reject_reason"),
  // What made the worker cut this clip: "chat" (chat spike) or "audio" (loudest recent moment).
  reason:text("reason"),
  // Editor material, reported by the worker: the unframed source in R2 (with its hash and size, checked on upload),

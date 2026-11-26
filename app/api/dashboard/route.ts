@@ -21,6 +21,7 @@ import { env } from "cloudflare:workers";
 import { isDiscordWebhook, sendDiscord } from "../../../lib/alerts";
 import { createHighlight } from "../../../lib/highlights";
 import { hashToken, newToken } from "../../../lib/worker-auth";
+import { REJECT_REASON_KEYS, REJECT_WINDOW_DAYS } from "../../../lib/reject-reasons.mjs";
 import { PAIR_TTL_MS, hashPairCode, newPairCode, normalizePairCode } from "../../../lib/pairing.mjs";
 import { z } from "zod";
 const accountIds=z.array(z.string().uuid()).max(50).transform(x=>[...new Set(x)]);
@@ -49,6 +50,8 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("makeHighlights"),days:z.number().int().min(1).max(31),count:z.number().int().min(3).max(20),streamerId:z.string().uuid().nullable().optional()}),
  z.object({action:z.literal("deleteHighlight"),id:z.string().uuid()}),
  z.object({action:z.literal("reviewClip"),id:z.string().uuid(),review:z.enum(["approved","rejected","pending"])}),
+ // Why a rejected clip was rejected, asked right after (lib/reject-reasons.mjs).
+ z.object({action:z.literal("rejectReason"),id:z.string().uuid(),reason:z.enum(REJECT_REASON_KEYS as [string,...string[]])}),
  // `platform` is the pre-multi-account form: it disconnects that platform's only account.
  z.object({action:z.literal("disconnect"),id:z.string().uuid().optional(),platform:z.enum(["instagram"]).optional()}),
  z.object({action:z.literal("retryPost"),id:z.string().min(1).max(64)}),
@@ -128,11 +131,13 @@ export async function GET(request:Request){
  }
  try{
   const db=database(),owner=user.userId;
-  const [a,po,l]=await Promise.all([
+  const [a,po,l,rr]=await Promise.all([
    // Tokens never leave the server: only display fields are selected.
    db.prepare("SELECT id,provider,platform,username,status,connected_at,last_error,options,zernio_key_id FROM accounts WHERE owner=? ORDER BY connected_at").bind(owner).all<Record<string,unknown>&{options:string|null}>(),
    db.prepare("SELECT p.id,p.clip_id,p.platform,p.account_id,p.state,p.permalink,p.error,p.attempts,p.created_at,p.published_at,p.round,p.views,p.likes,p.draft,s.name AS streamer,a.username AS account FROM posts p LEFT JOIN clips c ON c.id=p.clip_id LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner LEFT JOIN accounts a ON a.id=p.account_id WHERE p.owner=? ORDER BY p.created_at DESC LIMIT 100").bind(owner).all(),
    db.prepare("SELECT streamer_id,account_id FROM streamer_accounts WHERE owner=?").bind(owner).all<{streamer_id:string;account_id:string}>(),
+   // Why clips were rejected lately (lib/reject-reasons.mjs), for the line above the library.
+   db.prepare("SELECT reject_reason AS reason,count(*) AS n FROM clips WHERE owner=? AND review='rejected' AND reject_reason IS NOT NULL AND reviewed_at>=? GROUP BY reject_reason").bind(owner,new Date(Date.now()-REJECT_WINDOW_DAYS*86_400_000).toISOString()).all<{reason:string;n:number}>(),
   ]);
   const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(owner).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(owner).all(),db.prepare(CLIPS_SQL+" WHERE c.owner=? ORDER BY c.created_at DESC LIMIT "+CLIPS_PAGE).bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at,device,device_at,restart_at FROM worker_tokens WHERE owner=?").bind(owner).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null;device:string|null;device_at:string|null;restart_at:string|null}>()]);
   const lastSeen=w?.last_seen??null,connected=!!lastSeen&&Date.now()-Date.parse(lastSeen)<ENGINE_FRESH_MS;
@@ -150,7 +155,7 @@ export async function GET(request:Request){
   const twitchLink=twitchSignIn()?await db.prepare("SELECT login FROM auth_identities WHERE owner=? AND provider='twitch' ORDER BY created_at LIMIT 1").bind(owner).first<{login:string|null}>():null;
   const account={twitch:twitchSignIn(),twitchLogin:twitchLink?.login??(twitchLink?"":null),session:await signedInWithApp()};
   const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,importClips:Number(p.import_clips??0),viewerClips:readViewerClips(p.viewer_clips),clipCommand:p.clip_command??defaults.clipCommand,learn:p.learn===undefined?true:!!p.learn,weeklyHighlights:!!p.weekly_highlights,worker:readWorkerSettings(p.worker_settings),discordAlerts:!!p.discord_webhook_enc,alertError:p.alert_error??null,style:parse(p.style)}:{...defaults,style:null};
-  return Response.json({user:user.displayName,account,streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(clipRowWith(viewProfiles(s.results))),moreClips:c.results.length===CLIPS_PAGE,storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,duration,content_type,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,
+  return Response.json({user:user.displayName,account,rejectReasons:Object.fromEntries(rr.results.map(x=>[x.reason,x.n])),streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(clipRowWith(viewProfiles(s.results))),moreClips:c.results.length===CLIPS_PAGE,storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,duration,content_type,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,
    // Whole-stream recordings (their heat strips load with GET /api/recordings/<id>) and clips asked for from them.
    recordings:(await db.prepare("SELECT r.id,r.streamer_id,s.name AS streamer,r.title,r.started_at,r.ended_at,r.duration,r.size,r.state,r.error,r.preview_key IS NOT NULL AS preview,r.transcript_at IS NOT NULL AS transcript,r.upload_id IS NOT NULL AS uploading,r.expires_at,r.source_url FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.owner=? ORDER BY r.started_at DESC LIMIT 100").bind(owner).all<Record<string,unknown>>()).results.map(x=>({...x,preview:!!x.preview,uploading:!!x.uploading,transcript:!!x.transcript})),
    highlights:(await db.prepare("SELECT id,title,state,size,duration,error,auto,clips,created_at FROM highlights WHERE owner=? ORDER BY created_at DESC LIMIT 20").bind(owner).all<{clips:string}>()).results.map(({clips,...h})=>({...h,clips:(JSON.parse(clips) as unknown[]).length})),
@@ -350,11 +355,18 @@ export async function POST(request:Request){
    statements.push(db.prepare("INSERT INTO clips (id,owner,streamer_id,created_at,duration,captions,sha,size,review,reason,file_key,source_key,source_sha,source_size,transcript,signals,source_meta,edit,edit_rev,rendered_at,post_caption,caption_source) SELECT ?,owner,streamer_id,?,duration,captions,sha,size,'pending',reason,?,?,CASE WHEN ? IS NULL THEN NULL ELSE source_sha END,CASE WHEN ? IS NULL THEN NULL ELSE source_size END,transcript,signals,source_meta,edit,edit_rev,rendered_at,post_caption,caption_source FROM clips WHERE id=? AND owner=?").bind(clipId,iso,file,source,source,source,clip.id,owner));
    message="Copied a clip"+(clip.name?" from "+clip.name:"")+". The copy waits for review: change its hook or look, then post it.";
   }
+  if(payload.action==="rejectReason"){
+   // Only for a clip that is rejected; quiet, like reviews.
+   const done=await db.prepare("UPDATE clips SET reject_reason=? WHERE id=? AND owner=? AND review='rejected'").bind(payload.reason,payload.id,owner).run();
+   if(!done.meta.changes)return Response.json({error:"That clip isn't rejected any more."},{status:409});
+   return Response.json({ok:true,message:"Thanks, noted."});
+  }
   if(payload.action==="reviewClip"){
    const clip=await db.prepare("SELECT s.name FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(payload.id,owner).first<{name:string|null}>();
    if(!clip)return Response.json({error:"Clip not found."},{status:404});
    // Reviews are frequent, so they update the clip without adding to the activity log.
-   await db.prepare("UPDATE clips SET review=?,reviewed_at=? WHERE id=? AND owner=?").bind(payload.review,payload.review==="pending"?null:iso,payload.id,owner).run();
+   // A clip that isn't rejected any more loses its reason (lib/reject-reasons.mjs).
+   await db.prepare("UPDATE clips SET review=?,reviewed_at=?,reject_reason=CASE WHEN ?='rejected' THEN reject_reason END WHERE id=? AND owner=?").bind(payload.review,payload.review==="pending"?null:iso,payload.review,payload.id,owner).run();
    return Response.json({ok:true,message:{approved:"Clip approved.",rejected:"Clip rejected.",pending:"Clip moved back to review."}[payload.review]});
   }
   if(payload.action==="disconnect"){
