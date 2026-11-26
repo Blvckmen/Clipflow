@@ -53,6 +53,30 @@ function startServer(python) {
   return s;
 }
 
+// One request at a time is sent to the process, in order, each timed from when it's sent. They used to be written all at
+// once while the process works through them one by one, so each one's timer also ran while it waited: behind a
+// recording's transcription (up to an hour) or a few clips (about 2 minutes each), a clip "timed out", and stopping
+// the process for it failed every other request with it (3 clips lost 24-25 Nov). A request cancelled while it waits
+// leaves the line without holding up the ones behind it.
+export function oneAtATime() {
+  let line = Promise.resolve();
+  return async function take(signal) {
+    const before = line;
+    let release;
+    line = new Promise(resolve => { release = resolve; });
+    try {
+      await new Promise((resolve, reject) => {
+        if (signal?.aborted) return reject(new Error("Cancelled"));
+        const abort = () => reject(new Error("Cancelled"));
+        signal?.addEventListener("abort", abort, { once: true });
+        before.then(() => { signal?.removeEventListener("abort", abort); resolve(); });
+      });
+    } catch (error) { before.then(release); throw error; }
+    return release;
+  };
+}
+const turn = oneAtATime();
+
 // The hint cut to 200 characters without splitting an emoji (slice() counts UTF-16 halves, and stream titles are full
 // of emoji), and with any half already on its own replaced: Whisper's tokenizer refuses a lone half.
 export const hintText = hint => [...String(hint ?? "")].slice(0, 200).join("").toWellFormed();
@@ -63,6 +87,13 @@ export async function transcribe(source, target, { hint = "", model = defaultMod
   hint = hintText(hint);
   const oneShot = () => command(python, [script, "words", source, target, hint], { signal, timeout, env: { ...process.env, WHISPER_MODEL: model } }).done;
   if ((process.env.WHISPER_SERVER ?? "on").toLowerCase() === "off") return oneShot();
+  if (signal?.aborted) throw new Error("Cancelled");
+  const release = await turn(signal);
+  try { return await sendOne(source, target, { hint, model, python, signal, timeout, oneShot }); }
+  finally { release(); }
+}
+
+async function sendOne(source, target, { hint, model, python, signal, timeout, oneShot }) {
   if (signal?.aborted) throw new Error("Cancelled");
   server ??= startServer(python);
   const s = server, id = ++seq;
