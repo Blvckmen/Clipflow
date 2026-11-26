@@ -13,7 +13,7 @@ export async function GET(request:Request){
  try{
   const db=database(),owner=await workerOwner(request,db);
   if(!owner)return Response.json({error:"Invalid worker token."},{status:401});
-  const [s,p,r,wt,b,rec,req,tr,hl,vc]=await Promise.all([
+  const [s,p,r,wt,b,rec,req,tr,hl,vc,ry]=await Promise.all([
    db.prepare("SELECT id,url,status,style,capture_mode,clip_text,learned,viewer_clips,daily_limit FROM streamers WHERE owner=? ORDER BY priority IS NULL,priority,created_at").bind(owner).all<{id:string;url:string;status:string;style:string|null;capture_mode:string|null;clip_text:string|null;learned:string|null;viewer_clips:string|null;daily_limit:number|null}>(),
    db.prepare("SELECT duration,daily_limit,captions,framing,control,style,transcribe,recording_days,import_clips,viewer_clips,clip_command,learn,worker_settings FROM preferences WHERE owner=?").bind(owner).first(),
    // Edits saved in the dashboard that still need rendering, oldest request first.
@@ -32,6 +32,8 @@ export async function GET(request:Request){
    db.prepare("SELECT id,clips FROM highlights INDEXED BY highlights_owner_state WHERE owner=? AND state='queued' ORDER BY created_at LIMIT 2").bind(owner).all<{id:string;clips:string}>(),
    // Viewers' Twitch clips picked in the dashboard ("ask me first") for the worker to make.
    db.prepare("SELECT clip_id,streamer_id,title,duration,views,clip_created_at,video_id,vod_offset FROM viewer_clip_candidates INDEXED BY viewer_clip_candidates_owner_state WHERE owner=? AND state='wanted' ORDER BY updated_at LIMIT 10").bind(owner).all<{clip_id:string;streamer_id:string;title:string;duration:number;views:number;clip_created_at:string;video_id:string|null;vod_offset:number|null}>(),
+   // Failed clips asked to be made again in the last hour (Being made → Try again); the worker acts on each once.
+   db.prepare("SELECT clip_id FROM clip_retries WHERE owner=? AND requested_at>? ORDER BY requested_at LIMIT 50").bind(owner,new Date(Date.now()-3600_000).toISOString()).all<{clip_id:string}>(),
   ]);
   // streamers is in recording-priority order: the worker gives full capture slots to the first live ones.
   return Response.json({
@@ -40,6 +42,7 @@ export async function GET(request:Request){
    // Settings → This PC; each choice left out follows the worker's .env (worker/core.mjs workerTuning).
    // workerRev: their fingerprint, which the worker reports back once it runs with them (Saved → Applied).
    restartAt:wt?.restart_at??null,
+   retries:ry.results.map(x=>x.clip_id),
    // Whether this site lends its Twitch app to workers without one (app/api/worker/twitch).
    twitchApp:!!((env as {TWITCH_CLIENT_ID?:string}).TWITCH_CLIENT_ID&&(env as {TWITCH_CLIENT_SECRET?:string}).TWITCH_CLIENT_SECRET),
    worker:readWorkerSettings(p?.worker_settings),workerRev:workerSettingsRev(readWorkerSettings(p?.worker_settings)),

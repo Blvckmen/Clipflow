@@ -50,6 +50,8 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("makeHighlights"),days:z.number().int().min(1).max(31),count:z.number().int().min(3).max(20),streamerId:z.string().uuid().nullable().optional()}),
  z.object({action:z.literal("deleteHighlight"),id:z.string().uuid()}),
  z.object({action:z.literal("reviewClip"),id:z.string().uuid(),review:z.enum(["approved","rejected","pending"])}),
+ // Make a clip that failed on the PC again (Clips → Being made → Try again); the worker picks it up from its config.
+ z.object({action:z.literal("retryClip"),id:z.string().uuid()}),
  // Why a rejected clip was rejected, asked right after (lib/reject-reasons.mjs).
  z.object({action:z.literal("rejectReason"),id:z.string().uuid(),reason:z.enum(REJECT_REASON_KEYS as [string,...string[]])}),
  // `platform` is the pre-multi-account form: it disconnects that platform's only account.
@@ -354,6 +356,15 @@ export async function POST(request:Request){
    // Same edit, transcript, chat and caption; it starts waiting for review so it never posts on its own.
    statements.push(db.prepare("INSERT INTO clips (id,owner,streamer_id,created_at,duration,captions,sha,size,review,reason,file_key,source_key,source_sha,source_size,transcript,signals,source_meta,edit,edit_rev,rendered_at,post_caption,caption_source) SELECT ?,owner,streamer_id,?,duration,captions,sha,size,'pending',reason,?,?,CASE WHEN ? IS NULL THEN NULL ELSE source_sha END,CASE WHEN ? IS NULL THEN NULL ELSE source_size END,transcript,signals,source_meta,edit,edit_rev,rendered_at,post_caption,caption_source FROM clips WHERE id=? AND owner=?").bind(clipId,iso,file,source,source,source,clip.id,owner));
    message="Copied a clip"+(clip.name?" from "+clip.name:"")+". The copy waits for review: change its hook or look, then post it.";
+  }
+  if(payload.action==="retryClip"){
+   // The clip never reached the dashboard, so there's nothing here to check: the PC knows whether it still has it.
+   // Asked again, the time is renewed; old requests are cleared as new ones come in.
+   await db.batch([
+    db.prepare("DELETE FROM clip_retries WHERE owner=? AND requested_at<?").bind(owner,new Date(Date.now()-86_400_000).toISOString()),
+    db.prepare("INSERT INTO clip_retries (owner,clip_id,requested_at) VALUES (?,?,?) ON CONFLICT(owner,clip_id) DO UPDATE SET requested_at=excluded.requested_at").bind(owner,payload.id,iso),
+   ]);
+   return Response.json({ok:true,message:"Asked your PC to make that clip again. It appears in Being made within a minute."});
   }
   if(payload.action==="rejectReason"){
    // Only for a clip that is rejected; quiet, like reviews.

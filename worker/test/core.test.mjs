@@ -6,6 +6,15 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Store, allowed, channelUrl, dueForProbe, limitFor, plan, probeResult, retryDelay, shownStatus, validateControl, workerTuning, queuedClip, stageAfter, clipsInProgress } from "../core.mjs";
 
+test("retries from the dashboard: only well-formed ids, at most 50, and none from older dashboards", () => {
+  const base = { control: "running", streamers: [], duration: 30, captions: true, dailyLimit: 5 };
+  const ok = "11111111-1111-1111-1111-111111111111";
+  assert.deepEqual(validateControl({ ...base }).retries, []);
+  assert.deepEqual(validateControl({ ...base, retries: [ok, "nope", 7, null] }).retries, [ok]);
+  assert.deepEqual(validateControl({ ...base, retries: "x" }).retries, []);
+  assert.equal(validateControl({ ...base, retries: Array(80).fill(ok) }).retries.length, 50);
+});
+
 test("a clip being made moves through the stages as processWindow's steps finish", () => {
   assert.equal(stageAfter("loudness"), "transcribing");
   assert.equal(stageAfter("transcription"), "choosing");
@@ -31,6 +40,8 @@ test("the Being made list: making first, then uploading, waiting or held, then f
   assert.equal(list[0].since, "2026-11-26T12:34:00.000Z", "rounded to the minute, so the report doesn't change every second");
   assert.equal(list[0].streamer, s);
   assert.equal(list[4].why.length, 200);
+  assert.equal(list[4].retry, undefined, "a failure without its job kept can't be tried again");
+  assert.equal(clipsInProgress({ failed: [{ id: id("e"), streamer: s, at, why: "x", job: {} }] })[0].retry, true);
   assert.equal(clipsInProgress({ queued: Array.from({ length: 30 }, (_, i) => ({ id: id(String(i % 10)), streamer: { id: s } })) }).length, 12, "capped");
   assert.deepEqual(clipsInProgress({ queued: [{ id: 5, streamer: { id: s } }] }), [], "malformed entries are left out");
 });

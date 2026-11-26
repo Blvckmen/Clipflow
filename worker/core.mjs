@@ -41,6 +41,9 @@ export function validateControl(c) {
   if (!["blur","crop","fit","split","cam","pip","phone"].includes(c.framing)) throw new Error("Invalid framing");
   // Split-screen background videos in the workspace library; dashboards that predate them omit the list.
   c.backgrounds = validBackgrounds(c.backgrounds);
+  // Failed clips the dashboard asked to make again (Being made → Try again); dashboards that predate it send none.
+  // Anything odd is dropped, not refused, so one bad id can't stop recording.
+  c.retries = Array.isArray(c.retries) ? c.retries.filter(id => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id)).slice(0, 50) : [];
   if (!Number.isInteger(c.duration) || c.duration < 15 || c.duration > 90 || typeof c.captions !== "boolean" || !Number.isInteger(c.dailyLimit) || c.dailyLimit < 1 || c.dailyLimit > 100) throw new Error("Invalid clip settings");
   const ids = new Set();
   for (const s of c.streamers) {
@@ -212,7 +215,8 @@ export function clipsInProgress({ queued = [], held = () => false, making = [], 
     ...making.map(j => clip(j, j.stage ?? "transcribing", j.stageAt)),
     ...uploading.map(r => clip(r, "uploading", Date.parse(r.created_at))),
     ...queued.map(j => clip(j, held(j) ? "held" : "waiting", j.queuedAt)),
-    ...failed.map(f => ({ ...clip(f, "failed", f.at), why: String(f.why ?? "").slice(0, 200) })),
+    // retry: its raw window is kept, so Being made can offer Try again.
+    ...failed.map(f => ({ ...clip(f, "failed", f.at), why: String(f.why ?? "").slice(0, 200), ...(f.job ? { retry: true } : {}) })),
   ];
   return out.filter(c => typeof c.id === "string" && typeof c.streamer === "string").slice(0, max);
 }
@@ -252,6 +256,8 @@ export class Store {
   // Sentence snapping makes the final length differ slightly from the configured one.
   ready(id,sha,duration) {this.db.prepare("UPDATE clips SET state='ready',sha=?,duration=coalesce(?,duration) WHERE id=?").run(sha,duration??null,id);}
   fail(id) {this.db.prepare("UPDATE clips SET state='failed' WHERE id=?").run(id);}
+  // A failed clip asked to be made again (Being made → Try again): back to capturing, so it counts and is kept.
+  unfail(id) {return this.db.prepare("UPDATE clips SET state='capturing' WHERE id=? AND state='failed'").run(id).changes > 0;}
   uploaded(id) {this.db.prepare("UPDATE clips SET state='uploaded' WHERE id=?").run(id);}
   rejected(id) {this.db.prepare("UPDATE clips SET state='rejected' WHERE id=?").run(id);}
   retry(id,attempt) {this.db.prepare("UPDATE clips SET attempts=?,next_try=? WHERE id=?").run(attempt,Date.now()+retryDelay(attempt),id);}

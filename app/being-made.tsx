@@ -1,8 +1,9 @@
 "use client";
-import { AlertTriangle, Check, Clock3, Loader2, Pause } from "lucide-react";
+import { AlertTriangle, Check, Clock3, Loader2, Pause, RotateCcw } from "lucide-react";
 
 // One clip the worker is making or about to make (worker/core.mjs clipsInProgress, sent with its status report).
-export type ClipProgress = { id: string; streamer: string; reason: string | null; stage: "waiting" | "held" | "transcribing" | "choosing" | "rendering" | "uploading" | "failed"; since: string; why?: string };
+// retry: the PC kept this failed clip's footage, so it can be made again (Try again).
+export type ClipProgress = { id: string; streamer: string; reason: string | null; stage: "waiting" | "held" | "transcribing" | "choosing" | "rendering" | "uploading" | "failed"; since: string; why?: string; retry?: boolean };
 
 // The list from the worker's latest report (engine.device.clips); an older worker sends none.
 export const clipsOf = (device: unknown): ClipProgress[] => { const list = (device as { clips?: unknown } | null | undefined)?.clips; return Array.isArray(list) ? list as ClipProgress[] : []; };
@@ -12,7 +13,8 @@ const REASONS: Record<string, string> = { command: "!clip in chat", chat: "Chat 
 const ago = (iso: string, now: number) => { const m = Math.max(0, Math.round((now - Date.parse(iso)) / 60_000)); return m < 1 ? "just now" : m < 60 ? m + " min" : Math.floor(m / 60) + " h " + (m % 60) + " min"; };
 
 // Clips → Library: what the PC is working on, so a clip that hasn't arrived yet isn't a mystery. Hidden when it's idle.
-export function BeingMade({ clips, deviceAt, connected, now, streamerName }: { clips: ClipProgress[]; deviceAt: string | null; connected: boolean; now: number; streamerName: (id: string) => string | null }) {
+// onRetry(id): ask the PC to make a failed clip again; `asked` holds the ones already asked, so the button says so.
+export function BeingMade({ clips, deviceAt, connected, now, streamerName, onRetry, asked = [] }: { clips: ClipProgress[]; deviceAt: string | null; connected: boolean; now: number; streamerName: (id: string) => string | null; onRetry?: (id: string) => void; asked?: string[] }) {
   if (!clips.length) return null;
   const working = clips.filter(c => c.stage !== "failed").length;
   const stale = !connected || !deviceAt || now - Date.parse(deviceAt) > 15 * 60_000;
@@ -21,7 +23,7 @@ export function BeingMade({ clips, deviceAt, connected, now, streamerName }: { c
       const at = STEPS.findIndex(([s]) => s === c.stage);
       return <li key={c.id + c.stage}>
         <div className="being-made-who"><strong>{streamerName(c.streamer) ?? "Removed channel"}</strong><small>{c.reason ? REASONS[c.reason] ?? c.reason : "Clip"} · {ago(c.since, now)}</small></div>
-        {c.stage === "failed" ? <div className="being-made-state bad" title={c.why}><AlertTriangle size={14} />Couldn&apos;t be made{c.why ? ": " + c.why : ""}</div>
+        {c.stage === "failed" ? <div className="being-made-failed"><div className="being-made-state bad" title={c.why}><AlertTriangle size={14} />Couldn&apos;t be made{c.why ? ": " + c.why : ""}</div>{c.retry && onRetry && (asked.includes(c.id) ? <span className="muted">Asked your PC to try again</span> : <button type="button" className="secondary" disabled={!connected} title={connected ? "Make this clip again from the same moment" : "Your PC isn't connected"} onClick={() => onRetry(c.id)}><RotateCcw size={14} />Try again</button>)}</div>
           : c.stage === "held" ? <div className="being-made-state"><Pause size={14} />Waiting for Resume</div>
           : c.stage === "waiting" ? <div className="being-made-state"><Clock3 size={14} />In the queue</div>
           : <ol className="stage-track" aria-label={"Stage: " + STEPS[at]?.[1]}>{STEPS.map(([s, label], i) => <li key={s} className={i < at ? "done" : i === at ? "now" : ""}>{i < at ? <Check size={12} /> : i === at ? <Loader2 size={12} className="spin" /> : null}{label}</li>)}</ol>}

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { database } from "../../../../db/raw";
 import { workerOwner } from "../../../../lib/worker-auth";
-const clipProgress=z.object({id:z.string().uuid(),streamer:z.string().uuid(),reason:z.string().max(20).nullable(),stage:z.enum(["waiting","held","transcribing","choosing","rendering","uploading","failed"]),since:z.string().datetime(),why:z.string().max(200).optional()});
+const clipProgress=z.object({id:z.string().uuid(),streamer:z.string().uuid(),reason:z.string().max(20).nullable(),stage:z.enum(["waiting","held","transcribing","choosing","rendering","uploading","failed"]),since:z.string().datetime(),why:z.string().max(200).optional(),retry:z.boolean().optional()});
 const statusSchema=z.object({
  streamers:z.array(z.object({id:z.string().uuid(),status:z.enum(["live","recording","limit","offline","error"]),checkedAt:z.string().datetime(),title:z.string().max(200).nullish()})).max(500),
  // The worker's latest problem, e.g. a failed render or a refused upload.

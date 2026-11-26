@@ -674,6 +674,7 @@ button.account-streamers{max-width:none;justify-self:start}
 .being-made-who small{color:var(--muted)}
 .being-made-state{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:13px;min-width:0}
 .being-made-state.bad{color:#ff8a8a}
+.being-made-failed{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-width:0}
 .stage-track{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
 .stage-track li{display:flex;align-items:center;gap:4px;font-size:12px;padding:3px 9px;border-radius:999px;border:1px solid var(--border);color:var(--muted)}
 .stage-track li.done{color:var(--text,#edf2f7)}

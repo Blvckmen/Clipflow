@@ -66,6 +66,9 @@ export const preferences=sqliteTable("preferences",{
  zernioKeyEnc:text("zernio_key_enc"),zernioLabel:text("zernio_label"),
 });
 export const events=sqliteTable("events",{id:text("id").primaryKey(),owner:text("owner").notNull(),message:text("message").notNull(),createdAt:text("created_at").notNull()},t=>[index("events_owner_created").on(t.owner,t.createdAt)]);
+// Failed clips the owner asked to be made again (Clips → Being made → Try again). The worker gets the ones asked for in
+// the last hour (GET /api/worker/config retries) and acts on each once, if it still has the clip's footage.
+export const clipRetries=sqliteTable("clip_retries",{owner:text("owner").notNull(),clipId:text("clip_id").notNull(),requestedAt:text("requested_at").notNull()},t=>[primaryKey({columns:[t.owner,t.clipId]}),index("clip_retries_owner_requested").on(t.owner,t.requestedAt)]);
 // Pairing codes (lib/pairing.ts): a short one-time code from Connect worker that a PC trades for a worker token
 // (POST /api/worker/pair). Only its SHA-256 is stored; one per owner, gone once used or after PAIR_TTL_MS.
 // Clipflow's own sign-in (lib/app-auth.mjs). Each sign-in account (Twitch, later Google) belongs to one workspace owner;

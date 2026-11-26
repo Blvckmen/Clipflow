@@ -173,8 +173,35 @@ function deviceReport() {
     }),
   };
 }
-// The last few clips that failed to be made (newest first), for deviceReport.
-const recentFailures = [];
+// The last few clips that failed to be made (newest first), for deviceReport, each with its job so it can be made again.
+const recentFailures = [], FAILURES_KEPT = 5, FAILURE_KEEP_MS = 2 * 3600_000;
+// Drops failures past FAILURES_KEPT or FAILURE_KEEP_MS, deleting the raw window each kept for Try again.
+async function trimFailures() {
+  const now = Date.now();
+  for (let i = recentFailures.length - 1; i >= 0; i--) {
+    if (i < FAILURES_KEPT && now - recentFailures[i].at < FAILURE_KEEP_MS) continue;
+    const [gone] = recentFailures.splice(i, 1);
+    if (gone.job?.dir) await rm(gone.job.dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+// Try again, asked from Being made (config.retries): the failed job goes back in the queue as it was (same moment, chat and
+// settings). Each id is acted on once; one no longer kept (too old, or the worker restarted since) is ignored.
+const retriesSeen = new Set();
+function takeRetries(ids) {
+  let added = 0;
+  for (const id of ids ?? []) {
+    if (retriesSeen.has(id)) continue;
+    retriesSeen.add(id);
+    const at = recentFailures.findIndex(f => f.id === id);
+    if (at < 0) continue;
+    const [{ job }] = recentFailures.splice(at, 1);
+    if (!store.unfail(job.id)) continue;
+    job.queuedAt = Date.now(); job.stage = undefined; job.retried = true;
+    jobs.push(job); added++;
+    console.log("Trying again", reasonLabel[job.reason] ?? job.reason, "clip", job.id, "from", job.streamer.url, "(asked from the dashboard)");
+  }
+  if (added) processJobs();
+}
 
 // Health checks (health.mjs): when the worker starts, every HEALTH_EVERY_MS, and again soon after the transcription
 // quality or the AI writer changes. They run alongside the cycle, never holding it up.
@@ -414,14 +441,17 @@ async function clipJob(job) {
     } catch (error) {
       store.fail(job.id);
       why = error.message;
-      await rm(job.dir, { recursive: true, force: true });
+      // A clip that really failed keeps its raw window (and the job, in recentFailures) so Being made can offer
+      // Try again; skipped and cancelled ones don't need it.
+      const retryable = !error.skip && !controller.signal.aborted && !job.kind;
+      if (!retryable) await rm(job.dir, { recursive: true, force: true });
       // Skipped on purpose (nothing worth a clip): not a problem, and it doesn't count towards the daily limit.
       if (error.skip) console.log("Skipped a", reasonLabel[job.reason], "on", job.streamer.url + ":", error.message, "(after " + Math.round((Date.now() - startedAt) / 1000) + "s)");
       else if (!controller.signal.aborted) {
         problem("Clip processing failed for " + job.streamer.url + ": " + error.message);
         // Shown in "Being made" for a while, so a clip that never arrives isn't a mystery.
-        recentFailures.unshift({ id: job.id, streamer: job.streamer.id, reason: job.reason ?? null, at: Date.now(), why: error.message });
-        recentFailures.length = Math.min(recentFailures.length, 5);
+        recentFailures.unshift({ id: job.id, streamer: job.streamer.id, reason: job.reason ?? null, at: Date.now(), why: error.message, job });
+        void trimFailures();
       }
       else console.log("Cancelled a", reasonLabel[job.reason] ?? job.reason, "clip from", job.streamer.url, stopping ? "(worker stopping; it resumes on start)" : "(streamer paused, stopped or disabled)");
     } finally { untrack(); }
@@ -1279,6 +1309,7 @@ async function reportPass() {
 }
 
 async function prune() {
+  await trimFailures();
   const cutoff = new Date(Date.now() - tuning.retentionHours * 3600_000).toISOString();
   for (const row of store.old(cutoff)) {
     await rm(dirname(row.path), { recursive: true, force: true });
@@ -1314,6 +1345,7 @@ async function tick() {
   queueTranslations(config?.translations);
   queueHighlights(config?.highlights);
   if (config) await takeRequests(config.clipRequests);
+  if (config) takeRetries(config.retries);
   // Stop disallowed recordings before the (slow) live checks rather than after them.
   for (const id of sessions.keys()) if (!allowed(config, id)) await stopSession(id, "paused, stopped or disabled");
   await probe(dueForProbe(config, live, { running: new Set(sessions.keys()), now: Date.now(), interval: liveCheckMs, limit: probesPerCycle }));
