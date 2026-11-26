@@ -1,7 +1,9 @@
-// Packs the worker for download (Connect worker → Download the worker): public/downloads/clipflow-worker.zip, with the
+// Packs the worker for download (Connect worker → Download the worker): outputs/clipflow-worker.zip, with the
 // worker's tracked files in a clipflow-worker/ folder, minus its tests and tools, plus site.txt (this site's address,
 // so setup-windows.ps1 needn't ask) and version.txt. Only files git tracks go in, so worker/.env and worker/data never
-// do. Run by scripts/deploy-cloudflare.mjs before the build; `node scripts/pack-worker.mjs [site]` by hand.
+// do. Run by scripts/deploy-cloudflare.mjs, which uploads it to R2 (downloads/clipflow-worker.zip) for
+// app/api/downloads/worker to hand to signed-in people only. Not in public/: a static file there is served to anyone
+// once Cloudflare Access no longer guards the dashboard. `node scripts/pack-worker.mjs [site]` by hand.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -9,7 +11,8 @@ import { fileURLToPath } from "node:url";
 import { deflateRawSync } from "node:zlib";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-export const ZIP_PATH = join(root, "public", "downloads", "clipflow-worker.zip");
+export const ZIP_PATH = join(root, "outputs", "clipflow-worker.zip");
+export const ZIP_KEY = "downloads/clipflow-worker.zip";
 
 // Which tracked worker files are shipped: not tests, tools, local data or Python caches.
 export const shipped = path => path.startsWith("worker/") && !/^worker\/(test|tools|data|__pycache__)\//.test(path) && !/(^|\/)\.env/.test(path);

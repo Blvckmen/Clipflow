@@ -371,6 +371,12 @@ test("Sign in with Twitch: closed to strangers, links to a signed-in workspace, 
   assert.equal(out.status, 303);
   assert.equal((await fetch(base + "/api/dashboard", { headers: { cookie: alone.session } })).status, 401);
   assert.equal((await fetch(base + "/api/dashboard", { headers: { cookie: linked.session } })).status, 200, "other browsers stay signed in");
+  // The worker download is for signed-in people only: signed out, it sends you to sign in; it's never a static file.
+  const signedOut = await fetch(base + "/api/downloads/worker", { redirect: "manual" });
+  assert.equal(signedOut.status, 302);
+  assert.match(signedOut.headers.get("location"), /\/api\/auth\/twitch\/start$/);
+  assert.notEqual((await fetch(base + "/api/downloads/worker", { headers: { cookie: linked.session }, redirect: "manual" })).status, 302, "signed in: the file (or that it isn't uploaded yet)");
+  assert.equal((await fetch(base + "/downloads/clipflow-worker.zip", { redirect: "manual" })).status === 200, false, "no public copy");
 });
 
 test("an account set to Spanish posts the Spanish version the worker made, or fails with the reason", async () => {

@@ -125,8 +125,31 @@ The app reads `AUTH_MODE`:
   (`Cf-Access-Jwt-Assertion`, checked against the team's signing keys and the application's
   audience tag). Sites headers are ignored in this mode because a client could send them itself.
 
+- `app` (set by the deploy script with `CLIPFLOW_PUBLIC=1`) — only Clipflow's own sign-in
+  (Sign in with Twitch). Access tokens and Sites headers are both ignored.
+
+In every mode a Clipflow session cookie (Sign in with Twitch) is checked first.
+
 Data is stored per Access user. A deployment on Cloudflare starts with an empty database;
 it does not share data with a Codex Sites deployment.
+
+### Sign in with Twitch, and opening sign-ups
+
+Sign in with Twitch uses the site's Twitch app (`TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`). In
+the app's settings at <https://dev.twitch.tv/console/apps> add the OAuth Redirect URL
+`https://<your site>/api/auth/twitch/callback`.
+
+1. **Link Twitch.** While Access still guards the dashboard, open Settings → Sign-in → Link
+   Twitch. That Twitch account then signs in to your existing workspace.
+2. **Drop Access.** Set `CLIPFLOW_PUBLIC=1` in `.env` and deploy. The deploy refuses while any
+   workspace made through Access has no Twitch account linked (its owner would be locked out),
+   then removes the dashboard's Access application and sets `AUTH_MODE=app`. The worker API and
+   signed media links never needed Access.
+3. **Open sign-ups.** `CLIPFLOW_SIGNUPS=open` lets anyone with a Twitch account create a
+   workspace. Until then (the default, closed) only accounts already linked can sign in.
+
+The worker download (Connect worker → Download the worker) is uploaded to R2 by each deploy and
+served only to signed-in people (`/api/downloads/worker`); it's no longer a static file.
 
 ## Social caption generator
 

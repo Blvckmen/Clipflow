@@ -10,8 +10,11 @@ export type User = { userId: string; displayName: string };
 //   "sites"  (default) — headers injected by Codex Sites hosting (and the local mock sign-in).
 //   "access" — a Cloudflare Access token, for self-hosting on Cloudflare. Sites headers are ignored there,
 //              because off Sites nothing stops a client from sending them itself.
+//   "app"    — only Clipflow's own sign-in (Sign in with Twitch), once Access no longer guards the dashboard
+//              (CLIPFLOW_PUBLIC in the deploy). Sites headers and Access tokens are both ignored.
+// Clipflow's own session cookie is checked first in every mode.
 const config = env;
-export const authMode = () => (config.AUTH_MODE === "access" ? "access" : "sites");
+export const authMode = () => (config.AUTH_MODE === "access" ? "access" : config.AUTH_MODE === "app" ? "app" : "sites");
 
 let certs: { keys: Jwk[]; fetchedAt: number } | null = null;
 async function accessKeys(teamDomain: string, refresh = false) {
@@ -40,7 +43,7 @@ export async function signedInWithApp() { return !!(await sessionUser()); }
 
 export async function currentUser(): Promise<User | null> {
   const own = await sessionUser();
-  if (own) return own;
+  if (own || authMode() === "app") return own;
   if (authMode() === "sites") {
     const user = await getChatGPTUser();
     return user && { userId: user.userId, displayName: user.displayName };

@@ -1,7 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { inflateRawSync } from "node:zlib";
-import { crc32, shipped, zip } from "../scripts/pack-worker.mjs";
+import { ZIP_PATH, crc32, shipped, zip } from "../scripts/pack-worker.mjs";
+
+test("the worker download is packed outside public/, so it's never served without sign-in", () => {
+  assert.ok(!/[\\/]public[\\/]/.test(ZIP_PATH), ZIP_PATH);
+  assert.match(ZIP_PATH, /[\\/]outputs[\\/]clipflow-worker\.zip$/);
+});
 
 test("the worker download ships the worker's code, not its tests, tools, data or .env", () => {
   for (const p of ["worker/main.mjs", "worker/captions.py", "worker/Setup Clipflow.cmd", "worker/setup-windows.ps1", "worker/README.md"]) assert.ok(shipped(p), p);
