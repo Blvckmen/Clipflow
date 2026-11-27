@@ -22,6 +22,7 @@ export function rulerStep(duration, width, zoom) {
 }
 
 // Subtitle lines (cues, in seconds from the trim start) as blocks in source seconds.
+/** @param {{ start: number, end: number }[]} cues @param {number} trimStart @returns {{ start: number, end: number }[]} */
 export function cueBlocks(cues, trimStart) {
   return cues.map(c => ({ start: trimStart + c.start, end: trimStart + c.end }));
 }

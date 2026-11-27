@@ -5,6 +5,13 @@ export const EDGE = 24;
 const intersects = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 const nearEdge = (b, W, H) => b.left < EDGE || b.right > W - EDGE || b.top < EDGE || b.bottom > H - EDGE;
 
+/**
+ * @typedef {{ left: number, right: number, top: number, bottom: number }} Box
+ * @param {{ W: number, H: number }} frame
+ * @param {{ hook?: Box | null, captions?: Box | null }} boxes
+ * @param {{ top: number, right: number, bottom: number }} safe
+ * @returns {string[]}
+ */
 export function layoutWarnings({ W, H }, { hook = null, captions = null }, safe) {
   const out = [];
   if (hook && nearEdge(hook, W, H)) out.push("Title is close to the edge");
