@@ -10,6 +10,7 @@ import { optionsSchema, readOptions } from "../../../lib/account-options";
 import { decrypt, encrypt } from "../../../lib/secure";
 import { defaultStyle, normalizeStyle, withTextStyle } from "../../../worker/edit.mjs";
 import { applyAutomaticHook } from "../../../worker/hooks.mjs";
+import { MAX_TEXT_STYLE_BYTES, MAX_TEXT_STYLES, applyTextStyle, readTextStyle, styleName } from "../../../worker/text-style.mjs";
 // A saved clip edit, as far as the bulk text actions read it (worker/edit.mjs has the whole shape).
 type Edit={frame:{mode:string};captions:{on:boolean;y:number;mask?:boolean}&Record<string,unknown>;hook:{on?:boolean;text?:string;seconds?:number}&Record<string,unknown>;trim:{start:number;end:number};words?:unknown}&Record<string,unknown>;
 import { PLATFORM_NAMES, videoLink } from "../../../worker/video-link.mjs";
@@ -57,6 +58,9 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("reviewClip"),id:z.string().uuid(),review:z.enum(["approved","rejected","pending"])}),
  // Make a clip that failed on the PC again (Clips → Being made → Try again); the worker picks it up from its config.
  z.object({action:z.literal("retryClip"),id:z.string().uuid()}),
+ // A named text style (worker/text-style.mjs) saved for the workspace (the same name replaces it), or removed.
+ z.object({action:z.literal("saveTextStyle"),name:z.string().max(200),style:z.unknown()}),
+ z.object({action:z.literal("deleteTextStyle"),id:z.string().uuid()}),
  // Why a rejected clip was rejected, asked right after (lib/reject-reasons.mjs).
  z.object({action:z.literal("rejectReason"),id:z.string().uuid(),reason:z.enum(REJECT_REASON_KEYS as [string,...string[]])}),
  // `platform` is the pre-multi-account form: it disconnects that platform's only account.
@@ -76,7 +80,7 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("postClips"),ids:clipIds,accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)]),draft:z.boolean().optional()}),
  // hookOn/hookOff: show or hide each clip's opening title (one is written from the transcript where there is none);
  // textStyle: the subtitle and title look of clip `from`, or without it the clip's channel look.
- z.object({action:z.literal("bulkClips"),ids:clipIds,op:z.enum(["approve","reject","pending","delete","captionsOn","captionsOff","frame","hookOn","hookOff","textStyle"]),from:z.string().uuid().optional(),frame:z.enum(["blur","crop","fit","split","phone"]).optional()}),
+ z.object({action:z.literal("bulkClips"),ids:clipIds,op:z.enum(["approve","reject","pending","delete","captionsOn","captionsOff","frame","hookOn","hookOff","textStyle"]),from:z.string().uuid().optional(),styleId:z.string().uuid().optional(),frame:z.enum(["blur","crop","fit","split","phone"]).optional()}),
  // Removes a split-screen background video from the library (clips using it switch to another one).
  z.object({action:z.literal("deleteBackground"),id:z.string().uuid()}),
  // A library video's length, measured in the browser for videos uploaded before lengths were recorded.
@@ -141,13 +145,15 @@ export async function GET(request:Request){
  }
  try{
   const db=database(),owner=user.userId;
-  const [a,po,l,rr]=await Promise.all([
+  const [a,po,l,rr,ts]=await Promise.all([
    // Tokens never leave the server: only display fields are selected.
    db.prepare("SELECT id,provider,platform,username,status,connected_at,last_error,options,zernio_key_id FROM accounts WHERE owner=? ORDER BY connected_at").bind(owner).all<Record<string,unknown>&{options:string|null}>(),
    db.prepare("SELECT p.id,p.clip_id,p.platform,p.account_id,p.state,p.permalink,p.error,p.attempts,p.created_at,p.published_at,p.round,p.views,p.likes,p.draft,s.name AS streamer,a.username AS account FROM posts p LEFT JOIN clips c ON c.id=p.clip_id LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner LEFT JOIN accounts a ON a.id=p.account_id WHERE p.owner=? ORDER BY p.created_at DESC LIMIT 100").bind(owner).all(),
    db.prepare("SELECT streamer_id,account_id FROM streamer_accounts WHERE owner=?").bind(owner).all<{streamer_id:string;account_id:string}>(),
    // Why clips were rejected lately (lib/reject-reasons.mjs), for the line above the library.
    db.prepare("SELECT reject_reason AS reason,count(*) AS n FROM clips WHERE owner=? AND review='rejected' AND reject_reason IS NOT NULL AND reviewed_at>=? GROUP BY reject_reason").bind(owner,new Date(Date.now()-REJECT_WINDOW_DAYS*86_400_000).toISOString()).all<{reason:string;n:number}>(),
+   // Saved text styles (worker/text-style.mjs), by name.
+   db.prepare("SELECT id,name,style FROM text_styles WHERE owner=? ORDER BY name COLLATE NOCASE").bind(owner).all<{id:string;name:string;style:string}>(),
   ]);
   const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(owner).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(owner).all(),db.prepare(CLIPS_SQL+" WHERE c.owner=? ORDER BY c.created_at DESC LIMIT "+CLIPS_PAGE).bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at,device,device_at,restart_at,restart_now,power FROM worker_tokens WHERE owner=?").bind(owner).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null;device:string|null;device_at:string|null;restart_at:string|null;restart_now:number|null;power:string|null}>()]);
   const lastSeen=w?.last_seen??null,connected=!!lastSeen&&Date.now()-Date.parse(lastSeen)<ENGINE_FRESH_MS;
@@ -167,7 +173,8 @@ export async function GET(request:Request){
   // Settings → Plan (lib/plans.mjs): only with billing on. The first look starts a new workspace's trial.
   const plan=billingOn(env)?await workspaceStanding(db,owner).then(({standing,customer})=>({...standing,canManage:!!customer,usage:{channels:s.results.length,accounts:a.results.filter(x=>x.status==="connected").length},plans:PLANS})).catch(error=>{console.error("Billing lookup failed",error);return null;}):null;
   const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,hooks:p.hooks==null?true:!!p.hooks,importClips:Number(p.import_clips??0),viewerClips:readViewerClips(p.viewer_clips),clipCommand:p.clip_command??defaults.clipCommand,learn:p.learn===undefined?true:!!p.learn,weeklyHighlights:!!p.weekly_highlights,worker:readWorkerSettings(p.worker_settings),discordAlerts:!!p.discord_webhook_enc,alertError:p.alert_error??null,style:parse(p.style)}:{...defaults,style:null};
-  return Response.json({user:user.displayName,account,plan,rejectReasons:Object.fromEntries(rr.results.map(x=>[x.reason,x.n])),streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(clipRowWith(viewProfiles(s.results))),moreClips:c.results.length===CLIPS_PAGE,storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,duration,content_type,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,
+  return Response.json({user:user.displayName,account,plan,rejectReasons:Object.fromEntries(rr.results.map(x=>[x.reason,x.n])),
+   textStyles:ts.results.flatMap(x=>{try{return [{id:x.id,name:x.name,style:readTextStyle(JSON.parse(x.style))}];}catch{return [];}}),streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(clipRowWith(viewProfiles(s.results))),moreClips:c.results.length===CLIPS_PAGE,storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,duration,content_type,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,
    // Whole-stream recordings (their heat strips load with GET /api/recordings/<id>) and clips asked for from them.
    recordings:(await db.prepare("SELECT r.id,r.streamer_id,s.name AS streamer,r.title,r.started_at,r.ended_at,r.duration,r.size,r.state,r.error,r.preview_key IS NOT NULL AS preview,r.transcript_at IS NOT NULL AS transcript,r.upload_id IS NOT NULL AS uploading,r.expires_at,r.source_url FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.owner=? ORDER BY r.started_at DESC LIMIT 100").bind(owner).all<Record<string,unknown>>()).results.map(x=>({...x,preview:!!x.preview,uploading:!!x.uploading,transcript:!!x.transcript})),
    highlights:(await db.prepare("SELECT id,title,state,size,duration,error,auto,clips,created_at FROM highlights WHERE owner=? ORDER BY created_at DESC LIMIT 20").bind(owner).all<{clips:string}>()).results.map(({clips,...h})=>({...h,clips:(JSON.parse(clips) as unknown[]).length})),
@@ -373,6 +380,21 @@ export async function POST(request:Request){
    statements.push(db.prepare("INSERT INTO clips (id,owner,streamer_id,created_at,duration,captions,sha,size,review,reason,file_key,source_key,source_sha,source_size,transcript,signals,source_meta,edit,edit_rev,rendered_at,post_caption,caption_source) SELECT ?,owner,streamer_id,?,duration,captions,sha,size,'pending',reason,?,?,CASE WHEN ? IS NULL THEN NULL ELSE source_sha END,CASE WHEN ? IS NULL THEN NULL ELSE source_size END,transcript,signals,source_meta,edit,edit_rev,rendered_at,post_caption,caption_source FROM clips WHERE id=? AND owner=?").bind(clipId,iso,file,source,source,source,clip.id,owner));
    message="Copied a clip"+(clip.name?" from "+clip.name:"")+". The copy waits for review: change its hook or look, then post it.";
   }
+  if(payload.action==="saveTextStyle"){
+   let name:string,style:unknown;
+   try{name=styleName(payload.name);style=readTextStyle(payload.style);}catch(error){return Response.json({error:(error as Error).message+"."},{status:400});}
+   const json=JSON.stringify(style);
+   if(json.length>MAX_TEXT_STYLE_BYTES)return Response.json({error:"That style is too big to save."},{status:400});
+   const have=await db.prepare("SELECT count(*) AS n,sum(name=?) AS same FROM text_styles WHERE owner=?").bind(name,owner).first<{n:number;same:number|null}>();
+   if(!have?.same&&(have?.n??0)>=MAX_TEXT_STYLES)return Response.json({error:"You have "+MAX_TEXT_STYLES+" saved styles. Delete one to save another."},{status:409});
+   await db.prepare("INSERT INTO text_styles (id,owner,name,style,created_at) VALUES (lower(hex(randomblob(16))),?,?,?,?) ON CONFLICT(owner,name) DO UPDATE SET style=excluded.style").bind(owner,name,json,iso).run();
+   return Response.json({ok:true,message:(have?.same?"Updated the style ":"Saved the style ")+"“"+name+"”."});
+  }
+  if(payload.action==="deleteTextStyle"){
+   const r=await db.prepare("DELETE FROM text_styles WHERE id=? AND owner=? RETURNING name").bind(payload.id,owner).first<{name:string}>();
+   if(!r)return Response.json({error:"That style was already deleted."},{status:404});
+   return Response.json({ok:true,message:"Deleted the style “"+r.name+"”."});
+  }
   if(payload.action==="retryClip"){
    // The clip never reached the dashboard, so there's nothing here to check: the PC knows whether it still has it.
    // Asked again, the time is renewed; old requests are cleared as new ones come in.
@@ -498,7 +520,14 @@ export async function POST(request:Request){
      if(!src)return Response.json({error:"The clip to copy the look from can't be edited."},{status:404});
      look=JSON.parse(src.edit);
     }
-    const ws=payload.op==="textStyle"&&!payload.from?await db.prepare("SELECT style,framing,captions FROM preferences WHERE owner=?").bind(owner).first<{style:string|null;framing:string;captions:number}>():null;
+    // A saved text style (Text… → Apply saved style), applied with each clip's own switches, text and height kept.
+    let saved:unknown=null,savedName="";
+    if(payload.op==="textStyle"&&payload.styleId){
+     const row=await db.prepare("SELECT name,style FROM text_styles WHERE id=? AND owner=?").bind(payload.styleId,owner).first<{name:string;style:string}>();
+     if(!row)return Response.json({error:"That saved style was deleted."},{status:404});
+     try{saved=readTextStyle(JSON.parse(row.style));savedName=row.name;}catch{return Response.json({error:"That saved style can't be read; save it again."},{status:409});}
+    }
+    const ws=payload.op==="textStyle"&&!payload.from&&!saved?await db.prepare("SELECT style,framing,captions FROM preferences WHERE owner=?").bind(owner).first<{style:string|null;framing:string;captions:number}>():null;
     let changed=0,noWords=0;
     for(const row of rows){
      let e:Edit;try{e=JSON.parse(row.edit);}catch{continue;}
@@ -509,6 +538,9 @@ export async function POST(request:Request){
       let words:unknown=[];try{words=JSON.parse(row.transcript??"[]");}catch{/* no words */}
       const shown=applyAutomaticHook({...e,hook:{...e.hook,on:true}},words);
       if(shown.hook.text)next=shown;else noWords++;
+     }else if(saved){
+      try{next=applyTextStyle(e,saved);}catch{next=null;}
+      if(next&&JSON.stringify({c:next.captions,h:next.hook})===JSON.stringify({c:e.captions,h:e.hook}))next=null;
      }else{
       let from=look;
       if(!from){try{from=row.streamer_style?JSON.parse(row.streamer_style):null;}catch{from=null;}}
@@ -521,7 +553,7 @@ export async function POST(request:Request){
      changed++;
     }
     const skipped=payload.ids.length-changed;
-    const what=payload.op==="hookOn"?"Showing the opening title on ":payload.op==="hookOff"?"Hiding the opening title on ":payload.from?"Copying the subtitle and title look to ":"Resetting the subtitle and title look of ";
+    const what=payload.op==="hookOn"?"Showing the opening title on ":payload.op==="hookOff"?"Hiding the opening title on ":saved?"Applying the style “"+savedName+"” to ":payload.from?"Copying the subtitle and title look to ":"Resetting the subtitle and title look of ";
     message=(changed?what+clips(changed)+". The worker re-renders them over the next few minutes; queued posts wait for the new version.":"No clips changed.")
      +(skipped?" "+clips(skipped)+" left as they were (already like that"+(noWords?", "+noWords+" with no speech to write a title from":"")+", or can't be edited).":"");
    }else{

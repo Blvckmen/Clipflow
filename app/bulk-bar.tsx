@@ -5,10 +5,11 @@ import { Check, CheckSquare, Send, Square, Subtitles, Trash2, Undo2, X } from "l
 export type BulkOp = "approve" | "reject" | "pending" | "captionsOn" | "captionsOff" | "hookOn" | "hookOff" | "textStyle" | "frame";
 
 // lookFrom: the selected clips that can be edited, to copy one's subtitle and title look to the others.
-export function BulkBar({ count, shown, allShown, busy, onSelectShown, onClear, onRun, onPost, onDelete, lookFrom = [] }: {
+// savedStyles: the workspace's saved text styles (worker/text-style.mjs), to apply one to the selected clips.
+export function BulkBar({ count, shown, allShown, busy, onSelectShown, onClear, onRun, onPost, onDelete, lookFrom = [], savedStyles = [] }: {
   count: number; shown: number; allShown: boolean; busy: boolean;
-  onSelectShown: () => void; onClear: () => void; onRun: (op: BulkOp, frame?: string, from?: string) => void; onPost: () => void; onDelete: () => void;
-  lookFrom?: { id: string; label: string }[];
+  onSelectShown: () => void; onClear: () => void; onRun: (op: BulkOp, frame?: string, from?: string, styleId?: string) => void; onPost: () => void; onDelete: () => void;
+  lookFrom?: { id: string; label: string }[]; savedStyles?: { id: string; name: string }[];
 }) {
   return <div className="bulk-bar" role="toolbar" aria-label="Actions for selected clips">
     <div className="bulk-count">
@@ -21,7 +22,7 @@ export function BulkBar({ count, shown, allShown, busy, onSelectShown, onClear, 
       <button className="secondary" disabled={busy} onClick={() => onRun("approve")}><Check size={14} />Accept</button>
       <button className="secondary" disabled={busy} onClick={() => onRun("reject")}><X size={14} />Reject</button>
       <button className="secondary" disabled={busy} onClick={() => onRun("pending")} title="Move back to Needs review"><Undo2 size={14} />To review</button>
-      <select aria-label="Text on selected clips" disabled={busy} value="" onChange={e => { const [op, from] = e.target.value.split(":"); if (op) onRun(op as BulkOp, undefined, from); }}>
+      <select aria-label="Text on selected clips" disabled={busy} value="" onChange={e => { const [op, id] = e.target.value.split(":"); if (op === "savedStyle") onRun("textStyle", undefined, undefined, id); else if (op) onRun(op as BulkOp, undefined, id); }}>
         <option value="">Text…</option>
         <optgroup label="Subtitles">
           <option value="captionsOn">Show subtitles</option>
@@ -35,6 +36,9 @@ export function BulkBar({ count, shown, allShown, busy, onSelectShown, onClear, 
           <option value="textStyle">Reset to each channel&apos;s look</option>
           {lookFrom.length > 1 && lookFrom.map(c => <option key={c.id} value={"textStyle:" + c.id}>Copy the look of: {c.label}</option>)}
         </optgroup>
+        {savedStyles.length > 0 && <optgroup label="Saved styles">
+          {savedStyles.map(s => <option key={s.id} value={"savedStyle:" + s.id}>Apply: {s.name}</option>)}
+        </optgroup>}
       </select>
       <select aria-label="Framing of selected clips" disabled={busy} value="" onChange={e => { const [op, frame] = e.target.value.split(":"); if (op) onRun(op as BulkOp, frame); }}>
         <option value="">Framing…</option>

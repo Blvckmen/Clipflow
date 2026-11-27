@@ -237,6 +237,11 @@ export const clipVersions=sqliteTable("clip_versions",{
  id:text("id").primaryKey(),clipId:text("clip_id").notNull(),owner:text("owner").notNull(),rev:integer("rev").notNull(),
  edit:text("edit").notNull(),createdAt:text("created_at").notNull(),
 },t=>[index("clip_versions_clip_rev").on(t.clipId,t.rev)]);
+// Saved text styles (worker/text-style.mjs): a subtitle and opening title look with a name, to apply to clips. style is
+// the JSON { captions, hook }; at most MAX_TEXT_STYLES per workspace, one per name (saving a name again replaces it).
+export const textStyles=sqliteTable("text_styles",{
+ id:text("id").primaryKey(),owner:text("owner").notNull(),name:text("name").notNull(),style:text("style").notNull(),createdAt:text("created_at").notNull(),
+},t=>[uniqueIndex("text_styles_owner_name").on(t.owner,t.name)]);
 
 // Highlight videos (lib/highlights.ts): the clips picked (JSON [{id,start,end}], in order), made into one 16:9 video
 // by the worker and uploaded in parts like a recording's preview. state: queued -> ready (file_key) | failed (error).
