@@ -7,6 +7,7 @@ import { ALIGNS, ANIMATIONS, FONTS, HOOK_ANIMS, HOOK_DEFAULT, HOOK_LINES, HOOK_S
 import { suggestHooks } from "../../../worker/hooks.mjs";
 import { countMatches, normalizeSpeakers, replaceWords, shiftWords, speakerAt, subtitleFile } from "../../../worker/transcript.mjs";
 import { More } from "../More";
+import { SavedLooks } from "./SavedLooks";
 import { setMedia, type Bundle, type ClipTimeline, type Edit, type Speaker, type Tools, type Word } from "../types";
 
 export type TextPanel = "subtitles" | "title" | "transcript";
@@ -70,6 +71,7 @@ function Subtitles({ edit, tools }: { edit: Edit; tools: Tools }) {
         <label title="A strong word, a number, a name, or one that was shouted"><input type="checkbox" checked={c.keywords} onChange={e => set({ keywords: e.target.checked })} />Highlight key words</label>
         <label title="f***, for brand-friendly accounts"><input type="checkbox" checked={c.mask} onChange={e => set({ mask: e.target.checked })} />Bleep swear words</label>
       </div>
+      <SavedLooks edit={edit} change={tools.change} />
     </More>
   </div>;
 }
