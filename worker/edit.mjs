@@ -232,7 +232,18 @@ export function normalizeEdit(input, { duration }) {
   const hook = obj(e.hook ?? {}, "Hook");
   const out = { v: 1, trim: { start: round(start), end: round(end) }, ...style, hook: { ...style.hook, text: hookText(hook.text ?? ""), seconds: num(hook.seconds ?? style.hook.seconds, 1, MAX_CLIP, "Hook length") } };
   if (e.words !== undefined) out.words = normalizeWords(e.words, total);
+  if (e.speakers !== undefined) out.speakers = normalizeSpeakers(e.speakers, total);
   return out;
+}
+
+// Who is speaking: [{ at, name }], each name from `at` (seconds from the source start) until the next one. Used in
+// transcript and subtitle files (worker/transcript.mjs), not drawn on the video.
+export const MAX_SPEAKER_TURNS = 100;
+export function normalizeSpeakers(list, total = 600) {
+  if (!Array.isArray(list) || list.length > MAX_SPEAKER_TURNS) fail("Speakers are invalid");
+  const turns = list.map(x => { const o = obj(x, "Speaker"); return { at: round(num(o.at, 0, total, "Speaker time")), name: text(o.name ?? "", 30, "Speaker name").replace(/\s+/g, " ").trim() }; });
+  // One name per moment (the last given wins), in time order; an empty name means "nobody named" from then on.
+  return [...new Map(turns.map(t => [t.at, t])).values()].sort((a, b) => a.at - b.at);
 }
 
 // Transcript words: [[start, end, text]], seconds from the source start. Empty text hides a word from captions.
