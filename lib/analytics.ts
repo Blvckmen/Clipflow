@@ -68,7 +68,7 @@ export async function syncAnalytics(env: Env, now = Date.now()) {
 // The workspace's measured posts with what each clip was (why it was cut, how long, whether it had a hook), newest
 // first, for lib/insights.mjs. posts_owner_state finds them; clips are joined by primary key.
 async function measuredPosts(db: D1Database, owner: string) {
-  const { results } = await db.prepare(`SELECT c.streamer_id,c.reason,c.duration,coalesce(json_extract(c.edit,'$.hook.text'),'')!='' AS hook,p.views,p.platform
+  const { results } = await db.prepare(`SELECT c.streamer_id,c.reason,c.duration,(coalesce(json_extract(c.edit,'$.hook.text'),'')!='' AND coalesce(json_extract(c.edit,'$.hook.on'),1)!=0) AS hook,p.views,p.platform
     FROM posts p INDEXED BY posts_owner_state JOIN clips c ON c.id=p.clip_id
     WHERE p.owner=? AND p.state='published' AND p.views IS NOT NULL ORDER BY p.published_at DESC LIMIT 500`).bind(owner).all<{ streamer_id: string; reason: string | null; duration: number | null; hook: number; views: number; platform: string }>();
   return results.map(r => ({ streamer: r.streamer_id, reason: r.reason, duration: r.duration, hook: !!r.hook, views: r.views, platform: r.platform }));

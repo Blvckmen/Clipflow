@@ -174,7 +174,8 @@ export function normalizeStyle(input, base = defaultStyle()) {
       // Looks saved before keyword highlighting get it on, in their preset's colour.
       keywords: bool(c.keywords ?? true, "Keyword highlight"), keywordColor: color(s.captions?.keywordColor ?? PRESETS[c.preset]?.keywordColor ?? c.keywordColor ?? "#ffe14d", "Keyword colour"),
     },
-    hook: { color: color(h.color, "Hook text colour"), bg: h.bg === null ? null : color(h.bg, "Hook background"), seconds: num(h.seconds ?? DEFAULT_HOOK_SECONDS, 1, MAX_CLIP, "Hook length"),
+    // on: whether the hook is shown; off keeps its text for turning it back on (edits from before it: shown).
+    hook: { on: bool(h.on ?? true, "Opening title"), color: color(h.color, "Hook text colour"), bg: h.bg === null ? null : color(h.bg, "Hook background"), seconds: num(h.seconds ?? DEFAULT_HOOK_SECONDS, 1, MAX_CLIP, "Hook length"),
       x: num(h.x ?? HOOK_DEFAULT.x, ...HOOK_X, "Hook position"), y: num(h.y ?? HOOK_DEFAULT.y, ...HOOK_Y, "Hook position"), size: int(h.size ?? HOOK_DEFAULT.size, ...HOOK_SIZE, "Hook size") },
     progress: { on: bool(p.on, "Progress bar"), color: color(p.color, "Progress bar colour") },
     pace: { cuts: pick(pc.cuts, CUT_LEVELS, "Jump cuts"), zooms: bool(pc.zooms, "Punch-in zooms") },
@@ -185,7 +186,17 @@ export function normalizeStyle(input, base = defaultStyle()) {
 
 export function styleOf(edit) {
   const { frame, look, captions, hook, progress, pace = { ...DEFAULT_PACE }, chat = { ...DEFAULT_CHAT }, audio = { ...DEFAULT_AUDIO } } = edit;
-  return { frame, look, captions, hook: { color: hook.color, bg: hook.bg, seconds: hook.seconds, x: hook.x, y: hook.y, size: hook.size }, progress, pace, chat, audio };
+  return { frame, look, captions, hook: { on: hook.on !== false, color: hook.color, bg: hook.bg, seconds: hook.seconds, x: hook.x, y: hook.y, size: hook.size }, progress, pace, chat, audio };
+}
+// Whether an edit shows its hook: switched on and with text.
+export const showsHook = edit => edit.hook?.on !== false && !!edit.hook?.text;
+// The subtitle and hook look of `source` (a style or edit) applied to `edit`, keeping what is the clip's own: the
+// hook's text, whether each is switched on, and the subtitle height when the two are framed differently (it follows
+// the framing's seam).
+export function withTextStyle(edit, source) {
+  const s = normalizeStyle(source), sameFrame = s.frame.mode === edit.frame.mode;
+  return { ...edit, captions: { ...s.captions, on: edit.captions.on, y: sameFrame ? s.captions.y : edit.captions.y },
+    hook: { ...s.hook, on: edit.hook.on !== false, text: edit.hook.text ?? "", seconds: Math.min(s.hook.seconds, MAX_CLIP) } };
 }
 
 // A first edit for a freshly captured clip: the chosen moment, in the streamer's (or workspace's) style.
@@ -514,7 +525,7 @@ export function buildAss(edit, words, tl = plain(edit), messages = []) {
     lines.push("Dialogue: 0," + stamp(w.start - t0) + "," + stamp(w.end - t0) + ",Chat,,0,0,0,,{\\an1\\pos(40," + Math.round(edit.chat.y * H) + ")\\q2}" + body);
   }
   // The hook's times are already in the finished clip.
-  if (edit.hook.text) lines.push(`Dialogue: 1,${clock(0)},${clock(Math.min(len, edit.hook.seconds))},Hook,,${hp.margin},${hp.margin},0,,{\\an8\\pos(${hp.x},${hp.y})}${POP}${esc(edit.hook.text).replace(/\n/g, "\\N")}`);
+  if (showsHook(edit)) lines.push(`Dialogue: 1,${clock(0)},${clock(Math.min(len, edit.hook.seconds))},Hook,,${hp.margin},${hp.margin},0,,{\\an8\\pos(${hp.x},${hp.y})}${POP}${esc(edit.hook.text).replace(/\n/g, "\\N")}`);
   return lines.join("\n") + "\n";
 }
 
@@ -604,4 +615,4 @@ export function filterGraph(edit, { width, height }, subtitles, { background = f
   return parts.join(";");
 }
 
-export function needsSubtitles(edit, words, messages = []) { return !!edit.hook.text || (edit.captions.on && (words?.length ?? 0) > 0) || (!!edit.chat?.on && (messages?.length ?? 0) > 0); }
+export function needsSubtitles(edit, words, messages = []) { return showsHook(edit) || (edit.captions.on && (words?.length ?? 0) > 0) || (!!edit.chat?.on && (messages?.length ?? 0) > 0); }

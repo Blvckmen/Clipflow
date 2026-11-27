@@ -286,3 +286,28 @@ test("cues mark keywords only when captions.keywords is on, judged before ALL CA
   assert.equal(normalizeStyle(old).captions.keywords, true);
   assert.equal(normalizeStyle({ ...old, captions: { ...old.captions, preset: "boxed" } }).captions.keywordColor, "#1d4ed8");
 });
+
+test("opening title on/off keeps its text, and a look copies without the clip's own text", async () => {
+  const { showsHook, withTextStyle } = await import("../edit.mjs");
+  const base = defaultEdit(defaultStyle({ captions: true }), { trimStart: 0, trimEnd: 30 });
+  const titled = normalizeEdit({ ...base, hook: { ...base.hook, text: "He did NOT see that" } }, { duration: 40 });
+  assert.equal(titled.hook.on, true, "older edits show their title");
+  assert.ok(showsHook(titled));
+  const hidden = normalizeEdit({ ...titled, hook: { ...titled.hook, on: false } }, { duration: 40 });
+  assert.equal(hidden.hook.text, "He did NOT see that", "hiding keeps the text");
+  assert.ok(!showsHook(hidden));
+  assert.ok(!buildAss(hidden, [], 1080, 1920).includes("He did NOT"), "a hidden title isn't drawn");
+  assert.ok(buildAss(titled, [], 1080, 1920).includes("He did NOT"));
+  assert.ok(!needsSubtitles(hidden, []), "nothing to burn in");
+  assert.equal(styleOf(hidden).hook.on, false);
+  // Copying a look: colours and sizes come over; the text and both switches stay the clip's own.
+  const look = { ...styleOf(titled), captions: { ...titled.captions, on: false, color: "#00ff00", size: 90 }, hook: { ...titled.hook, on: true, color: "#ff0000", size: 80 } };
+  const copied = withTextStyle(hidden, look);
+  assert.equal(copied.captions.color, "#00ff00");
+  assert.equal(copied.captions.size, 90);
+  assert.equal(copied.captions.on, true, "subtitles stay on");
+  assert.equal(copied.hook.color, "#ff0000");
+  assert.equal(copied.hook.on, false, "the title stays hidden");
+  assert.equal(copied.hook.text, "He did NOT see that");
+  assert.doesNotThrow(() => normalizeEdit(copied, { duration: 40 }));
+});

@@ -15,7 +15,7 @@ type Aspect = keyof typeof ASPECTS;
 type Frame = { mode: "blur" | "crop" | "fit" | "split" | "cam" | "pip" | "phone"; aspect?: Aspect; content?: CamBox | null; zoom: number; x: number; y: number; background?: string | null; split?: Split; facecam?: Facecam };
 type Captions = { on: boolean; preset: string; font: string; size: number; color: string; highlight: string; outline: number; outlineColor: string; box: boolean; boxColor: string; uppercase: boolean; animation: string; words: number; y: number; mask: boolean; keywords: boolean; keywordColor: string };
 type Word = [number, number, string];
-export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { text: string; seconds: number; color: string; bg: string | null; x: number; y: number; size: number }; progress: { on: boolean; color: string }; pace?: Pace; chat?: ChatLook; audio?: { music: "keep" | "lower" | "voice" }; words?: Word[] };
+export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { on?: boolean; text: string; seconds: number; color: string; bg: string | null; x: number; y: number; size: number }; progress: { on: boolean; color: string }; pace?: Pace; chat?: ChatLook; audio?: { music: "keep" | "lower" | "voice" }; words?: Word[] };
 type ChatLook = { on: boolean; y: number };
 // [seconds into the source, name, text, colour]: the Twitch chat sent during the clip's source.
 type ChatMessage = [number, string, string, string | null];
@@ -342,7 +342,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
       }
       // Word by word (wrapped like the render), with the hook's own line breaks.
       const hp = hookPlacement(e), placing = v.paused && tabRef.current === "extras";
-      hookBox.current = e.hook.text && (out < e.hook.seconds || placing) ? drawText(ctx, e.hook.text.split("\n").flatMap((l, i) => [...(i ? [{ t: "\n", color: e.hook.color }] : []), ...l.split(" ").filter(Boolean).map(t => ({ t, color: e.hook.color }))]),
+      hookBox.current = e.hook.text && e.hook.on !== false && (out < e.hook.seconds || placing) ? drawText(ctx, e.hook.text.split("\n").flatMap((l, i) => [...(i ? [{ t: "\n", color: e.hook.color }] : []), ...l.split(" ").filter(Boolean).map(t => ({ t, color: e.hook.color }))]),
         e.hook.bg ? { font: c.font, size: hp.size, outline: 0, outlineColor: "#000000", box: true, boxColor: e.hook.bg } : { font: c.font, size: hp.size, outline: Math.max(3, Math.round(hp.size * HOOK_OUTLINE / 52)), outlineColor: hookOutlineColor(e.hook.color), box: false, boxColor: "#000000" },
         hp.x, hp.y, "top", placing ? 1 : pop(out), 60, hp.wrap) : null;
       if (hookBox.current && placing) { const b = hookBox.current; ctx.save(); ctx.setLineDash([10, 8]); ctx.lineWidth = 3; ctx.strokeStyle = "#bcfa76"; ctx.strokeRect(b.left - 16, b.top - 8, b.right - b.left + 32, b.bottom - b.top + 16); ctx.restore(); }
@@ -448,7 +448,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
       setHookNote("No usable speech in the current trim. Correct the transcript, widen the trim, or type an opening title below. Your current opening title has been kept.");
       return;
     }
-    change("generate-hook", e => ({ ...e, hook: generated.hook }));
+    change("generate-hook", e => ({ ...e, hook: { ...generated.hook, on: true } }));
     video.current?.pause();
     if (video.current) video.current.currentTime = edit.trim.start;
     setPlaying(false); setTime(edit.trim.start);
@@ -651,6 +651,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
             <button className="secondary" onClick={() => change("reset-frame", e => ({ ...e, frame: { ...e.frame, zoom: 1, x: 0, y: 0 }, look: { brightness: 1, contrast: 1, saturation: 1 } }))}>Reset framing and colour</button>
           </>}
           {tab === "extras" && <>
+            <label className="switch-row" title="Off hides the title but keeps its text, so you can turn it back on"><input type="checkbox" checked={edit.hook.on !== false} onChange={e => set("hook", { on: e.target.checked })} />Show opening title</label>
             <p className="hint">Writes a title from your current trim and transcript corrections, the same way new clips get one. Runs on your PC; no API key needed.</p>
             <button className="secondary" disabled={saving} onClick={generateOpeningHook}><Sparkles size={15} />{edit.hook.text ? "Write a new opening title" : "Write an opening title"}</button>
             {hookNote && <p className="hint" role="status">{hookNote}</p>}

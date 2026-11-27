@@ -8,7 +8,10 @@ import { deleteAccount, deletePost, verifyKey, VIDEO_PLATFORMS, ZernioError } fr
 import { syncZernioAccounts } from "../../../lib/zernio-sync";
 import { optionsSchema, readOptions } from "../../../lib/account-options";
 import { decrypt, encrypt } from "../../../lib/secure";
-import { normalizeStyle } from "../../../worker/edit.mjs";
+import { defaultStyle, normalizeStyle, withTextStyle } from "../../../worker/edit.mjs";
+import { applyAutomaticHook } from "../../../worker/hooks.mjs";
+// A saved clip edit, as far as the bulk text actions read it (worker/edit.mjs has the whole shape).
+type Edit={frame:{mode:string};captions:{on:boolean;y:number;mask?:boolean}&Record<string,unknown>;hook:{on?:boolean;text?:string;seconds?:number}&Record<string,unknown>;trim:{start:number;end:number};words?:unknown}&Record<string,unknown>;
 import { PLATFORM_NAMES, videoLink } from "../../../worker/video-link.mjs";
 import { emptyRules, readRules } from "../../../lib/posting-rules.mjs";
 import { learnedScore, viralityScore } from "../../../lib/virality.mjs";
@@ -71,7 +74,9 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("postClip"),id:z.string().uuid(),accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)]),draft:z.boolean().optional()}),
  // Bulk actions on clips picked in the library: post them all to the chosen accounts, or review, edit or delete them.
  z.object({action:z.literal("postClips"),ids:clipIds,accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)]),draft:z.boolean().optional()}),
- z.object({action:z.literal("bulkClips"),ids:clipIds,op:z.enum(["approve","reject","pending","delete","captionsOn","captionsOff","frame"]),frame:z.enum(["blur","crop","fit","split","phone"]).optional()}),
+ // hookOn/hookOff: show or hide each clip's opening title (one is written from the transcript where there is none);
+ // textStyle: the subtitle and title look of clip `from`, or without it the clip's channel look.
+ z.object({action:z.literal("bulkClips"),ids:clipIds,op:z.enum(["approve","reject","pending","delete","captionsOn","captionsOff","frame","hookOn","hookOff","textStyle"]),from:z.string().uuid().optional(),frame:z.enum(["blur","crop","fit","split","phone"]).optional()}),
  // Removes a split-screen background video from the library (clips using it switch to another one).
  z.object({action:z.literal("deleteBackground"),id:z.string().uuid()}),
  // A library video's length, measured in the browser for videos uploaded before lengths were recorded.
@@ -481,6 +486,42 @@ export async function POST(request:Request){
     await dropUnsent(rows.map(r=>r.id));
     statements.push(db.prepare("DELETE FROM clips WHERE owner=? AND id IN ("+marks+")").bind(owner,idList));
     message="Deleted "+clips(rows.length)+".";
+   }else if(payload.op==="hookOn"||payload.op==="hookOff"||payload.op==="textStyle"){
+    // Changed one clip at a time in its saved edit (the title may be written, the look merged), then re-rendered.
+    type TextRow={id:string;edit:string;transcript:string|null;streamer_style:string|null};
+    const {results:rows}=await db.prepare("SELECT c.id,c.edit,c.transcript,s.style AS streamer_style FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id WHERE c.owner=? AND c.id IN ("+marks+") AND c.edit IS NOT NULL AND c.source_key IS NOT NULL").bind(owner,idList).all<TextRow>();
+    let look:unknown=null;
+    if(payload.op==="textStyle"&&payload.from){
+     const src=await db.prepare("SELECT edit FROM clips WHERE owner=? AND id=? AND edit IS NOT NULL").bind(owner,payload.from).first<{edit:string}>();
+     if(!src)return Response.json({error:"The clip to copy the look from can't be edited."},{status:404});
+     look=JSON.parse(src.edit);
+    }
+    const ws=payload.op==="textStyle"&&!payload.from?await db.prepare("SELECT style,framing,captions FROM preferences WHERE owner=?").bind(owner).first<{style:string|null;framing:string;captions:number}>():null;
+    let changed=0,noWords=0;
+    for(const row of rows){
+     let e:Edit;try{e=JSON.parse(row.edit);}catch{continue;}
+     let next:Edit|null=null;
+     if(payload.op==="hookOff")next=e.hook?.on===false||!e.hook?.text?null:{...e,hook:{...e.hook,on:false}};
+     else if(payload.op==="hookOn"){
+      if(e.hook?.on!==false&&e.hook?.text)continue;
+      let words:unknown=[];try{words=JSON.parse(row.transcript??"[]");}catch{/* no words */}
+      const shown=applyAutomaticHook({...e,hook:{...e.hook,on:true}},words);
+      if(shown.hook.text)next=shown;else noWords++;
+     }else{
+      let from=look;
+      if(!from){try{from=row.streamer_style?JSON.parse(row.streamer_style):null;}catch{from=null;}}
+      if(!from){try{from=ws?.style?JSON.parse(ws.style):null;}catch{from=null;}}
+      try{next=withTextStyle(e,from??defaultStyle({framing:ws?.framing??defaults.framing,captions:ws?!!ws.captions:defaults.captions}));}catch{next=null;}
+      if(next&&JSON.stringify({c:next.captions,h:next.hook})===JSON.stringify({c:e.captions,h:e.hook}))next=null;
+     }
+     if(!next)continue;
+     statements.push(db.prepare("UPDATE clips SET edit=?,edit_rev=edit_rev+1,render_state='queued',render_error=NULL WHERE id=? AND owner=?").bind(JSON.stringify(next),row.id,owner));
+     changed++;
+    }
+    const skipped=payload.ids.length-changed;
+    const what=payload.op==="hookOn"?"Showing the opening title on ":payload.op==="hookOff"?"Hiding the opening title on ":payload.from?"Copying the subtitle and title look to ":"Resetting the subtitle and title look of ";
+    message=(changed?what+clips(changed)+". The worker re-renders them over the next few minutes; queued posts wait for the new version.":"No clips changed.")
+     +(skipped?" "+clips(skipped)+" left as they were (already like that"+(noWords?", "+noWords+" with no speech to write a title from":"")+", or can't be edited).":"");
    }else{
     // Edits change each clip's saved edit and queue a re-render from its original video, like saving in the editor.
     const set=payload.op==="frame"
