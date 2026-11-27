@@ -18,6 +18,7 @@ $problems = New-Object System.Collections.Generic.List[string]
 function Say($text) { Write-Host $text }
 function Ok($text) { Write-Host "  [ok]      $text" -ForegroundColor Green }
 function Missing($text) { Write-Host "  [missing] $text" -ForegroundColor Yellow }
+function Warn($text) { Write-Host "  [warn]    $text" -ForegroundColor Yellow }
 function Bad($text) { Write-Host "  [problem] $text" -ForegroundColor Red; $problems.Add($text) }
 function Ask($question, $default) {
   if ($Yes) { return $default }
@@ -67,6 +68,20 @@ if ($WithMusic) { $packages += ,@("demucs", "demucs") }
 
 Say ""
 Say "Clipflow worker setup$(if ($Check) { ' (check only: nothing is changed)' })"
+Say ""
+Say "This PC"
+# What the worker needs to keep up with live streams. Only warnings: an older PC still works, on lighter settings
+# (Settings → This PC: Computer usage Light, Transcription quality Faster, fewer channels at once).
+$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+$cores = [int](Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum
+$memGb = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+$drive = Get-PSDrive -Name ($PSScriptRoot.Substring(0, 1)) -ErrorAction SilentlyContinue
+$freeGb = if ($drive) { [math]::Round($drive.Free / 1GB) } else { $null }
+if ($cores -ge 4) { Ok "$cores CPU cores ($($cpu.Name.Trim()))" } else { Warn "$cores CPU cores: clips will be slow. Use Computer usage: Light and record one channel at a time." }
+if ($memGb -ge 16) { Ok "$memGb GB of memory" } elseif ($memGb -ge 8) { Warn "$memGb GB of memory: fine for one or two channels; the smaller AI model will be used." } else { Warn "$memGb GB of memory: below the 8 GB the worker needs. Turn the AI writer off (-NoAI) and use Transcription quality: Faster." }
+if ($null -eq $freeGb) { Missing "free disk space (couldn't read the drive)" } elseif ($freeGb -ge 30) { Ok "$freeGb GB free on $($drive.Name):" } else { Warn "$freeGb GB free on $($drive.Name): recordings and clips need room; keep 30 GB or more free." }
+Say "  Keep this PC on, awake and online while streams you clip are live: nothing is recorded while it sleeps."
+
 Say ""
 Say "Programs"
 foreach ($p in $parts) {
