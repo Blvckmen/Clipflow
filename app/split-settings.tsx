@@ -7,7 +7,8 @@
 // with a live 9:16 preview until Save. "Copy to all" gives every other streamer the same split screen.
 import { useMemo, useState } from "react";
 import { ArrowDownUp, Check, ChevronDown, Copy, Film, ImageIcon, Loader2, RotateCcw, Shuffle, Volume2, VolumeX } from "lucide-react";
-import { defaultStyle } from "../worker/edit.mjs";
+import { defaultStyle, TEMPLATES, templateOf } from "../worker/edit.mjs";
+import { framings } from "../lib/clipflow";
 
 type Background = { id: string; name: string; content_type?: string; duration?: number | null };
 type Split = { share: number; top: string; divider: string | null; volume: number };
@@ -16,7 +17,7 @@ type Streamer = { id: string; name: string; platform: string; style?: unknown };
 type Draft = { pool: string[]; top: string; share: number; volume: number };
 type Save = (streamerId: string, style: Style, quiet?: boolean) => Promise<unknown>;
 
-const FRAMING_NAMES: Record<string, string> = { blur: "Blurred background", crop: "Centre crop", fit: "Fit with black bars", split: "Split screen", cam: "Facecam on top", pip: "Facecam in corner", phone: "Phone stream" };
+const FRAMING_NAMES: Record<string, string> = framings;
 const PLATFORM_HUES: Record<string, string> = { Twitch: "#9146ff", Kick: "#53fc18", TikTok: "#fe2c55", YouTube: "#ff3d3d" };
 const isImage = (b: Background) => !!b.content_type?.startsWith("image/");
 const fileOf = (b: Background) => "/api/backgrounds/" + b.id + "/file";
@@ -28,7 +29,10 @@ const pct = (n: number) => Math.round(n * 100) + "%";
 function styleFor(base: Style, on: boolean, d: Draft, workspaceFraming: string): Style {
   const style = structuredClone(base), was = base.frame.mode === "split";
   // Turning split screen off goes back to the workspace framing (or the blurred fill if that is split screen too).
-  style.frame.mode = on ? "split" : was ? (workspaceFraming !== "split" ? workspaceFraming : "blur") : base.frame.mode;
+  // The workspace framing is a template id: its mode, and the webcam choices that go with it.
+  const t = TEMPLATES.find(x => x.id === workspaceFraming && x.mode !== "split") ?? TEMPLATES.find(x => x.id === "blur")!;
+  style.frame.mode = on ? "split" : was ? t.mode : base.frame.mode;
+  if (!on && was && "facecam" in t) style.frame = { ...style.frame, facecam: { ...(style.frame as { facecam?: object }).facecam, ...t.facecam } } as Style["frame"];
   style.frame.pool = d.pool;
   style.frame.split = { ...style.frame.split, top: d.top, share: d.share, volume: d.volume };
   // Captions sit on the seam in split screen (following it when the stream size or layout changes), and go back to
@@ -82,7 +86,7 @@ function SplitCard({ streamer, base, own, backgrounds, workspaceFraming, busy, c
   const toggle = () => { if (!on) setOpen(true); void run("switch", () => onSave(styleFor(base, !on, { ...d, pool }, workspaceFraming))); };
   const summary = on
     ? [d.top === "stream" ? "Stream on top" : "Background on top", "stream " + pct(d.share), chosen.length ? chosen.length + (chosen.length === 1 ? " background" : " backgrounds") : "any background", d.volume ? "sound " + pct(d.volume) : "sound off"].join(" · ")
-    : "Off · " + (FRAMING_NAMES[base.frame.mode] ?? base.frame.mode);
+    : "Off · " + (FRAMING_NAMES[templateOf(base.frame)] ?? base.frame.mode);
   const hue = PLATFORM_HUES[streamer.platform] ?? "#bcfa76";
   return <article className={"split-card" + (on ? " on" : "") + (open && on ? " open" : "")}>
     <header className="split-card-head">

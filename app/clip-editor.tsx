@@ -1,16 +1,16 @@
 "use client";
 // The clip editor. The preview is drawn on a canvas from the same layout and caption code (worker/edit.mjs) the
 // worker renders with, so what you see is what gets posted. Saving stores the edit; the worker re-renders it.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, Scissors, Sparkles, Undo2, Copy } from "lucide-react";
-import { ANIMATIONS, ASPECTS, ASPECT_LABELS, KEYWORD_SCALE, CHAT_SIZE, DEFAULT_CHAT, chatWindows, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, HOOK_LINES, HOOK_OUTLINE, HOOK_DEFAULT, HOOK_SIZE, HOOK_X, HOOK_Y, hookOutlineColor, hookPlacement, MAX_CLIP, MIN_CLIP, PRESETS, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks, timeline, zoomAt } from "../worker/edit.mjs";
+import { ANIMATIONS, ASPECTS, ASPECT_LABELS, KEYWORD_SCALE, CHAT_SIZE, DEFAULT_CHAT, chatWindows, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, HOOK_LINES, HOOK_OUTLINE, HOOK_DEFAULT, HOOK_SIZE, HOOK_X, HOOK_Y, hookOutlineColor, hookPlacement, MAX_CLIP, MIN_CLIP, PRESETS, RING, TEMPLATES, templateOf, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks, timeline, zoomAt } from "../worker/edit.mjs";
 
 import { applyAutomaticHook } from "../worker/hooks.mjs";
 import { apiFetch, readJson } from "../lib/read-json.mjs";
 
 type Split = { share: number; top: "stream" | "background"; divider: string | null; volume: number };
 type CamBox = { x: number; y: number; w: number; h: number };
-type Facecam = { box: CamBox | null; share: number; corner: "tl" | "tr" | "bl" | "br"; size: number };
+type Facecam = { box: CamBox | null; share: number; corner: "tl" | "tr" | "bl" | "br"; size: number; place?: "top" | "bottom"; shape?: "box" | "circle" };
 type Aspect = keyof typeof ASPECTS;
 type Frame = { mode: "blur" | "crop" | "fit" | "split" | "cam" | "pip" | "phone"; aspect?: Aspect; content?: CamBox | null; zoom: number; x: number; y: number; background?: string | null; split?: Split; facecam?: Facecam };
 type Captions = { on: boolean; preset: string; font: string; size: number; color: string; highlight: string; outline: number; outlineColor: string; box: boolean; boxColor: string; uppercase: boolean; animation: string; words: number; y: number; mask: boolean; keywords: boolean; keywordColor: string };
@@ -57,6 +57,92 @@ function drawChat(ctx: CanvasRenderingContext2D, lines: { name: string; text: st
     ctx.strokeText(rest, nx, y); ctx.fillStyle = "#ffffff"; ctx.fillText(rest, nx, y);
   });
   ctx.restore();
+}
+
+// The webcam cut out of the stream, at its place (see facecamPlacement): a white-bordered box or a circle in a white
+// ring in the corner, like the render's.
+type Placement = { sx: number; sy: number; sw: number; sh: number; x: number; y: number; w: number; h: number };
+function drawCam(ctx: CanvasRenderingContext2D, src: CanvasImageSource, frame: Frame, fp: Placement) {
+  if (frame.mode === "pip" && frame.facecam?.shape === "circle") {
+    const r = fp.w / 2, cx = fp.x + r, cy = fp.y + r;
+    ctx.fillStyle = "#ffffff"; ctx.beginPath(); ctx.arc(cx, cy, r + RING, 0, Math.PI * 2); ctx.fill();
+    ctx.save(); ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.clip();
+    ctx.drawImage(src, fp.sx, fp.sy, fp.sw, fp.sh, fp.x, fp.y, fp.w, fp.h); ctx.restore();
+    return;
+  }
+  if (frame.mode === "pip") { ctx.fillStyle = "#ffffff"; ctx.fillRect(fp.x - 4, fp.y - 4, fp.w + 8, fp.h + 8); }
+  ctx.drawImage(src, fp.sx, fp.sy, fp.sw, fp.sh, fp.x, fp.y, fp.w, fp.h);
+}
+
+// A template's picture in the gallery: the clip's current frame (`still`, sw x sh) laid out the way the template
+// would, scaled down to the tile. Webcam templates use the clip's webcam box, or a top-right guess without one.
+// Background video shows a plain panel where the background goes.
+function drawTemplate(ctx: CanvasRenderingContext2D, still: HTMLCanvasElement, frame: Frame, guess: CamBox) {
+  const { W, H } = frameSize(frame), sw = still.width, sh = still.height;
+  ctx.save(); ctx.scale(ctx.canvas.width / W, ctx.canvas.height / H);
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
+  const f = (frame.mode === "cam" || frame.mode === "pip") && !frame.facecam?.box ? { ...frame, facecam: { ...(frame.facecam as Facecam), box: guess } } : frame;
+  const box = layout(f, sw, sh);
+  if (f.mode === "split") {
+    const a = splitAreas(f);
+    ctx.save(); ctx.beginPath(); ctx.rect(0, a.stream.y, W, a.stream.h); ctx.clip(); ctx.drawImage(still, box.x, box.y + a.stream.y, box.w, box.h); ctx.restore();
+    ctx.fillStyle = "#2a3340"; ctx.fillRect(0, a.background.y, W, a.background.h);
+  } else if (f.mode === "cam" || f.mode === "pip") {
+    const fp = facecamPlacement(f, sw, sh)!, game = f.mode === "cam" ? camAreas(f).game : { y: 0, h: H };
+    ctx.save(); ctx.beginPath(); ctx.rect(0, game.y, W, game.h); ctx.clip(); ctx.drawImage(still, box.x, box.y + game.y, box.w, box.h); ctx.restore();
+    drawCam(ctx, still, f, fp);
+  } else {
+    if (f.mode === "blur") {
+      const cover = Math.max(W / sw, H / sh), cw = sw * cover, ch = sh * cover;
+      ctx.filter = "blur(26px) brightness(0.86)"; ctx.drawImage(still, (W - cw) / 2 - 30, (H - ch) / 2 - 30, cw + 60, ch + 60); ctx.filter = "none";
+    }
+    ctx.drawImage(still, box.src.x, box.src.y, box.src.w, box.src.h, box.x, box.y, box.w, box.h);
+  }
+  ctx.restore();
+}
+
+// The template gallery: one picture per template, made from the clip's current frame. The still is taken again when
+// the video has moved to another frame, so the pictures follow what's on screen.
+const TILE_W = 144, GUESS: CamBox = { x: 0.7, y: 0.04, w: 0.28, h: 0.38 };
+export function TemplateGallery({ video, frame, face, active, onPick }: { video: RefObject<HTMLVideoElement | null>; frame: Frame; face: CamBox | null; active: string; onPick: (t: (typeof TEMPLATES)[number]) => void }) {
+  const [still, setStill] = useState<HTMLCanvasElement | null>(null);
+  useEffect(() => {
+    const v = video.current;
+    if (!v) return;
+    const take = () => {
+      if (v.readyState < 2 || !v.videoWidth) return;
+      const c = document.createElement("canvas"), s = Math.min(1, 640 / v.videoWidth);
+      c.width = Math.round(v.videoWidth * s); c.height = Math.round(v.videoHeight * s);
+      c.getContext("2d")!.drawImage(v, 0, 0, c.width, c.height); setStill(c);
+    };
+    // After a seek the new frame may not be decoded yet when the event fires (it comes out black): take it again a
+    // little later too.
+    let live = true;
+    const later = () => { take(); for (const ms of [200, 800]) setTimeout(() => { if (live) take(); }, ms); };
+    later();
+    for (const ev of ["loadeddata", "seeked", "pause"]) v.addEventListener(ev, later);
+    return () => { live = false; for (const ev of ["loadeddata", "seeked", "pause"]) v.removeEventListener(ev, later); };
+  }, [video]);
+  const flat = !stacks(frame);
+  return <div className="template-gallery">{TEMPLATES.map(t => {
+    const off = flat && (t.mode === "split" || t.mode === "cam");
+    const f = { ...frame, mode: t.mode, zoom: 1, x: 0, y: 0, facecam: { ...DEFAULT_FACECAM, ...frame.facecam, box: frame.facecam?.box ?? face, ...("facecam" in t ? t.facecam : {}) } } as Frame;
+    return <button key={t.id} type="button" className={"template-tile" + (active === t.id ? " active" : "")} disabled={off} title={off ? "Needs a portrait or square clip shape" : undefined} onClick={() => onPick(t)}>
+      <TemplatePicture still={still} frame={f} />
+      <span>{t.label}</span>
+    </button>;
+  })}</div>;
+}
+function TemplatePicture({ still, frame }: { still: HTMLCanvasElement | null; frame: Frame }) {
+  const ref = useRef<HTMLCanvasElement>(null), { W, H } = frameSize(frame), h = Math.round(TILE_W * H / W);
+  const key = JSON.stringify(frame);
+  useEffect(() => {
+    const ctx = ref.current?.getContext("2d");
+    if (!ctx) return;
+    if (still) drawTemplate(ctx, still, frame, GUESS); else { ctx.fillStyle = "#1b2128"; ctx.fillRect(0, 0, TILE_W, h); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [still, key, h]);
+  return <canvas ref={ref} width={TILE_W} height={h} aria-hidden />;
 }
 
 // `margin` matches the subtitle style's left/right margins in buildAss (captions 40, hook 60), so lines wrap at
@@ -228,8 +314,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
         const fp = facecamPlacement(e.frame, sw, sh)!, game = e.frame.mode === "cam" ? camAreas(e.frame).game : { y: 0, h: H };
         ctx.filter = look;
         ctx.save(); ctx.beginPath(); ctx.rect(0, game.y, W, game.h); ctx.clip(); ctx.drawImage(v, box.x, box.y + game.y, box.w, box.h); ctx.restore();
-        if (e.frame.mode === "pip") { ctx.fillStyle = "#ffffff"; ctx.fillRect(fp.x - 4, fp.y - 4, fp.w + 8, fp.h + 8); }
-        ctx.drawImage(v, fp.sx, fp.sy, fp.sw, fp.sh, fp.x, fp.y, fp.w, fp.h);
+        drawCam(ctx, v, e.frame, fp);
         ctx.filter = "none";
         const divider = e.frame.split?.divider;
         if (e.frame.mode === "cam" && divider) { ctx.fillStyle = divider; ctx.fillRect(0, camAreas(e.frame).seam - 3, W, 6); }
@@ -481,15 +566,16 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
               return { ...e, frame: flat ? { ...frame, mode: "blur" } : frame, captions: flat ? { ...e.captions, y: 0.72 } : e.captions };
             })}><span className={"aspect-icon a" + a.replace(":", "x")} aria-hidden />{a}</button>)}</div>
               <small>{ASPECT_LABELS[(edit.frame.aspect ?? "9:16") as Aspect]}. {(edit.frame.aspect ?? "9:16") === "9:16" ? "Best for TikTok, Reels and Shorts." : (edit.frame.aspect === "16:9" ? "For YouTube videos and X; TikTok and Reels show it with bars, and YouTube doesn't treat it as a Short." : "Fills more of the feed on Instagram and Facebook; TikTok shows it with bars.")}</small></label>
-            <div className="segmented">{(["blur", "crop", "fit", "phone", "split", "cam", "pip"] as const).map(m => <button key={m} className={edit.frame.mode === m ? "active" : ""} disabled={!stacks(edit.frame) && (m === "split" || m === "cam")} title={!stacks(edit.frame) && (m === "split" || m === "cam") ? "Needs a portrait or square clip shape" : undefined} onClick={() => change("frame-mode", e => {
-              const facecam = { ...DEFAULT_FACECAM, ...e.frame.facecam } as Facecam, H = frameSize(e.frame).H;
+            <TemplateGallery video={video} frame={edit.frame} face={bundle.source.face ?? null} active={templateOf(edit.frame)} onPick={t => change("frame-mode", e => {
+              const m = t.mode as Frame["mode"];
+              const facecam = { ...DEFAULT_FACECAM, ...e.frame.facecam, ...("facecam" in t ? t.facecam : {}) } as Facecam, H = frameSize(e.frame).H;
               if ((m === "cam" || m === "pip") && !facecam.box) facecam.box = bundle.source.face ?? null;
               const content = m === "phone" && !e.frame.content ? bundle.source.content ?? null : e.frame.content ?? null;
               // Captions follow the seam in the layouts that have one, and go back to the lower third otherwise.
               const seam = m === "split" ? splitAreas(e.frame).seam / H : m === "cam" ? camAreas({ ...e.frame, facecam }).seam / H : 0.72;
               const atSeam = Math.abs(e.captions.y - 0.72) < 0.01 || (e.frame.mode === "split" && Math.abs(e.captions.y - splitAreas(e.frame).seam / H) < 0.01) || (e.frame.mode === "cam" && Math.abs(e.captions.y - camAreas(e.frame).seam / H) < 0.01);
               return { ...e, frame: { ...e.frame, mode: m, facecam, content }, captions: atSeam ? { ...e.captions, y: seam } : e.captions };
-            })}>{{ blur: "Blurred fill", crop: "Fill (crop)", fit: "Fit with bars", phone: "Phone stream", split: "Split screen", cam: "Facecam + game", pip: "Facecam in corner" }[m]}</button>)}</div>
+            })} />
             {edit.frame.mode === "phone" && (() => {
               // The phone picture's edges in the stream (fractions). Without one, an upright picture in the middle.
               const sw = bundle.source.width || 1280, sh = bundle.source.height || 720, auto = Math.min(1, (sh * 9 / 16) / sw);
@@ -521,8 +607,8 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
               });
               const setBox = (value: Partial<CamBox>) => { const nb = { ...(b ?? { x: 0, y: 0, w: 0.3, h: 0.4 }), ...value }; nb.w = Math.min(1, Math.max(0.05, nb.w)); nb.h = Math.min(1, Math.max(0.05, nb.h)); nb.x = Math.min(1 - nb.w, Math.max(0, nb.x)); nb.y = Math.min(1 - nb.h, Math.max(0, nb.y)); setCam({ box: nb }); };
               return <div className="facecam-controls">
-                <small>{b ? (bundle.source.face && b === bundle.source.face ? "Webcam found automatically. " : "") + "Adjust the box until only the webcam shows." : bundle.source.face === undefined ? "This clip was captured before webcam detection. Place the box over the webcam." : "No webcam overlay was found in this clip (or it fills the picture). Place the box over the webcam, or pick another framing."}
-                  {bundle.source.face && b !== bundle.source.face && <> <button type="button" className="text-button" onClick={() => setCam({ box: bundle.source.face! })}>Use the detected webcam</button></>}</small>
+                <small>{b ? (bundle.source.face && b === bundle.source.face ? "Webcam found. " : "") + "Fit the box to the webcam." : "No webcam found. Place the box over it."}
+                  {bundle.source.face && b !== bundle.source.face && <> <button type="button" className="text-button" onClick={() => setCam({ box: bundle.source.face! })}>Reset</button></>}</small>
                 <div className="control-grid">
                   <label>Webcam left <span>{Math.round((b?.x ?? 0) * 100)}%</span><input type="range" min={0} max={0.95} step={0.005} value={b?.x ?? 0} onChange={e => setBox({ x: Number(e.target.value) })} /></label>
                   <label>Webcam top <span>{Math.round((b?.y ?? 0) * 100)}%</span><input type="range" min={0} max={0.95} step={0.005} value={b?.y ?? 0} onChange={e => setBox({ y: Number(e.target.value) })} /></label>
@@ -530,10 +616,9 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
                   <label>Webcam height <span>{Math.round((b?.h ?? 0.4) * 100)}%</span><input type="range" min={0.05} max={1} step={0.005} value={b?.h ?? 0.4} onChange={e => setBox({ h: Number(e.target.value) })} /></label>
                   {edit.frame.mode === "cam" ? <label>Facecam strip <span>{Math.round(fc.share * 100)}%</span><input type="range" min={0.2} max={0.5} step={0.01} value={fc.share} onChange={e => setCam({ share: Number(e.target.value) })} /></label>
                     : <><label>Corner<select value={fc.corner} onChange={e => setCam({ corner: e.target.value as Facecam["corner"] })}><option value="tl">Top left</option><option value="tr">Top right</option><option value="bl">Bottom left</option><option value="br">Bottom right</option></select></label>
-                      <label>Box size <span>{Math.round(fc.size * 100)}%</span><input type="range" min={0.2} max={0.5} step={0.01} value={fc.size} onChange={e => setCam({ size: Number(e.target.value) })} /></label></>}
+                      <label>Size <span>{Math.round(fc.size * 100)}%</span><input type="range" min={0.2} max={0.5} step={0.01} value={fc.size} onChange={e => setCam({ size: Number(e.target.value) })} /></label></>}
                   {edit.frame.mode === "cam" && <label>Divider line<div className="color-pair"><input type="checkbox" checked={!!edit.frame.split?.divider} onChange={e => setSplit({ divider: e.target.checked ? "#ffffff" : null })} />{edit.frame.split?.divider && <input type="color" value={edit.frame.split.divider} onChange={e => setSplit({ divider: e.target.value })} />}</div></label>}
                 </div>
-                <small>Zoom and position below move the game.</small>
               </div>;
             })()}
             {edit.frame.mode === "split" && <label className="wide">Background

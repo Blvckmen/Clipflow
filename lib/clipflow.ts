@@ -1,6 +1,7 @@
 import { z } from "zod";
 export const destinations=["TikTok","Instagram","YouTube","Facebook","X"] as const;
-export const framings={blur:"Blurred background",crop:"Centre crop",fit:"Fit with black bars",split:"Split screen (background video below)",cam:"Facecam on top, gameplay below",pip:"Gameplay with the facecam in a corner",phone:"Phone stream (upright picture fills the frame)"} as const;
+// The clip templates (worker/edit.mjs TEMPLATES), in gallery order.
+export const framings={cam:"Top split",camBottom:"Bottom split",blur:"Blurred",pip:"Small facecam",circle:"Circle facecam",crop:"Full screen",fit:"Fit",split:"Background video",phone:"Phone stream"} as const;
 // Viewers' Twitch clips: the workspace's per-day cap, freshness and "ask me first" (lib/viewer-clips.mjs).
 export const viewerClipsSchema=z.object({perDay:z.number().int().min(1).max(20),maxHours:z.number().int().min(1).max(72),ask:z.boolean()}).strict();
 // A streamer's own: each left out to follow the workspace.
@@ -23,7 +24,7 @@ export function workerSettingsRev(w:WorkerSettings){
  let h=0x811c9dc5;for(let i=0;i<text.length;i++){h^=text.charCodeAt(i);h=Math.imul(h,0x01000193)>>>0;}
  return h.toString(36);
 }
-export const settingsSchema=z.object({mode:z.enum(["automatic","review"]),duration:z.number().int().min(15).max(90),dailyLimit:z.number().int().min(1).max(100),captions:z.boolean(),framing:z.enum(["blur","crop","fit","split","cam","pip","phone"]),destinations:z.array(z.enum(destinations)).max(5).transform(x=>[...new Set(x)]),captionTemplate:z.string().trim().min(1).max(500).optional(),
+export const settingsSchema=z.object({mode:z.enum(["automatic","review"]),duration:z.number().int().min(15).max(90),dailyLimit:z.number().int().min(1).max(100),captions:z.boolean(),framing:z.enum(["blur","crop","fit","split","cam","camBottom","pip","circle","phone"]),destinations:z.array(z.enum(destinations)).max(5).transform(x=>[...new Set(x)]),captionTemplate:z.string().trim().min(1).max(500).optional(),
  // Omitted by older clients: the saved values are kept.
  aiCaptions:z.boolean().optional(),captionNotes:z.string().trim().max(1000).optional(),
  // Whether the worker transcribes clips (Whisper). Off saves time and CPU; captions then need it back on.

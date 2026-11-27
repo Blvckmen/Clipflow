@@ -38,7 +38,8 @@ export function validateControl(c) {
   // Dashboards that predate the transcribe setting omit it: transcribe, as before.
   c.transcribe ??= true;
   if (typeof c.transcribe !== "boolean") throw new Error("Invalid transcribe setting");
-  if (!["blur","crop","fit","split","cam","pip","phone"].includes(c.framing)) throw new Error("Invalid framing");
+  // A template id (worker/edit.mjs TEMPLATES).
+  if (!["blur","crop","fit","split","cam","camBottom","pip","circle","phone"].includes(c.framing)) throw new Error("Invalid framing");
   // Split-screen background videos in the workspace library; dashboards that predate them omit the list.
   c.backgrounds = validBackgrounds(c.backgrounds);
   // Failed clips the dashboard asked to make again (Being made → Try again); dashboards that predate it send none.

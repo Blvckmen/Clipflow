@@ -153,7 +153,9 @@ test("split screen: proportions, order, a divider and the background's sound", a
 
 test("facecam layouts: the webcam across the top or in a corner, cut from the same stream", async () => {
   const { filterGraph, normalizeStyle, defaultStyle, facecamPlacement, camAreas } = await import("../edit.mjs");
-  assert.deepEqual(normalizeStyle({ frame: { mode: "cam" } }).frame.facecam, { box: null, share: 0.35, corner: "tr", size: 0.36 }, "older styles get the defaults");
+  assert.deepEqual(normalizeStyle({ frame: { mode: "cam" } }).frame.facecam, { box: null, share: 0.35, corner: "tr", size: 0.36, place: "top", shape: "box" }, "older styles get the defaults");
+  assert.throws(() => normalizeStyle({ frame: { mode: "cam", facecam: { place: "middle" } } }), /Facecam place/);
+  assert.throws(() => normalizeStyle({ frame: { mode: "pip", facecam: { shape: "star" } } }), /Facecam shape/);
   assert.throws(() => normalizeStyle({ frame: { mode: "pip", facecam: { corner: "middle" } } }), /Facecam corner/);
   const box = normalizeStyle({ frame: { mode: "cam", facecam: { box: { x: 0.9, y: 0.2, w: 0.3, h: 0.4 } } } }).frame.facecam.box;
   assert.ok(Math.abs(box.x - 0.7) < 1e-9, "the box is kept inside the stream");
@@ -176,6 +178,29 @@ test("facecam layouts: the webcam across the top or in a corner, cut from the sa
   assert.equal(corner.y + corner.h, 1280 - 230, "kept clear of the captions");
   assert.match(filterGraph(pip, { width: 1280, height: 720 }, null), /pad=296:\d+:4:4:color=white\[cam\];\[game\]\[cam\]overlay=24:/);
   assert.match(filterGraph({ ...edit, frame: { ...cam, facecam: { ...cam.facecam, box: null } } }, { width: 1280, height: 720 }, null), /boxblur/, "no webcam box: blurred fill");
+});
+
+test("templates: bottom split and circle facecam", async () => {
+  const { filterGraph, defaultStyle, facecamPlacement, camAreas, templateOf, TEMPLATE_IDS } = await import("../edit.mjs");
+  assert.deepEqual(TEMPLATE_IDS, ["cam", "camBottom", "blur", "pip", "circle", "crop", "fit", "split", "phone"]);
+  const bottom = defaultStyle({ framing: "camBottom" });
+  assert.deepEqual([bottom.frame.mode, bottom.frame.facecam.place, bottom.captions.y], ["cam", "bottom", 0.65]);
+  assert.equal(templateOf(bottom.frame), "camBottom");
+  assert.equal(templateOf(defaultStyle({ framing: "cam" }).frame), "cam");
+  assert.equal(defaultStyle({ framing: "nope" }).frame.mode, "blur", "an unknown template is the blurred fill");
+  const box = { x: 0, y: 0.33, w: 0.26, h: 0.5 }, hook = { text: "", seconds: 3, color: "#111111", bg: "#ffffff" };
+  const frame = { ...bottom.frame, facecam: { ...bottom.frame.facecam, box } };
+  assert.deepEqual(camAreas(frame), { cam: { y: 832, h: 448 }, game: { y: 0, h: 832 }, seam: 832 });
+  assert.equal(facecamPlacement(frame, 1280, 720).y, 832);
+  assert.match(filterGraph({ ...bottom, frame, trim: { start: 0, end: 8 }, hook }, { width: 1280, height: 720 }, null), /\[game\]\[cam\]vstack=inputs=2/);
+  const circle = defaultStyle({ framing: "circle" });
+  assert.equal(templateOf(circle.frame), "circle");
+  const cf = { ...circle.frame, facecam: { ...circle.frame.facecam, box } }, fp = facecamPlacement(cf, 1280, 720);
+  assert.equal(fp.w, fp.h, "a circle is square");
+  assert.ok(Math.abs(fp.sw - fp.sh) <= 2, "cut square from the box");
+  const g = filterGraph({ ...circle, frame: cf, trim: { start: 0, end: 8 }, hook }, { width: 1280, height: 720 }, null);
+  assert.match(g, /\[cc\]\[mask\]alphamerge\[cam\]/);
+  assert.match(g, /\[gr\]\[cam\]overlay=\d+:\d+\[v0\]/);
 });
 
 test("clip shapes: every layout, caption and render follows the chosen aspect", async () => {

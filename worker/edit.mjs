@@ -32,9 +32,30 @@ export const FONTS = ["Arial", "Impact", "Verdana", "Trebuchet MS", "Georgia", "
 // "phone": a stream filmed on a phone (common on Twitch and Kick IRL streams), an upright picture with black bars
 // either side of a landscape stream. frame.content is that picture's rectangle (fractions of the stream, found by the
 // worker); it is cut out and fills the frame. Without one, an upright 9:16 picture in the middle is assumed.
+// facecam.place puts the "cam" strip at the top or the bottom; facecam.shape draws the "pip" webcam as a box or a circle.
 export const FRAMINGS = ["blur", "crop", "fit", "split", "cam", "pip", "phone"];
 export const CORNERS = ["tl", "tr", "bl", "br"];
-export const DEFAULT_FACECAM = { box: null, share: 0.35, corner: "tr", size: 0.36 };
+export const CAM_PLACES = ["top", "bottom"], CAM_SHAPES = ["box", "circle"];
+export const DEFAULT_FACECAM = { box: null, share: 0.35, corner: "tr", size: 0.36, place: "top", shape: "box" };
+// Templates: a framing plus the facecam choices that make it look the way its name says. The id is what the workspace
+// saves as its framing; the clip editor shows them as a gallery.
+export const TEMPLATES = [
+  { id: "cam", label: "Top split", mode: "cam", facecam: { place: "top" } },
+  { id: "camBottom", label: "Bottom split", mode: "cam", facecam: { place: "bottom" } },
+  { id: "blur", label: "Blurred", mode: "blur" },
+  { id: "pip", label: "Small facecam", mode: "pip", facecam: { shape: "box" } },
+  { id: "circle", label: "Circle facecam", mode: "pip", facecam: { shape: "circle" } },
+  { id: "crop", label: "Full screen", mode: "crop" },
+  { id: "fit", label: "Fit", mode: "fit" },
+  { id: "split", label: "Background video", mode: "split" },
+  { id: "phone", label: "Phone stream", mode: "phone" },
+];
+export const TEMPLATE_IDS = TEMPLATES.map(t => t.id);
+// The template a frame matches (its mode, and for the facecam ones where the webcam goes).
+export function templateOf(frame) {
+  const fc = { ...DEFAULT_FACECAM, ...(frame?.facecam ?? {}) };
+  return TEMPLATES.find(t => t.mode === frame?.mode && Object.entries(t.facecam ?? {}).every(([k, v]) => fc[k] === v))?.id ?? frame?.mode;
+}
 export const ANIMATIONS = ["none", "pop", "karaoke", "word"];
 export const MIN_CLIP = 5, MAX_CLIP = 90;
 // How much bigger a caption keyword is drawn (see keywordScore).
@@ -73,11 +94,14 @@ export const PRESETS = {
 export function defaultStyle({ framing = "blur", captions = true } = {}) {
   const preset = { ...PRESETS.bold };
   delete preset.label;
+  // framing is a template id (the plain framings are templates too).
+  const t = TEMPLATES.find(x => x.id === framing) ?? TEMPLATES.find(x => x.id === "blur"), facecam = { ...DEFAULT_FACECAM, ...(t.facecam ?? {}) };
+  const seam = t.mode === "split" ? 0.5 : t.mode === "cam" ? (facecam.place === "bottom" ? 1 - facecam.share : facecam.share) : 0.72;
   return {
-    frame: { mode: FRAMINGS.includes(framing) ? framing : "blur", aspect: "9:16", zoom: 1, x: 0, y: 0, content: null, background: null, pool: [], split: { ...DEFAULT_SPLIT }, facecam: { ...DEFAULT_FACECAM } },
+    frame: { mode: t.mode, aspect: "9:16", zoom: 1, x: 0, y: 0, content: null, background: null, pool: [], split: { ...DEFAULT_SPLIT }, facecam },
     look: { brightness: 1, contrast: 1, saturation: 1 },
-    // Split screen puts captions on the seam between the two videos.
-    captions: { on: !!captions, preset: "bold", ...preset, keywords: true, y: framing === "split" ? 0.5 : framing === "cam" ? DEFAULT_FACECAM.share : 0.72, mask: false },
+    // Split screen and the facecam strip put captions on the seam between the two pictures.
+    captions: { on: !!captions, preset: "bold", ...preset, keywords: true, y: seam, mask: false },
     hook: { color: "#111111", bg: "#ffffff", seconds: DEFAULT_HOOK_SECONDS, ...HOOK_DEFAULT },
     progress: { on: false, color: "#bcfa76" },
     chat: { ...DEFAULT_CHAT },
@@ -139,7 +163,8 @@ export function normalizeStyle(input, base = defaultStyle()) {
   return {
     frame: { mode: fits ? mode : "blur", aspect, content: camBox(f.content, "Phone picture"), zoom: num(f.zoom, 1, 3, "Zoom"), x: num(f.x, -1, 1, "Horizontal position"), y: num(f.y, -1, 1, "Vertical position"), background: ref(f.background, "Background video"), pool: pool(f.pool),
       split: { share: num(sp.share, 0.3, 0.8, "Stream share"), top: pick(sp.top, SPLIT_TOPS, "Split order"), divider: sp.divider === null ? null : color(sp.divider, "Divider colour"), volume: num(sp.volume, 0, 1, "Background volume") },
-      facecam: { box: camBox(fc.box), share: num(fc.share, 0.2, 0.5, "Facecam height"), corner: pick(fc.corner, CORNERS, "Facecam corner"), size: num(fc.size, 0.2, 0.5, "Facecam size") } },
+      facecam: { box: camBox(fc.box), share: num(fc.share, 0.2, 0.5, "Facecam height"), corner: pick(fc.corner, CORNERS, "Facecam corner"), size: num(fc.size, 0.2, 0.5, "Facecam size"),
+        place: pick(fc.place, CAM_PLACES, "Facecam place"), shape: pick(fc.shape, CAM_SHAPES, "Facecam shape") } },
     look: { brightness: num(l.brightness, 0.5, 1.5, "Brightness"), contrast: num(l.contrast, 0.5, 1.5, "Contrast"), saturation: num(l.saturation, 0, 2, "Saturation") },
     captions: {
       on: bool(c.on, "Captions"), preset: typeof c.preset === "string" && PRESETS[c.preset] ? c.preset : "custom",
@@ -207,12 +232,15 @@ export function splitAreas(frame) {
   const streamH = even(H * Math.min(0.8, Math.max(0.3, sp.share))), bgH = H - streamH, streamTop = sp.top !== "background";
   return { stream: { y: streamTop ? 0 : bgH, h: streamH }, background: { y: streamTop ? streamH : 0, h: bgH }, seam: streamTop ? streamH : bgH };
 }
-// Facecam + game: the webcam strip across the top and the game below it.
+// Facecam + game: the webcam strip across the top (or the bottom, facecam.place) and the game in the rest.
 export function camAreas(frame) {
   const { H } = canvas(frame);
   const camH = even(H * Math.min(0.5, Math.max(0.2, frame.facecam?.share ?? DEFAULT_FACECAM.share)));
+  if (frame.facecam?.place === "bottom") return { cam: { y: H - camH, h: camH }, game: { y: 0, h: H - camH }, seam: H - camH };
   return { cam: { y: 0, h: camH }, game: { y: camH, h: H - camH }, seam: camH };
 }
+// The white ring around a circle facecam, in pixels.
+export const RING = 6;
 // Where the webcam is cut from the stream (sx, sy, sw, sh in source pixels) and drawn on the canvas (x, y, w, h):
 // across the top in "cam" mode (cut to that strip's shape, centred on the box), or as a corner box in "pip" mode
 // (the box's own shape, frame.facecam.size of the width, kept clear of the hook at the top and captions low down).
@@ -229,7 +257,9 @@ export function facecamPlacement(frame, width, height) {
     if (bw / bh > want) { const nw = bh * want; sx += (bw - nw) / 2; bw = nw; } else { const nh = bw / want; sy += (bh - nh) * 0.25; bh = nh; }
     return { sx: Math.round(sx), sy: Math.round(sy), sw: even(bw), sh: even(bh), x: 0, y: cam.y, w: W, h: cam.h };
   }
-  const w = even(W * fc.size), h = even(w * bh / bw);
+  // A circle shows a square cut of the box: centred sideways, trimmed mostly from the bottom like the strip.
+  if (fc.shape === "circle") { if (bw > bh) { sx += (bw - bh) / 2; bw = bh; } else { sy += (bh - bw) * 0.25; bh = bw; } }
+  const w = even(W * fc.size), h = fc.shape === "circle" ? w : even(w * bh / bw);
   const x = fc.corner.endsWith("l") ? PIP_MARGIN : W - PIP_MARGIN - w, y = Math.max(PIP_MARGIN, fc.corner.startsWith("t") ? PIP_TOP : H - PIP_BOTTOM - h);
   return { sx: Math.round(sx), sy: Math.round(sy), sw: even(bw), sh: even(bh), x, y, w, h };
 }
@@ -527,7 +557,16 @@ export function filterGraph(edit, { width, height }, subtitles, { background = f
     if (frame.mode === "cam") {
       const a = camAreas(frame);
       parts.push(src + "split[g][c]", `[g]scale=${w}:${h},crop=${W}:${a.game.h}:${-x}:${-y},setsar=1[game]`, camCut + "[cam]",
-        "[cam][game]vstack=inputs=2" + (divider ? `,drawbox=x=0:y=${a.seam - 3}:w=${W}:h=6:color=${hex6(divider)}:t=fill` : "") + "[v0]");
+        (a.cam.y === 0 ? "[cam][game]" : "[game][cam]") + "vstack=inputs=2" + (divider ? `,drawbox=x=0:y=${a.seam - 3}:w=${W}:h=6:color=${hex6(divider)}:t=fill` : "") + "[v0]");
+    } else if (frame.facecam?.shape === "circle") {
+      // A round webcam in a white ring: the cut is given a soft-edged circular alpha from a one-frame mask (alphamerge
+      // repeats it), over a white disc RING pixels wider.
+      const r = fp.w / 2, D = fp.w + 2 * RING, R = D / 2;
+      const disc = (size, rad) => `geq=lum='255*clip(${fmt(rad)}-hypot(X+0.5-${fmt(size / 2)}\\,Y+0.5-${fmt(size / 2)})+0.5\\,0\\,1)'`;
+      parts.push(src + "split[g][c]", `[g]scale=${w}:${h},crop=${W}:${H}:${-x}:${-y},setsar=1[game]`,
+        `color=c=black:s=${fp.w}x${fp.w}:r=30:d=0.04,format=gray,${disc(fp.w, r)}[mask]`, camCut + `,format=yuva420p[cc]`, `[cc][mask]alphamerge[cam]`,
+        `color=c=white:s=${D}x${D}:r=30:d=0.04,format=yuva420p,split[ring0][ringa]`, `[ringa]format=gray,${disc(D, R)}[ringm]`, `[ring0][ringm]alphamerge[ring]`,
+        `[game][ring]overlay=${fp.x - RING}:${fp.y - RING}[gr]`, `[gr][cam]overlay=${fp.x}:${fp.y}[v0]`);
     } else {
       // A white border around the corner box.
       parts.push(src + "split[g][c]", `[g]scale=${w}:${h},crop=${W}:${H}:${-x}:${-y},setsar=1[game]`, camCut + `,pad=${fp.w + 8}:${fp.h + 8}:4:4:color=white[cam]`,
