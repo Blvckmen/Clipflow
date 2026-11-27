@@ -318,6 +318,8 @@ export async function POST(request:Request){
    const {results:versions}=await db.prepare("SELECT file_key FROM clip_translations WHERE owner=? AND file_key IS NOT NULL AND clip_id IN (SELECT value FROM json_each(?))").bind(owner,JSON.stringify(ids)).all<{file_key:string}>();
    for(let i=0;i<versions.length;i+=500)await bucket()?.delete(versions.slice(i,i+500).map(v=>v.file_key));
    statements.push(db.prepare("DELETE FROM clip_translations WHERE owner=? AND clip_id IN (SELECT value FROM json_each(?))").bind(owner,JSON.stringify(ids)));
+   // And the editor's saved versions of their edits.
+   statements.push(db.prepare("DELETE FROM clip_versions WHERE owner=? AND clip_id IN (SELECT value FROM json_each(?))").bind(owner,JSON.stringify(ids)));
   };
   if(payload.action==="deleteClip"){
    const clip=await db.prepare("SELECT c.id,c.file_key,c.source_key,c.thumb_rev,s.name FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(payload.id,owner).first<{id:string;file_key:string|null;source_key:string|null;thumb_rev:number|null;name:string|null}>();

@@ -4,6 +4,7 @@ import { currentUser } from "../../../../auth";
 import { bucket, database, sourceKey } from "../../../../../db/raw";
 import { aiCaptionsAvailable } from "../../../../../lib/post-caption";
 import { defaultEdit, defaultStyle, normalizeEdit, styleOf } from "../../../../../worker/edit.mjs";
+import { KEEP_VERSIONS } from "../../../../../lib/versions.mjs";
 export const dynamic="force-dynamic";
 const parse=(json:unknown)=>{try{return typeof json==="string"?JSON.parse(json):null;}catch{return null;}};
 type Row={id:string;streamer_id:string;edit:string|null;edit_rev:number;transcript:string|null;signals:string|null;source_meta:string|null;source_key:string|null;file_key:string|null;duration:number;render_state:string|null;render_error:string|null;rendered_at:string|null;review:string;reason:string|null;created_at:string;streamer:string|null;streamer_style:string|null;post_caption:string|null;caption_source:string|null;caption_error:string|null;ai_captions:number|null};
@@ -57,12 +58,20 @@ export async function POST(request:Request,{params}:{params:Promise<{id:string}>
  let edit;try{edit=normalizeEdit(body.edit,{duration:source.duration});}catch(error){return Response.json({error:(error as Error).message+"."},{status:400});}
  // Two tabs editing one clip: the later save must have seen the earlier one.
  if(body.rev!==clip.edit_rev)return Response.json({error:"This clip was edited somewhere else. Reopen it to see the latest version."},{status:409});
- const iso=new Date().toISOString(),style=JSON.stringify(styleOf(edit));
- const statements=[db.prepare("UPDATE clips SET edit=?,edit_rev=edit_rev+1,render_state='queued',render_error=NULL,post_caption=CASE WHEN caption_source='local' THEN NULL ELSE post_caption END,caption_source=CASE WHEN caption_source='local' THEN NULL ELSE caption_source END,caption_tries=0,caption_error=NULL WHERE id=? AND owner=? AND edit_rev=?").bind(JSON.stringify(edit),id,owner,clip.edit_rev)];
+ const iso=new Date().toISOString(),style=JSON.stringify(styleOf(edit)),text=JSON.stringify(edit),rev=clip.edit_rev+1;
+ const statements=[db.prepare("UPDATE clips SET edit=?,edit_rev=edit_rev+1,render_state='queued',render_error=NULL,post_caption=CASE WHEN caption_source='local' THEN NULL ELSE post_caption END,caption_source=CASE WHEN caption_source='local' THEN NULL ELSE caption_source END,caption_tries=0,caption_error=NULL WHERE id=? AND owner=? AND edit_rev=?").bind(text,id,owner,clip.edit_rev)];
+ // Saved versions, only when this save is the one that went in (the clip now holds this edit at this rev): the first
+ // save also keeps the edit it replaced; then the new one; then only the newest KEEP_VERSIONS stay.
+ const won="EXISTS (SELECT 1 FROM clips WHERE id=? AND owner=? AND edit_rev=? AND edit=?)";
+ statements.push(
+  db.prepare("INSERT INTO clip_versions (id,clip_id,owner,rev,edit,created_at) SELECT ?,?,?,?,?,? WHERE "+won+" AND NOT EXISTS (SELECT 1 FROM clip_versions WHERE clip_id=? AND owner=?)")
+   .bind(crypto.randomUUID(),id,owner,clip.edit_rev,clip.edit,clip.rendered_at??clip.created_at,id,owner,rev,text,id,owner),
+  db.prepare("INSERT INTO clip_versions (id,clip_id,owner,rev,edit,created_at) SELECT ?,?,?,?,?,? WHERE "+won).bind(crypto.randomUUID(),id,owner,rev,text,iso,id,owner,rev,text),
+  db.prepare("DELETE FROM clip_versions WHERE clip_id=? AND owner=? AND rev NOT IN (SELECT rev FROM clip_versions WHERE clip_id=? AND owner=? ORDER BY rev DESC LIMIT ?)").bind(id,owner,id,owner,KEEP_VERSIONS));
  if(body.saveStyle==="streamer")statements.push(db.prepare("UPDATE streamers SET style=? WHERE id=? AND owner=?").bind(style,clip.streamer_id,owner));
  if(body.saveStyle==="workspace")statements.push(db.prepare("INSERT INTO preferences (owner,mode,style) VALUES (?,'review',?) ON CONFLICT(owner) DO UPDATE SET style=excluded.style").bind(owner,style));
  statements.push(db.prepare("INSERT INTO events (id,owner,message,created_at) VALUES (?,?,?,?)").bind(crypto.randomUUID(),owner,"Edited a clip"+(clip.streamer?" from "+clip.streamer:"")+"; the worker will render the new version."+(body.saveStyle==="streamer"?" Saved its look for "+(clip.streamer??"this streamer")+"'s new clips.":body.saveStyle==="workspace"?" Saved its look as the workspace default.":""),iso));
  const [saved]=await db.batch(statements);
  if(!saved.meta.changes)return Response.json({error:"This clip was edited somewhere else. Reopen it to see the latest version."},{status:409});
- return Response.json({ok:true,rev:clip.edit_rev+1,message:"Saved. The worker renders the new version within a couple of minutes."});
+ return Response.json({ok:true,rev,message:"Saved. The worker renders the new version within a couple of minutes."});
 }

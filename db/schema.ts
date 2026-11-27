@@ -231,6 +231,13 @@ export const clipTranslations=sqliteTable("clip_translations",{
  createdAt:text("created_at").notNull(),updatedAt:text("updated_at").notNull(),
 },t=>[primaryKey({columns:[t.clipId,t.lang]}),index("clip_translations_owner_state").on(t.owner,t.state)]);
 
+// Saved versions of a clip's edit (lib/versions.mjs): every save of the editor keeps the edit it saved, and the first
+// save also keeps the edit it replaced. The newest KEEP_VERSIONS per clip are kept. Deleted with the clip.
+export const clipVersions=sqliteTable("clip_versions",{
+ id:text("id").primaryKey(),clipId:text("clip_id").notNull(),owner:text("owner").notNull(),rev:integer("rev").notNull(),
+ edit:text("edit").notNull(),createdAt:text("created_at").notNull(),
+},t=>[index("clip_versions_clip_rev").on(t.clipId,t.rev)]);
+
 // Highlight videos (lib/highlights.ts): the clips picked (JSON [{id,start,end}], in order), made into one 16:9 video
 // by the worker and uploaded in parts like a recording's preview. state: queued -> ready (file_key) | failed (error).
 export const highlights=sqliteTable("highlights",{
