@@ -186,6 +186,24 @@
 .title-line{display:grid;grid-template-columns:minmax(0,1fr) 44px minmax(90px,140px) auto;align-items:center;gap:10px}
 .title-line-text{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .editor-controls .title-line input[type=range]{margin:0}
+.timeline-toggle{display:inline-flex;align-items:center;gap:6px;background:none;border:0;padding:3px 8px 3px 2px;border-radius:6px;color:#d3dce7;font-size:12px;font-weight:600}
+.timeline-toggle:hover{background:#18202a}.timeline-toggle .chev{transition:transform .2s}
+.timeline.collapsed .timeline-toggle .chev{transform:rotate(-90deg)}
+.timeline .timeline-head{justify-content:flex-start}.timeline-trim{display:flex;align-items:center;gap:6px;color:#9aa6b4}.timeline-zoom{margin-left:auto}
+.timeline-grid{transition:grid-template-columns .25s ease}
+.lane-inner{transition:grid-template-rows .25s ease,row-gap .25s ease}
+.lane-labels{transition:grid-template-rows .25s ease,opacity .2s}
+.lane-labels>*,.lane-inner>.ruler,.lane-inner>.lane{overflow:hidden;transition:opacity .2s}
+.timeline.collapsed .timeline-grid{grid-template-columns:0 minmax(0,1fr)}
+.timeline.collapsed .lane-labels{opacity:0;pointer-events:none}
+.timeline.collapsed .lane-inner,.timeline.collapsed .lane-labels{grid-template-rows:0 30px 0 0 0;row-gap:0}
+.timeline.collapsed .ruler,.timeline.collapsed .lane-sub,.timeline.collapsed .lane-title,.timeline.collapsed .lane-words{opacity:0;pointer-events:none}
+.timeline.collapsed .lane-video .heat-bars{opacity:.55}
+.mini-marks span{position:absolute;height:3px;border-radius:2px;pointer-events:none}
+.mini-sub{bottom:1px;background:var(--lime);opacity:.9}.mini-title{top:1px;background:#ff7a59}
+.editor-shell .phone{transition:height .25s ease}
+.editor-shell.timeline-folded .phone{height:min(calc(100vh - 250px),720px)}
+@media(max-width:900px){.editor-shell.timeline-folded .phone{height:min(66vh,580px)}}
 .saved-looks{display:flex;flex-direction:column;gap:8px;padding-top:12px;border-top:1px solid var(--border)}
 .saved-looks h3{font-size:13px;margin:0;color:#d3dce7}.editor-controls .saved-looks select{flex:1;width:auto;min-width:140px;margin:0}
 @media(max-width:900px){.editor-shell{overflow-y:auto}.editor-body{flex:none}.editor-shell .phone{height:min(58vh,520px)}.timeline-grid{grid-template-columns:64px minmax(0,1fr)}.timeline,.step-bar{padding-left:14px;padding-right:14px}}

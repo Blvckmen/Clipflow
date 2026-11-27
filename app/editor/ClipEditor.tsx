@@ -16,6 +16,7 @@ import { backgroundChoice, type BgClip, type BgVideo } from "./backgrounds";
 import { STEPS, clamp, type Bundle, type Change, type Edit, type Split, type Step, type Tools, type Word } from "./types";
 
 export type { Edit } from "./types";
+const TIMELINE_KEY = "clipflow.editor.timeline";
 
 // `onCopied`: a copy of this clip was made (Make a copy); the workspace opens it.
 export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { clipId: string; onClose: () => void; onSaved: (message: string) => void; onCopied?: (id: string, message: string) => void }) {
@@ -23,6 +24,13 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
   const [edit, setEditState] = useState<Edit | null>(null), [past, setPast] = useState<Edit[]>([]), [future, setFuture] = useState<Edit[]>([]);
   const [step, setStep] = useState<Step>("cut"), [panel, setPanel] = useState<TextPanel>("subtitles"), [time, setTime] = useState(0), [saveStyle, setSaveStyle] = useState(false), [restored, setRestored] = useState<number | null>(null);
   const [backgrounds, setBackgrounds] = useState<BgVideo[]>([]), [bgClips, setBgClips] = useState<BgClip[]>([]);
+  // The timeline folded into one strip, remembered on this device. Phones start folded: the preview needs the room.
+  const [timelineFolded, setTimelineFolded] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const saved = window.localStorage.getItem(TIMELINE_KEY);
+    return saved ? saved === "folded" : window.matchMedia("(max-width: 900px)").matches;
+  });
+  const toggleTimeline = useCallback(() => setTimelineFolded(f => { try { window.localStorage.setItem(TIMELINE_KEY, f ? "open" : "folded"); } catch { /* private mode */ } return !f; }), []);
   const video = useRef<HTMLVideoElement>(null), editRef = useRef<Edit | null>(null), lastPush = useRef({ at: 0, key: "" });
 
   useEffect(() => {
@@ -93,7 +101,8 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
     change("restore", () => ({ ...saved, trim: { start, end }, hook: { ...HOOK_DEFAULT, ...saved.hook } }));
   }, [change, duration]);
 
-  // Keyboard: space plays, I/O set the start/end at the playhead, 1-4 pick a step, ctrl+z / ctrl+shift+z undo and redo.
+  // Keyboard: space plays, I/O set the start/end at the playhead, 1-4 pick a step, T folds the timeline, ctrl+z /
+  // ctrl+shift+z undo and redo.
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       if (ev.target instanceof Element && ev.target.closest("input,textarea,select")) return;
@@ -103,11 +112,12 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
       else if (ev.key.toLowerCase() === "i" && video.current) setTrim("start", video.current.currentTime);
       else if (ev.key.toLowerCase() === "o" && video.current) setTrim("end", video.current.currentTime);
       else if (/^[1-4]$/.test(ev.key)) setStep(STEPS[Number(ev.key) - 1].id);
+      else if (ev.key.toLowerCase() === "t") toggleTimeline();
       else if (ev.key === "Escape") close();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggle, undo, redo, setTrim, close]);
+  }, [toggle, undo, redo, setTrim, close, toggleTimeline]);
 
   const makeCopy = async () => {
     setCopying(true); setError("");
@@ -134,7 +144,7 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
 
   const bg = backgroundChoice(edit, backgrounds, bgClips), finished = tl?.length ?? edit.trim.end - edit.trim.start;
   const placing = step === "text" && panel === "title";
-  return <div className="editor-shell" role="dialog" aria-label="Clip editor">
+  return <div className={"editor-shell" + (timelineFolded ? " timeline-folded" : "")} role="dialog" aria-label="Clip editor">
     <header className="editor-top">
       <button className="secondary" onClick={close}><ArrowLeft size={16} />Clips</button>
       <div className="editor-title"><strong>{bundle.streamer ?? "Clip"}</strong><small>{new Date(bundle.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} · {finished.toFixed(1)}s</small></div>
@@ -160,6 +170,6 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
         </div>
       </section>
     </div>
-    <Timeline bundle={bundle} edit={edit} change={change} setTrim={setTrim} seek={seek} time={time} cues={cueList} words={words} cuts={tl?.cuts ?? []} />
+    <Timeline bundle={bundle} edit={edit} change={change} setTrim={setTrim} seek={seek} time={time} cues={cueList} words={words} cuts={tl?.cuts ?? []} collapsed={timelineFolded} onToggle={toggleTimeline} />
   </div>;
 }
