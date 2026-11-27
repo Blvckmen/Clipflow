@@ -2,6 +2,8 @@ import { env } from "cloudflare:workers";
 import { currentUser } from "../../../../auth";
 import { authorizeUrl } from "../../../../../lib/instagram";
 import { instagramConfig } from "../../../../../lib/publisher";
+import { database } from "../../../../../db/raw";
+import { limitReached } from "../../../../../lib/billing";
 export const dynamic="force-dynamic";
 const STATE_COOKIE="ig_oauth_state";
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -10,7 +12,11 @@ const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export async function GET(request:Request){
  const url=new URL(request.url),origin=url.origin;
  const back=(query:string)=>Response.redirect(origin+"/?"+query,302);
- if(!await currentUser())return back("connect_error="+encodeURIComponent("Sign in before connecting an account."));
+ const user=await currentUser();
+ if(!user)return back("connect_error="+encodeURIComponent("Sign in before connecting an account."));
+ // The plan's account limit (lib/plans.mjs; only with billing on). Reconnecting an expired account is never refused.
+ const limited=await limitReached(env,database(),user.userId,"accounts");
+ if(limited)return back("connect_error="+encodeURIComponent(limited));
  const config=instagramConfig(env);
  if(!config)return back("connect_error="+encodeURIComponent("Instagram publishing is not set up on this site yet."));
  const state=crypto.randomUUID(),streamer=url.searchParams.get("streamer");

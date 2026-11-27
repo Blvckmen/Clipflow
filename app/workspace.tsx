@@ -13,6 +13,7 @@ import { AnalyticsView, type Analytics } from "./analytics-view";
 import { BackgroundLibrary, type Background } from "./background-library";
 import { captureModes, defaults, destinations, framings, type WorkerSettings } from "../lib/clipflow";
 import { BeingMade, clipsOf } from "./being-made";
+import { PlanPanel, type Plan } from "./plan-panel";
 import { RejectReasonBar, RejectSummary } from "./reject-reason";
 import { viralityLabel } from "../lib/virality.mjs";
 import { ReviewFeed } from "./review-feed";
@@ -57,7 +58,7 @@ type Account={id:string;provider:string;platform:string;username:string;status:s
 // Display name of an account's platform, from Zernio's platform ids.
 const platformName=(platform:string)=>({instagram:"Instagram",tiktok:"TikTok",youtube:"YouTube",facebook:"Facebook",twitter:"X",threads:"Threads"} as Record<string,string>)[platform]??platform;
 type Post={id:string;clip_id:string;platform:string;account_id:string;account:string|null;state:"queued"|"processing"|"published"|"failed"|"review"|"skipped";permalink:string|null;error:string|null;attempts:number;created_at:string;published_at:string|null;streamer:string|null;round?:number;views?:number|null;likes?:number|null;draft?:boolean|number};
-type Data={user:string;account?:{twitch:boolean;twitchLogin:string|null;session:boolean};streamers:Streamer[];settings:Settings;events:{id:string;message:string;created_at:string}[];clips:Clip[];moreClips?:boolean;engine:Engine;accounts:Account[];posts:Post[];publishing:Publishing&{instagram:boolean;ai:boolean;socialCaptions:boolean};storage:boolean;backgrounds?:Background[];recordings?:Recording[];recordingRequests?:RecordingRequest[];viewerClipCandidates?:Candidate[]};
+type Data={user:string;account?:{twitch:boolean;twitchLogin:string|null;session:boolean};plan?:Plan|null;streamers:Streamer[];settings:Settings;events:{id:string;message:string;created_at:string}[];clips:Clip[];moreClips?:boolean;engine:Engine;accounts:Account[];posts:Post[];publishing:Publishing&{instagram:boolean;ai:boolean;socialCaptions:boolean};storage:boolean;backgrounds?:Background[];recordings?:Recording[];recordingRequests?:RecordingRequest[];viewerClipCandidates?:Candidate[]};
 // The routing editor: which connected accounts post one streamer's clips.
 function AccountPicker({accounts,value,onChange}:{accounts:Account[];value:string[];onChange:(next:string[])=>void}){
  return <div className="account-picker">{accounts.map(a=><label key={a.id}><input type="checkbox" checked={value.includes(a.id)} onChange={e=>onChange(e.target.checked?[...value,a.id]:value.filter(x=>x!==a.id))}/><Brand name={platformName(a.platform)}/><span>@{a.username}{a.status!=="connected"&&<small> · reconnect needed</small>}</span></label>)}</div>;
@@ -172,9 +173,11 @@ export default function Dashboard(){
  // Returning from Instagram sign-in: show the outcome once, then tidy the address bar.
  useEffect(()=>{
   const params=new URLSearchParams(window.location.search),ok=params.get("connected"),problem=params.get("connect_error")??params.get("signin_error"),who=params.get("account");
-  if(!ok&&!problem)return;
+  // Back from Stripe Checkout (Settings → Plan).
+  const paid=params.get("billing");
+  if(!ok&&!problem&&!paid)return;
   window.history.replaceState(null,"",window.location.pathname);
-  const timer=setTimeout(()=>{if(ok){setToast(platformName(ok)+" "+(who?"@"+who+" ":"")+"connected. Choose which streamers it posts for below.");setView("Connections");}else setError(problem!);},0);
+  const timer=setTimeout(()=>{if(paid){setToast(paid==="done"?"Thanks! Your plan is active. It can take a few seconds to show here.":"Checkout was cancelled. Nothing was charged.");setView("Settings");}else if(ok){setToast(platformName(ok)+" "+(who?"@"+who+" ":"")+"connected. Choose which streamers it posts for below.");setView("Connections");}else setError(problem!);},0);
   return()=>clearTimeout(timer);
  },[]);
  useEffect(()=>{if(!toast)return;const timer=setTimeout(()=>setToast(""),5000);return()=>clearTimeout(timer);},[toast]);
@@ -382,6 +385,7 @@ export default function Dashboard(){
  {view==="Overview"&&<div className={accounts.length?"lower-grid":"lower-grid single"}>{accounts.length>0&&postingToday}<section className="panel"><div className="panel-heading"><div><h2>Recent activity</h2><p>What's happening in your workspace</p></div><Activity size={18} className="muted"/></div><div className="activity-list">{data?.events.length?data.events.slice(0,4).map(e=><div key={e.id} className="activity-item"><span className="activity-mark"><Check size={13}/></span><div><p>{e.message}</p><small>{when(e.created_at)}</small></div></div>):<div className="activity-empty"><Clock3 size={26}/><h3>A fresh start</h3><p>Your channel and settings changes will appear here.</p></div>}</div></section></div>}
  </>}
  {view==="Connections"&&<>{zernioPanel}{(data?.publishing.instagram||instagramAccounts.length>0)&&instagramPanel}<p className="muted connection-note">Connecting an account uses that platform&apos;s own sign-in. Clipflow never sees your password.</p></>}
+ {view==="Settings"&&data?.plan&&<PlanPanel plan={data.plan}/>}
  {view==="Settings"&&data?.account&&(data.account.twitch||data.account.session)&&<section className="panel settings-group"><div className="group-head"><Link2 size={18}/><div><h2>Sign-in</h2><p>How you sign in to this workspace.</p></div></div><div className="group-body">
   {data.account.twitch&&(data.account.twitchLogin!==null?<p>Sign in with Twitch: linked{data.account.twitchLogin?<> to <strong>@{data.account.twitchLogin}</strong></>:null}.</p>:<p>Link your Twitch account to sign in with it. Your clips, channels and settings stay in this workspace. <a className="secondary" href="/api/auth/twitch/start?return_to=/" target="_top">Link Twitch</a></p>)}
   {data.account.session&&<form method="post" action="/api/auth/signout"><button className="secondary" type="submit">Sign out</button></form>}

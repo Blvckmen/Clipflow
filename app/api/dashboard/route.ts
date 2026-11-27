@@ -23,6 +23,8 @@ import { createHighlight } from "../../../lib/highlights";
 import { hashToken, newToken } from "../../../lib/worker-auth";
 import { REJECT_REASON_KEYS, REJECT_WINDOW_DAYS } from "../../../lib/reject-reasons.mjs";
 import { PAIR_TTL_MS, hashPairCode, newPairCode, normalizePairCode } from "../../../lib/pairing.mjs";
+import { billingOn, limitReached, workspaceStanding } from "../../../lib/billing";
+import { PLANS } from "../../../lib/plans.mjs";
 import { z } from "zod";
 const accountIds=z.array(z.string().uuid()).max(50).transform(x=>[...new Set(x)]);
 const clipIds=z.array(z.string().uuid()).min(1).max(200).transform(x=>[...new Set(x)]);
@@ -156,8 +158,10 @@ export async function GET(request:Request){
   // whether this browser is signed in that way (then Sign out is offered).
   const twitchLink=twitchSignIn()?await db.prepare("SELECT login FROM auth_identities WHERE owner=? AND provider='twitch' ORDER BY created_at LIMIT 1").bind(owner).first<{login:string|null}>():null;
   const account={twitch:twitchSignIn(),twitchLogin:twitchLink?.login??(twitchLink?"":null),session:await signedInWithApp()};
+  // Settings → Plan (lib/plans.mjs): only with billing on. The first look starts a new workspace's trial.
+  const plan=billingOn(env)?await workspaceStanding(db,owner).then(({standing,customer})=>({...standing,canManage:!!customer,usage:{channels:s.results.length,accounts:a.results.filter(x=>x.status==="connected").length},plans:PLANS})).catch(error=>{console.error("Billing lookup failed",error);return null;}):null;
   const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,importClips:Number(p.import_clips??0),viewerClips:readViewerClips(p.viewer_clips),clipCommand:p.clip_command??defaults.clipCommand,learn:p.learn===undefined?true:!!p.learn,weeklyHighlights:!!p.weekly_highlights,worker:readWorkerSettings(p.worker_settings),discordAlerts:!!p.discord_webhook_enc,alertError:p.alert_error??null,style:parse(p.style)}:{...defaults,style:null};
-  return Response.json({user:user.displayName,account,rejectReasons:Object.fromEntries(rr.results.map(x=>[x.reason,x.n])),streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(clipRowWith(viewProfiles(s.results))),moreClips:c.results.length===CLIPS_PAGE,storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,duration,content_type,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,
+  return Response.json({user:user.displayName,account,plan,rejectReasons:Object.fromEntries(rr.results.map(x=>[x.reason,x.n])),streamers,settings,events:e.results,engine,accounts:a.results.map(({options,...x})=>({...x,options:readOptions(options)})),posts:po.results,publishing:{instagram:!!instagramConfig(env),zernio:keys.length>0||site,zernioSource:keys.length?"workspace":site?"site":null,zernioKeys:keys,canSaveKey:!!env.TOKEN_KEY,ai:aiCaptionsAvailable(env),socialCaptions:socialCaptionsAvailable(env)},clips:c.results.map(clipRowWith(viewProfiles(s.results))),moreClips:c.results.length===CLIPS_PAGE,storage:!!bucket(),backgrounds:(await db.prepare("SELECT id,name,size,duration,content_type,created_at FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all()).results,
    // Whole-stream recordings (their heat strips load with GET /api/recordings/<id>) and clips asked for from them.
    recordings:(await db.prepare("SELECT r.id,r.streamer_id,s.name AS streamer,r.title,r.started_at,r.ended_at,r.duration,r.size,r.state,r.error,r.preview_key IS NOT NULL AS preview,r.transcript_at IS NOT NULL AS transcript,r.upload_id IS NOT NULL AS uploading,r.expires_at,r.source_url FROM recordings r LEFT JOIN streamers s ON s.id=r.streamer_id AND s.owner=r.owner WHERE r.owner=? ORDER BY r.started_at DESC LIMIT 100").bind(owner).all<Record<string,unknown>>()).results.map(x=>({...x,preview:!!x.preview,uploading:!!x.uploading,transcript:!!x.transcript})),
    highlights:(await db.prepare("SELECT id,title,state,size,duration,error,auto,clips,created_at FROM highlights WHERE owner=? ORDER BY created_at DESC LIMIT 20").bind(owner).all<{clips:string}>()).results.map(({clips,...h})=>({...h,clips:(JSON.parse(clips) as unknown[]).length})),
@@ -182,6 +186,9 @@ export async function POST(request:Request){
   let streamerId:string|undefined,clipId:string|undefined;
   if(payload.action==="add"){
    let channel;try{channel=parseStreamer(payload.url);}catch(error){return Response.json({error:(error as Error).message},{status:400});}
+   // The plan's channel limit (lib/plans.mjs; only with billing on).
+   const limited=await limitReached(env,db,owner,"channels");
+   if(limited)return Response.json({error:limited},{status:402});
    const linked=await ownAccounts(payload.accounts??[]);
    if(!linked)return Response.json({error:"One of those publishing accounts is no longer connected."},{status:404});
    const name=payload.name||channel.name;streamerId=crypto.randomUUID();

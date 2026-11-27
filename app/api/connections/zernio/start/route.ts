@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { currentUser } from "../../../../auth";
 import { database } from "../../../../../db/raw";
 import { connectionFor, connections } from "../../../../../lib/zernio-keys";
+import { limitReached } from "../../../../../lib/billing";
 import { connectUrl, defaultProfile, VIDEO_PLATFORMS, ZernioError } from "../../../../../lib/zernio";
 export const dynamic="force-dynamic";
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -17,6 +18,9 @@ export async function GET(request:Request){
  const platform=url.searchParams.get("platform")??"";
  if(!VIDEO_PLATFORMS[platform])return back("That platform can't be connected.");
  const db=database(),wanted=url.searchParams.get("key");
+ // The plan's account limit (lib/plans.mjs; only with billing on). Reconnecting an expired account is never refused.
+ const limited=await limitReached(env,db,user.userId,"accounts");
+ if(limited)return back(limited);
  const config=await (wanted?connectionFor(env,db,user.userId,wanted):connections(env,db,user.userId).then(all=>all[0]??null)).catch(()=>null);
  if(!config)return back(wanted?"That Zernio key is no longer in your workspace.":"Add a Zernio API key under Connections first.");
  try{

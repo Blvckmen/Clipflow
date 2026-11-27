@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { database } from "../../../../db/raw";
 import { defaults, readWorkerSettings, workerSettingsRev } from "../../../../lib/clipflow";
 import { workerOwner } from "../../../../lib/worker-auth";
+import { automationAllowed } from "../../../../lib/billing";
 import { readStreamerViewerClips, readViewerClips } from "../../../../lib/viewer-clips.mjs";
 export const dynamic="force-dynamic";
 const parse=(json:unknown)=>{try{return typeof json==="string"?JSON.parse(json):null;}catch{return null;}};
@@ -35,9 +36,12 @@ export async function GET(request:Request){
    // Failed clips asked to be made again in the last hour (Being made → Try again); the worker acts on each once.
    db.prepare("SELECT clip_id FROM clip_retries WHERE owner=? AND requested_at>? ORDER BY requested_at LIMIT 50").bind(owner,new Date(Date.now()-3600_000).toISOString()).all<{clip_id:string}>(),
   ]);
+  // A workspace whose trial or plan has ended reads as paused (nothing recorded or made, what's queued kept) until a
+  // plan is chosen. Only with billing on, and a failed check runs as usual (lib/billing.ts).
+  const control=p?.control??defaults.control,running=control==="running"&&!await automationAllowed(env,db,owner)?"paused":control;
   // streamers is in recording-priority order: the worker gives full capture slots to the first live ones.
   return Response.json({
-   control:p?.control??defaults.control,duration:p?.duration??defaults.duration,dailyLimit:p?.daily_limit??defaults.dailyLimit,captions:p?!!p.captions:defaults.captions,transcribe:p?!!p.transcribe:defaults.transcribe,framing:p?.framing??defaults.framing,
+   control:running,duration:p?.duration??defaults.duration,dailyLimit:p?.daily_limit??defaults.dailyLimit,captions:p?!!p.captions:defaults.captions,transcribe:p?!!p.transcribe:defaults.transcribe,framing:p?.framing??defaults.framing,
    style:parse(p?.style),
    // Settings → This PC; each choice left out follows the worker's .env (worker/core.mjs workerTuning).
    // workerRev: their fingerprint, which the worker reports back once it runs with them (Saved → Applied).

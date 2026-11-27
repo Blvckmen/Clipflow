@@ -5,7 +5,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { appendFileSync, openSync } from "node:fs";
-import { createHash, randomUUID, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomUUID, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { startFakeInstagram } from "./fake-instagram.mjs";
 
@@ -41,6 +41,22 @@ const posts = async () => (await dash()).body.posts;
 // A stand-in for Twitch's sign-in (token) and API (who signed in), for Sign in with Twitch.
 let fakeTwitch;
 const twitchUser = { id: "4242" + Date.now().toString().slice(-6), login: "tester", display_name: "Tester", email: "tester@test.local" };
+// A stand-in for Stripe's API (checkout and billing portal sessions); webhooks are signed here with the same secret.
+let fakeStripe;
+const stripeAsked = [];
+async function startFakeStripe() {
+  const { createServer } = await import("node:http");
+  const server = createServer((req, res) => {
+    let body = ""; req.on("data", c => body += c); req.on("end", () => {
+      stripeAsked.push({ path: req.url, auth: req.headers.authorization, params: new URLSearchParams(body) });
+      if (req.url === "/checkout/sessions") return res.end(JSON.stringify({ url: "https://checkout.stripe.test/c" }));
+      if (req.url === "/billing_portal/sessions") return res.end(JSON.stringify({ url: "https://billing.stripe.test/p" }));
+      res.statusCode = 404; res.end("{}");
+    });
+  });
+  await new Promise(r => server.listen(0, "127.0.0.1", r));
+  return { server, url: "http://127.0.0.1:" + server.address().port };
+}
 async function startFakeTwitch() {
   const { createServer } = await import("node:http");
   const server = createServer((req, res) => {
@@ -57,9 +73,10 @@ async function startFakeTwitch() {
 before(async () => {
   fake = await startFakeInstagram();
   fakeTwitch = await startFakeTwitch();
+  fakeStripe = await startFakeStripe();
 
   const graph = "http://127.0.0.1:" + fake.port;
-  const vars = { TWITCH_CLIENT_ID: "twitch-app", TWITCH_CLIENT_SECRET: "twitch-secret", TWITCH_AUTH_URL: fakeTwitch.url, TWITCH_API_URL: fakeTwitch.url, AUTH_MODE: "sites", ZERNIO_API_KEY: "", ENABLE_TEST_CRON: "1", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "", INSTAGRAM_APP_ID: "test-app", INSTAGRAM_APP_SECRET: "test-secret", TOKEN_KEY: randomBytes(32).toString("base64"), MEDIA_KEY: randomBytes(32).toString("base64"), PUBLIC_URL: base, INSTAGRAM_AUTH_URL: graph, INSTAGRAM_API_URL: graph, INSTAGRAM_GRAPH_URL: graph };
+  const vars = { STRIPE_SECRET_KEY: "sk_test_fake", STRIPE_WEBHOOK_SECRET: "whsec_test", STRIPE_API_URL: fakeStripe.url, TWITCH_CLIENT_ID: "twitch-app", TWITCH_CLIENT_SECRET: "twitch-secret", TWITCH_AUTH_URL: fakeTwitch.url, TWITCH_API_URL: fakeTwitch.url, AUTH_MODE: "sites", ZERNIO_API_KEY: "", ENABLE_TEST_CRON: "1", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "", INSTAGRAM_APP_ID: "test-app", INSTAGRAM_APP_SECRET: "test-secret", TOKEN_KEY: randomBytes(32).toString("base64"), MEDIA_KEY: randomBytes(32).toString("base64"), PUBLIC_URL: base, INSTAGRAM_AUTH_URL: graph, INSTAGRAM_API_URL: graph, INSTAGRAM_GRAPH_URL: graph };
   if(process.env.E2E_DIRECT === "1") {
     const { Miniflare } = await import("miniflare");
     const { resolve } = await import("node:path");
@@ -88,7 +105,7 @@ after(async () => {
     for (const a of body.accounts ?? []) await dash({ action: "disconnect", id: a.id });
     for (const s of body.streamers ?? []) await dash({ action: "remove", id: s.id });
     await dash({ action: "control", control: "paused" });
-  } finally { dev?.kill(); await directRuntime?.dispose(); fake?.server.close(); fakeTwitch?.server.close(); }
+  } finally { dev?.kill(); await directRuntime?.dispose(); fake?.server.close(); fakeTwitch?.server.close(); fakeStripe?.server.close(); }
 });
 
 test("dashboard reports Instagram publishing as available", async () => {
@@ -377,6 +394,51 @@ test("Sign in with Twitch: closed to strangers, links to a signed-in workspace, 
   assert.match(signedOut.headers.get("location"), /\/api\/auth\/twitch\/start$/);
   assert.notEqual((await fetch(base + "/api/downloads/worker", { headers: { cookie: linked.session }, redirect: "manual" })).status, 302, "signed in: the file (or that it isn't uploaded yet)");
   assert.equal((await fetch(base + "/downloads/clipflow-worker.zip", { redirect: "manual" })).status === 200, false, "no public copy");
+});
+
+test("Plans: a new workspace starts a trial, pays through Stripe, is held to its plan, and pauses when cancelled", async () => {
+  const me = { "oai-authenticated-user-id": owner + "_bill", "oai-authenticated-user-email": owner + "_bill@test.local" };
+  const as = async body => { const r = await fetch(base + "/api/dashboard", body ? { method: "POST", headers: { ...me, "content-type": "application/json" }, body: JSON.stringify(body) } : { headers: me }); return { status: r.status, body: await r.json() }; };
+  const post = (path, body) => fetch(base + path, { method: "POST", headers: { ...me, "content-type": "application/json" }, body: JSON.stringify(body) });
+  const webhook = (event, secret = "whsec_test") => { const payload = JSON.stringify(event), t = Math.floor(Date.now() / 1000); return fetch(base + "/api/stripe/webhook", { method: "POST", headers: { "stripe-signature": "t=" + t + ",v1=" + createHmac("sha256", secret).update(t + "." + payload).digest("hex") }, body: payload }); };
+  let plan = (await as()).body.plan;
+  assert.equal(plan.plan, "trial");
+  assert.equal(plan.active, true);
+  assert.ok(Date.parse(plan.trialEndsAt) > Date.now() + 13 * 86_400_000, "14 days");
+  // Choose Streamer: Stripe Checkout, priced here, tied to this workspace.
+  const checkout = await post("/api/billing/checkout", { plan: "streamer" });
+  assert.equal(checkout.status, 200);
+  assert.equal((await checkout.json()).url, "https://checkout.stripe.test/c");
+  const asked = stripeAsked.at(-1);
+  assert.equal(asked.auth, "Bearer sk_test_fake");
+  assert.equal(asked.params.get("client_reference_id"), me["oai-authenticated-user-id"]);
+  assert.equal(asked.params.get("line_items[0][price_data][unit_amount]"), "1200");
+  assert.equal((await post("/api/billing/checkout", { plan: "gold" })).status, 400);
+  assert.equal((await post("/api/billing/portal", {})).status, 409, "nothing to manage before paying");
+  // Only Stripe's signed word counts.
+  const paid = { type: "checkout.session.completed", data: { object: { mode: "subscription", client_reference_id: me["oai-authenticated-user-id"], customer: "cus_e2e", subscription: "sub_e2e", metadata: { plan: "streamer" } } } };
+  assert.equal((await webhook(paid, "whsec_wrong")).status, 400);
+  assert.equal((await as()).body.plan.plan, "trial");
+  assert.equal((await webhook(paid)).status, 200);
+  plan = (await as()).body.plan;
+  assert.deepEqual({ plan: plan.plan, active: plan.active, canManage: plan.canManage, limits: plan.limits }, { plan: "streamer", active: true, canManage: true, limits: { channels: 1, accounts: 3 } });
+  assert.equal((await (await post("/api/billing/portal", {})).json()).url, "https://billing.stripe.test/p");
+  // Streamer covers one channel.
+  assert.equal((await as({ action: "add", url: "https://twitch.tv/" + owner + "b1" })).status, 200);
+  const second = await as({ action: "add", url: "https://twitch.tv/" + owner + "b2" });
+  assert.equal(second.status, 402);
+  assert.match(second.body.error, /covers 1 channel/);
+  // Cancelled: the worker sees automation paused; the saved choice (running) is kept for when a plan is back.
+  const token = (await as({ action: "token" })).body.token;
+  const config = async () => (await (await fetch(base + "/api/worker/config", { headers: { authorization: "Bearer " + token } })).json()).control;
+  assert.equal(await config(), "running");
+  assert.equal((await webhook({ type: "customer.subscription.deleted", data: { object: { id: "sub_e2e", customer: "cus_e2e", status: "canceled", metadata: { owner: me["oai-authenticated-user-id"], plan: "streamer" } } } })).status, 200);
+  assert.equal((await as()).body.plan.active, false);
+  assert.equal(await config(), "paused");
+  // An event for some other, older subscription doesn't change it back.
+  await webhook({ type: "customer.subscription.updated", data: { object: { id: "sub_old", customer: "cus_e2e", status: "past_due", metadata: { owner: me["oai-authenticated-user-id"], plan: "agency" } } } });
+  assert.equal((await as()).body.plan.status, "canceled");
+  for (const s of (await as()).body.streamers) await as({ action: "remove", id: s.id });
 });
 
 test("an account set to Spanish posts the Spanish version the worker made, or fails with the reason", async () => {

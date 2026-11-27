@@ -883,3 +883,10 @@ button.account-streamers{max-width:none;justify-self:start}
 .channel-search input::-webkit-search-cancel-button{display:none}
 .channel-search>svg,.channel-search button{flex-shrink:0}
 @media(max-width:640px){.streamer-panel .panel-tools{width:100%;justify-content:flex-start}.channel-search{width:100%}.channel-search input{font-size:16px}.streamer-panel .panel-foot{flex-wrap:wrap}}
+/* Settings → Plan (app/plan-panel.tsx) */
+.plan-choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.plan-choice{display:flex;flex-direction:column;gap:4px;padding:14px;border:1px solid var(--border);border-radius:10px;background:var(--panel)}
+.plan-choice>span{font-size:20px;font-weight:600}
+.plan-choice>small{color:var(--muted);margin-bottom:8px}
+.plan-choice>button{align-self:flex-start;display:inline-flex;align-items:center;gap:6px}
+.field-error{color:#ff8a80;margin:0}
