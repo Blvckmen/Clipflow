@@ -1,0 +1,1 @@
+ALTER TABLE `posts` ADD `queued_by_hand` integer DEFAULT false NOT NULL;

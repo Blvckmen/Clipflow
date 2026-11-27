@@ -1,0 +1,1 @@
+ALTER TABLE `preferences` ADD `import_clips` integer DEFAULT 0 NOT NULL;

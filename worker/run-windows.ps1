@@ -32,6 +32,21 @@ $node = (Get-Command node -ErrorAction SilentlyContinue).Source
 if (-not $node) { Write-Log "node was not found on PATH."; exit 1 }
 
 $delay = 5
+# Automatic updates (update.mjs): data\update\pending.json says the worker just updated itself. If the new version
+# exits within 2 minutes of starting twice, the files it replaced are put back from the backup it names (the worker
+# clears pending.json after 10 minutes of running).
+$pending = Join-Path $data "update\pending.json"
+$quickExits = 0
+function Undo-Update {
+  try {
+    $p = Get-Content $pending -Raw | ConvertFrom-Json
+    if ($p.backup -and (Test-Path $p.backup)) {
+      Copy-Item -Path (Join-Path $p.backup "*") -Destination $here -Recurse -Force
+      Write-Log "the update to $($p.to) kept failing on start; went back to $($p.from)"
+    }
+  } catch { Write-Log "couldn't undo the update: $_" }
+  Remove-Item $pending -Force -ErrorAction SilentlyContinue
+}
 while ($true) {
   # Keep the log under ~10 MB by rolling it over once.
   if ((Test-Path $log) -and (Get-Item $log).Length -gt 10MB) { Move-Item -Force $log "$log.1" }
@@ -39,6 +54,7 @@ while ($true) {
   $started = Get-Date
   & $node (Join-Path $here "main.mjs") *>> $log
   $code = $LASTEXITCODE
+  if ((Test-Path $pending) -and ((Get-Date) - $started).TotalMinutes -lt 2) { $quickExits++; if ($quickExits -ge 2) { Undo-Update; $quickExits = 0 } } else { $quickExits = 0 }
   # A run that lasted a while resets the backoff; quick repeated crashes back off up to 5 minutes.
   if (((Get-Date) - $started).TotalMinutes -gt 10) { $delay = 5 } else { $delay = [Math]::Min(300, $delay * 2) }
   Write-Log "worker exited with code $code; restarting in $delay s"

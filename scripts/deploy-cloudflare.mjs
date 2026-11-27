@@ -7,6 +7,8 @@ import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ZIP_KEY, packWorker } from "./pack-worker.mjs";
+import { stripe } from "../lib/stripe.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const checkOnly = process.argv.includes("--check");
@@ -26,6 +28,9 @@ const workerName = env.CLIPFLOW_WORKER_NAME || "clipflow";
 const dbName = env.CLIPFLOW_D1_NAME || "clipflow";
 const bucketName = env.CLIPFLOW_R2_BUCKET || "clipflow-clips";
 const allowed = (env.CLIPFLOW_ACCESS_EMAILS || "").split(",").map(s => s.trim()).filter(Boolean);
+// CLIPFLOW_PUBLIC=1: no Cloudflare Access in front of the dashboard; people sign in with Clipflow's own sign-in (Sign in
+// with Twitch, AUTH_MODE=app). Who may create a workspace is CLIPFLOW_SIGNUPS (open, or closed by default).
+const publicMode = env.CLIPFLOW_PUBLIC === "1";
 
 const ok = msg => console.log("  ok   " + msg), warn = msg => console.log("  warn " + msg);
 // Thrown rather than calling process.exit(): exiting with fetch sockets still closing crashes Node on Windows.
@@ -74,8 +79,10 @@ const org = await cf(acct + "/access/organizations");
 if (!org.ok || !org.result?.auth_domain) fail("Cloudflare Zero Trust is not set up (" + org.errors + "). Open dashboard → Zero Trust once, pick a team name and the Free plan.");
 const teamDomain = org.result.auth_domain;
 ok("Zero Trust team " + teamDomain);
-if (!allowed.length) fail("CLIPFLOW_ACCESS_EMAILS is empty. List the email addresses allowed to sign in (comma-separated) in .env.");
-ok(allowed.length + " allowed sign-in address(es)");
+if (!publicMode) {
+  if (!allowed.length) fail("CLIPFLOW_ACCESS_EMAILS is empty. List the email addresses allowed to sign in (comma-separated) in .env.");
+  ok(allowed.length + " allowed sign-in address(es)");
+}
 
 // 4. Database and storage
 const dbList = await cf(acct + "/d1/database?name=" + encodeURIComponent(dbName));
@@ -93,11 +100,41 @@ if (!apps.ok) fail("Cannot read Access applications (" + apps.errors + "). The t
 ok("Access applications readable");
 const instagramReady = !!(env.INSTAGRAM_APP_ID && env.INSTAGRAM_APP_SECRET);
 if (instagramReady) ok("Instagram app keys present; publishing will be enabled");
-else warn("INSTAGRAM_APP_ID / INSTAGRAM_APP_SECRET not set; deploying with Instagram publishing switched off (see DEPLOY.md).");
+else ok("No Instagram app keys; direct Instagram Login stays off (Zernio covers Instagram)");
+const zernioReady = !!env.ZERNIO_API_KEY;
+if (zernioReady) ok("Zernio API key present; posting to TikTok, Instagram and YouTube will be enabled");
+else warn("ZERNIO_API_KEY not set; deploying with publishing through Zernio switched off (see DEPLOY.md).");
+ok("Post captions are generated locally from transcripts; no AI API key needed.");
+// ClipFlow's own Twitch app, lent to workers for viewers' Twitch clips (app/api/worker/twitch), so customers need none.
+const twitchReady = !!(env.TWITCH_CLIENT_ID && env.TWITCH_CLIENT_SECRET);
+if (twitchReady) ok("Twitch app keys present; workers without their own can import viewers' Twitch clips, and people can sign in with Twitch");
+else warn("TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET not set; only workers with their own Twitch app can import viewers' clips (see DEPLOY.md).");
+// Sign in with Google (app/api/auth/google): the site's own Google OAuth client. Its redirect address must be
+// https://<site>/api/auth/google/callback in the Google Cloud console.
+const googleReady = !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+if (googleReady) ok("Google OAuth client present; people can sign in with Google");
+else ok("No GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET; Sign in with Google stays off");
+// Plans and billing (lib/plans.mjs): on only with a Stripe key. sk_test_ keys use Stripe's test mode (no real money).
+const stripeReady = !!env.STRIPE_SECRET_KEY;
+if (stripeReady) ok("Stripe key present (" + (env.STRIPE_SECRET_KEY.startsWith("sk_live_") ? "live" : "test mode") + "); plans and billing will be on");
+else ok("No STRIPE_SECRET_KEY; plans and billing stay off (nothing is limited)");
+if (publicMode) {
+  if (!twitchReady && !googleReady) fail("CLIPFLOW_PUBLIC=1 needs Sign in with Twitch (TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET) or Google (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET): without Access nobody could sign in.");
+  // Every workspace made through Access must have a sign-in (Twitch or Google) linked first, or its owner is locked
+  // out once Access is gone (Settings → Account & data → Link, on a deploy without CLIPFLOW_PUBLIC).
+  const unlinked = db ? await cf(acct + "/d1/database/" + db.uuid + "/query", { method: "POST", body: JSON.stringify({ sql: "SELECT count(*) AS n FROM (SELECT owner FROM preferences WHERE owner LIKE 'access:%' UNION SELECT owner FROM streamers WHERE owner LIKE 'access:%') WHERE owner NOT IN (SELECT owner FROM auth_identities)" }) }) : null;
+  const n = unlinked?.ok ? unlinked.result?.[0]?.results?.[0]?.n : db ? null : 0;
+  if (n == null) fail("Couldn't check that every workspace has a sign-in linked (" + (unlinked?.errors ?? "") + "). Deploy once without CLIPFLOW_PUBLIC (migration 0043), link Twitch or Google under Settings → Account & data, then try again.");
+  if (n > 0) fail(n + " workspace(s) made through Cloudflare Access have no Twitch or Google account linked; their owners couldn't sign in without Access. Link one under Settings → Account & data first.");
+  ok("public: no Access in front of the dashboard; sign-in with " + [twitchReady && "Twitch", googleReady && "Google"].filter(Boolean).join(" or ") + (env.CLIPFLOW_SIGNUPS === "open" ? ", sign-ups open" : ", sign-ups closed (CLIPFLOW_SIGNUPS=open opens them)"));
+}
 
 if (checkOnly) { console.log("\nAll prerequisites look good. Run without --check to deploy.\n"); return; }
 
-// 5. Build
+// 5. Build, with the worker download (Connect worker → Download the worker) packed first; it's uploaded to R2 after the
+// deploy (app/api/downloads/worker serves it to signed-in people).
+const pack = packWorker("https://" + host);
+ok("Worker download packed: " + pack.files + " files at " + pack.commit);
 console.log("\nBuilding…");
 const build = spawnSync(process.execPath, [join(root, "scripts/run-framework.mjs"), "build"], { cwd: root, stdio: "inherit", env });
 if (build.status !== 0) fail("build failed");
@@ -133,7 +170,16 @@ async function ensureApp(name, domain, policy) {
   ok("Access policy '" + policy.name + "' on " + domain);
   return app;
 }
-const dashboardApp = await ensureApp("Clipflow", host, { name: "Allowed people", decision: "allow", include: allowed.map(email => ({ email: { email } })) });
+let dashboardApp = null;
+if (publicMode) {
+  // The dashboard's own Access application goes; the bypasses for the worker API and media below stay (harmless).
+  const old = apps.result.find(a => a.domain === host);
+  if (old) {
+    const removed = await cf(acct + "/access/apps/" + old.id, { method: "DELETE" });
+    if (!removed.ok) fail("Could not remove the dashboard's Access application (" + removed.errors + ").");
+    ok("removed the dashboard's Access application: Clipflow's own sign-in now");
+  }
+} else dashboardApp = await ensureApp("Clipflow", host, { name: "Allowed people", decision: "allow", include: allowed.map(email => ({ email: { email } })) });
 await ensureApp("Clipflow worker API", host + "/api/worker", { name: "Worker token auth", decision: "bypass", include: [{ everyone: {} }] });
 // Platforms such as Instagram fetch videos from signed, expiring /media links; the signature is the authorisation.
 await ensureApp("Clipflow signed media", host + "/media", { name: "Signed links", decision: "bypass", include: [{ everyone: {} }] });
@@ -147,6 +193,18 @@ for (const name of ["TOKEN_KEY", "MEDIA_KEY"]) {
   ok("generated " + name + " and saved it to .env");
 }
 
+// Stripe's webhook to this site (app/api/stripe/webhook). Its signing secret is only shown when the endpoint is
+// created, so it's kept in .env like the keys above; without it, an old endpoint for this address is replaced.
+if (stripeReady && !env.STRIPE_WEBHOOK_SECRET) {
+  const url = "https://" + host + "/api/stripe/webhook";
+  const listed = await stripe(env.STRIPE_SECRET_KEY, "/webhook_endpoints?limit=100", null, { method: "GET" });
+  for (const old of (listed.data ?? []).filter(e => e.url === url)) await stripe(env.STRIPE_SECRET_KEY, "/webhook_endpoints/" + old.id, null, { method: "DELETE" });
+  const created = await stripe(env.STRIPE_SECRET_KEY, "/webhook_endpoints", { url, enabled_events: ["checkout.session.completed", "customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"], description: "Clipflow plans" });
+  env.STRIPE_WEBHOOK_SECRET = created.secret;
+  appendFileSync(join(root, ".env"), "\n# Generated by deploy-cloudflare.mjs (Stripe webhook signing secret); keep, and never commit.\nSTRIPE_WEBHOOK_SECRET=" + created.secret + "\n");
+  ok("created the Stripe webhook for " + url + " and saved its secret to .env");
+}
+
 // 7. Deploy config derived from the build output
 const built = JSON.parse(readFileSync(join(root, "dist/server/wrangler.json"), "utf8"));
 const deployConfig = {
@@ -156,7 +214,7 @@ const deployConfig = {
   ...(env.CLIPFLOW_HOSTNAME && { routes: [{ pattern: env.CLIPFLOW_HOSTNAME, custom_domain: true }] }),
   d1_databases: [{ binding: "DB", database_name: dbName, database_id: db.uuid, migrations_dir: "../../drizzle" }],
   r2_buckets: bucketReady ? [{ binding: "BUCKET", bucket_name: bucketName }] : [],
-  vars: { ...built.vars, AUTH_MODE: "access", CF_ACCESS_TEAM_DOMAIN: teamDomain, CF_ACCESS_AUD: dashboardApp.aud, PUBLIC_URL: "https://" + host, ...(instagramReady && { INSTAGRAM_APP_ID: env.INSTAGRAM_APP_ID }) },
+  vars: { ...built.vars, ...(publicMode ? { AUTH_MODE: "app" } : { AUTH_MODE: "access", CF_ACCESS_TEAM_DOMAIN: teamDomain, CF_ACCESS_AUD: dashboardApp.aud }), ...(env.CLIPFLOW_SIGNUPS && { CLIPFLOW_SIGNUPS: env.CLIPFLOW_SIGNUPS }), PUBLIC_URL: "https://" + host, WORKER_VERSION: pack.commit, ...(instagramReady && { INSTAGRAM_APP_ID: env.INSTAGRAM_APP_ID }), ...(twitchReady && { TWITCH_CLIENT_ID: env.TWITCH_CLIENT_ID }), ...(googleReady && { GOOGLE_CLIENT_ID: env.GOOGLE_CLIENT_ID }) },
   // The publisher runs once a minute.
   triggers: { crons: ["* * * * *"] },
 };
@@ -172,9 +230,15 @@ wrangler(["deploy", "--config", deployConfigPath], auth);
 console.log("\nUploading secrets…");
 const secretsFile = join(root, "dist/server/secrets.json");
 try {
-  writeFileSync(secretsFile, JSON.stringify({ TOKEN_KEY: env.TOKEN_KEY, MEDIA_KEY: env.MEDIA_KEY, ...(instagramReady && { INSTAGRAM_APP_SECRET: env.INSTAGRAM_APP_SECRET }) }));
+  writeFileSync(secretsFile, JSON.stringify({ TOKEN_KEY: env.TOKEN_KEY, MEDIA_KEY: env.MEDIA_KEY, ...(instagramReady && { INSTAGRAM_APP_SECRET: env.INSTAGRAM_APP_SECRET }), ...(zernioReady && { ZERNIO_API_KEY: env.ZERNIO_API_KEY }), ...(twitchReady && { TWITCH_CLIENT_SECRET: env.TWITCH_CLIENT_SECRET }), ...(googleReady && { GOOGLE_CLIENT_SECRET: env.GOOGLE_CLIENT_SECRET }), ...(stripeReady && { STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET: env.STRIPE_WEBHOOK_SECRET }) }));
   wrangler(["secret", "bulk", secretsFile, "--config", deployConfigPath], auth);
 } finally { rmSync(secretsFile, { force: true }); }
+
+// The worker download, for app/api/downloads/worker. Without R2 there's nowhere to keep it; the route says so.
+if (bucketReady) {
+  console.log("\nUploading the worker download…");
+  wrangler(["r2", "object", "put", bucketName + "/" + ZIP_KEY, "--file", pack.path, "--content-type", "application/zip", "--remote"], auth);
+} else warn("no R2 bucket: the worker download isn't available from the dashboard");
 
 // 8. Smoke test: worker API must answer with the app's own 401; the dashboard must be behind Access.
 console.log("\nChecking the live site…");
@@ -190,7 +254,8 @@ for (let attempt = 0; attempt < 12 && !(workerOk && dashboardOk && mediaOk); att
     // would still be safe (no data), but means Access is not in front of the site yet.
     const d = await fetch("https://" + host + "/api/dashboard", { redirect: "manual" });
     lastDashboard = d.status + " " + (d.headers.get("location") ?? "");
-    dashboardOk = d.status === 302 && lastDashboard.includes(".cloudflareaccess.com");
+    // Public: the app itself answers a signed-out visit (401, with where to sign in).
+    dashboardOk = publicMode ? d.status === 401 : d.status === 302 && lastDashboard.includes(".cloudflareaccess.com");
     // An unsigned media link must reach the app (and be refused by it), not the Access login page.
     const m = await fetch("https://" + host + "/media/00000000-0000-4000-8000-000000000000.mp4", { redirect: "manual" });
     lastMedia = m.status + " " + (m.headers.get("location") ?? "");
@@ -199,8 +264,8 @@ for (let attempt = 0; attempt < 12 && !(workerOk && dashboardOk && mediaOk); att
 }
 if (workerOk) ok("worker API reachable without sign-in (bearer token required)");
 else warn("worker API check: " + lastWorker);
-if (dashboardOk) ok("dashboard is behind the Access login page");
-else warn("dashboard check (expected a redirect to " + teamDomain + "): " + lastDashboard);
+if (dashboardOk) ok(publicMode ? "dashboard asks signed-out visitors to sign in" : "dashboard is behind the Access login page");
+else warn(publicMode ? "dashboard check (expected the app's own 401): " + lastDashboard : "dashboard check (expected a redirect to " + teamDomain + "): " + lastDashboard);
 if (mediaOk) ok("signed media links bypass sign-in (unsigned ones are refused)");
 else warn("media link check (expected 404 from the app): " + lastMedia);
 console.log("\nDone: https://" + host + "\n" + (workerOk && dashboardOk && mediaOk ? "" : "Some checks did not pass yet; Access changes can take a minute. Re-run with --check or open the site.\n"));

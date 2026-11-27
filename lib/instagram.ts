@@ -22,8 +22,10 @@ async function call(url: string, init?: RequestInit) {
   return body;
 }
 
-export function authorizeUrl(c: InstagramConfig, redirectUri: string, state: string) {
-  const query = new URLSearchParams({ client_id: c.appId, redirect_uri: redirectUri, response_type: "code", scope: SCOPES, state });
+// `forceReauth` makes Instagram ask who is signing in, so a second account can be connected instead of silently
+// reusing the one the browser is already signed in to.
+export function authorizeUrl(c: InstagramConfig, redirectUri: string, state: string, forceReauth = false) {
+  const query = new URLSearchParams({ client_id: c.appId, redirect_uri: redirectUri, response_type: "code", scope: SCOPES, state, ...(forceReauth && { force_reauth: "true" }) });
   return c.authUrl + "/oauth/authorize?" + query;
 }
 

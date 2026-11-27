@@ -1,0 +1,1 @@
+ALTER TABLE `streamers` ADD `daily_limit` integer;
