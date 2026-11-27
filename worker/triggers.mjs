@@ -80,7 +80,8 @@ export function crowdMoments(list, { seen, starts, earliestMs, nowMs }) {
 // clip) first, then chat spikes by how far chat jumped (strength, media.mjs lift), so in a backlog (a big channel
 // spiking faster than the PC can make clips) the biggest moments come out first rather than in arrival order. Ties
 // keep arrival order.
-const chosen = job => job.reason === "command" || job.reason === "viewer" || job.reason === "crowd";
+// manual: a moment picked by hand in a recording (often "Clip this and edit", with someone waiting for it).
+const chosen = job => job.reason === "command" || job.reason === "viewer" || job.reason === "crowd" || job.reason === "manual";
 const pull = job => chosen(job) ? 100 : (Number.isFinite(job.strength) ? job.strength : 0);
 export function pickJob(ready) {
   let best = null;

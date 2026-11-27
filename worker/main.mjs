@@ -997,6 +997,7 @@ async function clipFromRecording(row, start, end, { reason, exact, tracker }) {
   jobs.push({ queuedAt: Date.now(), id, dir, raw, streamer, settings: exact ? { ...settings, duration: length } : settings, style, reason, fromRecording: true, exact, tracker,
     chat: Array.from({ length: Math.ceil(to - from) + 10 }, (_, i) => chat[Math.floor(from) + i] ?? 0), focusFrom: start - from, focusTo: end - from });
   void processJobs();
+  return id;
 }
 
 // Picks and queues the `count` best moments of a recording. Returns how many were queued.
@@ -1023,7 +1024,8 @@ function settleRequest(tracker, made, why) {
   tracker.left--;
   if (made) tracker.made++; else if (why) tracker.errors.push(why);
   if (tracker.left > 0) return;
-  void reportRequest(tracker.id, tracker.made ? { state: "done", clips: tracker.made } : { state: "failed", error: String(tracker.errors[0] ?? "No clip could be made").slice(0, 300) });
+  // clipId: the clip a picked moment became, so "Clip this and edit" can open the editor on it.
+  void reportRequest(tracker.id, tracker.made ? { state: "done", clips: tracker.made, ...(tracker.clipId && { clipId: tracker.clipId }) } : { state: "failed", error: String(tracker.errors[0] ?? "No clip could be made").slice(0, 300) });
 }
 
 // Clips asked for in the dashboard from a recording: one picked moment, or the best few.
@@ -1041,7 +1043,7 @@ async function takeRequests(list) {
     await reportRequest(r.id, { state: "working" });
     const tracker = { id: r.id, left: 1, made: 0, errors: [] };
     try {
-      if (r.kind === "moment") await clipFromRecording(row, r.start, Math.min(r.end, row.duration ?? r.end), { reason: "manual", exact: true, tracker });
+      if (r.kind === "moment") tracker.clipId = await clipFromRecording(row, r.start, Math.min(r.end, row.duration ?? r.end), { reason: "manual", exact: true, tracker });
       else if (!await clipBestMoments(row, r.count, tracker)) void reportRequest(r.id, { state: "failed", error: "The recording is too short for a clip that long." });
     } catch (error) { settleRequest(tracker, false, error.message); }
   }

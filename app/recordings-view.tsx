@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Clock3, Download, Film, Link2, Loader2, Radio, Scissors, Search, Sparkles, Trash2 } from "lucide-react";
+import { Clock3, Download, Film, Link2, Loader2, Pencil, Radio, Scissors, Search, Sparkles, Trash2 } from "lucide-react";
 import { UploadRecording } from "./upload-recording";
 import { PLATFORM_NAMES, videoLink } from "../worker/video-link.mjs";
 // "queued" and "importing": a video pasted below, waiting for the worker PC and then downloading.
@@ -8,7 +8,7 @@ export type Recording = { id: string; streamer_id: string; streamer: string | nu
 type StreamerChoice = { id: string; name: string };
 const isUpload = (r: Recording) => r.source_url === "upload:" + r.id;
 const sourceName = (r: Recording) => { const link = r.source_url ? videoLink(r.source_url) as { platform: keyof typeof PLATFORM_NAMES } | null : null; return link ? PLATFORM_NAMES[link.platform] : null; };
-export type RecordingRequest = { id: string; recording_id: string; kind: "moment" | "best"; start: number | null; end: number | null; count: number | null; state: "queued" | "working" | "done" | "failed"; error: string | null; clips: number; created_at: string };
+export type RecordingRequest = { id: string; recording_id: string; clip_id?: string | null; kind: "moment" | "best"; start: number | null; end: number | null; count: number | null; state: "queued" | "working" | "done" | "failed"; error: string | null; clips: number; created_at: string };
 type Moment = { start: number; end: number; score: number; why: string[] };
 type Signals = { step: number; energy: number[]; chat: number[]; moments?: Moment[] };
 type Mutate = (body: unknown) => Promise<false | { message: string }>;
@@ -67,9 +67,10 @@ function ImportVideo({ streamers, busy, duration, mutate, onImported }: { stream
   </form>;
 }
 
-export function RecordingsView({ recordings, requests, streamers, storage, busy, workerOnline, duration, mutate, onRefresh, onOpenLibrary }: {
+// onClipAndEdit: "Clip this and edit" (the workspace opens the editor on the clip once it's made); editWaiting: one is being made.
+export function RecordingsView({ recordings, requests, streamers, storage, busy, workerOnline, duration, mutate, onRefresh, onOpenLibrary, onClipAndEdit, editWaiting = false }: {
   recordings: Recording[]; requests: RecordingRequest[]; streamers: StreamerChoice[]; storage: boolean; busy: boolean; workerOnline: boolean; duration: number;
-  mutate: Mutate; onRefresh: () => void; onOpenLibrary: () => void;
+  mutate: Mutate; onRefresh: () => void; onOpenLibrary: () => void; onClipAndEdit?: (recordingId: string, start: number, end: number) => Promise<boolean>; editWaiting?: boolean;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const open = recordings.find(r => r.id === openId) ?? null;
@@ -96,7 +97,7 @@ export function RecordingsView({ recordings, requests, streamers, storage, busy,
         </button>; })}
       <div className="panel-foot"><span className="small-dot" />Kept until the dates shown, then deleted from the worker PC and here. Change it in Settings.</div>
     </section>
-    {open ? <RecordingPlayer key={open.id} r={open} requests={requests.filter(q => q.recording_id === open.id)} storage={storage} busy={busy} workerOnline={workerOnline} duration={duration} mutate={mutate} onOpenLibrary={onOpenLibrary} onDeleted={() => setOpenId(null)} />
+    {open ? <RecordingPlayer key={open.id} r={open} requests={requests.filter(q => q.recording_id === open.id)} storage={storage} busy={busy} workerOnline={workerOnline} duration={duration} mutate={mutate} onOpenLibrary={onOpenLibrary} onClipAndEdit={onClipAndEdit} editWaiting={editWaiting} onDeleted={() => setOpenId(null)} />
       : <section className="panel"><div className="empty tall"><div className="empty-icon"><Scissors size={28} /></div><h3>Choose a recording</h3><p>Watch it, see where chat and the audio got loud, and mark the moments you want as clips.</p></div></section>}
   </div>;
 }
@@ -158,9 +159,9 @@ function TranscriptSearch({ recordingId, total, duration, busy, mutate, onWatch 
   </div>;
 }
 
-function RecordingPlayer({ r, requests, storage, busy, workerOnline, duration, mutate, onOpenLibrary, onDeleted }: {
+function RecordingPlayer({ r, requests, storage, busy, workerOnline, duration, mutate, onOpenLibrary, onDeleted, onClipAndEdit, editWaiting = false }: {
   r: Recording; requests: RecordingRequest[]; storage: boolean; busy: boolean; workerOnline: boolean; duration: number;
-  mutate: Mutate; onOpenLibrary: () => void; onDeleted: () => void;
+  mutate: Mutate; onOpenLibrary: () => void; onDeleted: () => void; onClipAndEdit?: (recordingId: string, start: number, end: number) => Promise<boolean>; editWaiting?: boolean;
 }) {
   const video = useRef<HTMLVideoElement>(null), strip = useRef<HTMLDivElement>(null);
   const [signals, setSignals] = useState<Signals | null>(null), [at, setAt] = useState(0);
@@ -216,7 +217,9 @@ function RecordingPlayer({ r, requests, storage, busy, workerOnline, duration, m
         <div className="moment-actions">
           <small className={len && !valid ? "engine-error" : "muted"}>{len ? len + " seconds" + (valid ? "" : " · clips are 15 to 90 seconds") : "Move to a moment, then press Start here (the end is set " + duration + "s later)."}</small>
           {start != null && <button type="button" className="text-button" onClick={() => seek(start)}>Play from start</button>}
-          <button className="primary" disabled={busy || !valid || (total > 0 && (start ?? 0) >= total)} onClick={async () => { if (await mutate({ action: "makeClip", recordingId: r.id, start, end })) { setStart(null); setEnd(null); setStartText(""); setEndText(""); } }}><Scissors size={15} />Make clip</button>
+          <button className="secondary" disabled={busy || !valid || (total > 0 && (start ?? 0) >= total)} onClick={async () => { if (await mutate({ action: "makeClip", recordingId: r.id, start, end })) { setStart(null); setEnd(null); setStartText(""); setEndText(""); } }}><Scissors size={15} />Make clip</button>
+          {/* Made first, then the editor opens on it (it needs clip storage to show the video). */}
+          {onClipAndEdit && storage && <button className="primary" disabled={busy || editWaiting || !valid || (total > 0 && (start ?? 0) >= total)} title="Cut this moment first, then open it in the editor" onClick={async () => { if (start != null && end != null && await onClipAndEdit(r.id, start, end)) { setStart(null); setEnd(null); setStartText(""); setEndText(""); } }}><Pencil size={15} />{editWaiting ? "Making your clip…" : "Clip this and edit"}</button>}
         </div>
       </div>}
       {r.state !== "failed" && <div className="best-moments"><Sparkles size={18} /><div><strong>Let Clipflow choose</strong><small>Finds the loudest, busiest moments{signals?.chat.some(c => c > 0) ? " (audio and chat)" : ""} and makes {duration}s clips of them.</small></div>

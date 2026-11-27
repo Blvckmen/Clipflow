@@ -704,9 +704,12 @@ describe("recordings", () => {
     const moment = asks.find(q => q.kind === "moment");
     assert.deepEqual([moment.start, moment.end], [100, 130]);
     assert.equal((await post({ op: "request", id: moment.id, state: "working" })).status, 200);
-    assert.equal((await post({ op: "request", id: moment.id, state: "done", clips: 1 })).status, 200);
+    // The worker says which clip the moment became, so "Clip this and edit" can open the editor on it.
+    const madeClip = randomUUID();
+    assert.equal((await post({ op: "request", id: moment.id, state: "done", clips: 1, clipId: madeClip })).status, 200);
     const done = (await dash()).body.recordingRequests.find(q => q.id === moment.id);
-    assert.deepEqual([done.state, done.clips], ["done", 1]);
+    assert.deepEqual([done.state, done.clips, done.clip_id], ["done", 1, madeClip]);
+    assert.equal((await post({ op: "request", id: moment.id, state: "done", clipId: "not-a-uuid" })).status, 400);
     assert.ok(!(await (await worker("/api/worker/config")).json()).clipRequests.some(q => q.id === moment.id), "finished requests aren't sent again");
     // A clip cut from it reports as "manual".
     const bytes = Buffer.alloc(4096, 7);

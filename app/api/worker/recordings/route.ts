@@ -12,7 +12,7 @@ const bodySchema=z.discriminatedUnion("op",[
   signals:z.object({step:z.number().int().min(1).max(3600),energy:z.array(z.number().min(0).max(1)).max(2100),chat:z.array(z.number().int().min(0)).max(2100),
    moments:z.array(z.object({start:z.number().int().min(0),end:z.number().int().min(1),score:z.number().min(0).max(1),why:z.array(z.string().max(60)).max(4)})).max(20).optional()}).nullish(),
   error:z.string().max(300).nullish()}),
- z.object({op:z.literal("request"),id,state:z.enum(["working","done","failed"]),clips:z.number().int().min(0).max(50).optional(),error:z.string().max(300).optional()}),
+ z.object({op:z.literal("request"),id,state:z.enum(["working","done","failed"]),clips:z.number().int().min(0).max(50).optional(),error:z.string().max(300).optional(),clipId:z.string().uuid().optional()}),
 ]);
 export async function POST(request:Request){
  try{
@@ -21,7 +21,8 @@ export async function POST(request:Request){
   let body;try{body=bodySchema.parse(await request.json());}catch{return Response.json({error:"Invalid recording report."},{status:400});}
   const now=new Date().toISOString();
   if(body.op==="request"){
-   await db.prepare("UPDATE recording_requests SET state=?,clips=coalesce(?,clips),error=?,updated_at=? WHERE id=? AND owner=?").bind(body.state,body.clips??null,body.error??null,now,body.id,owner).run();
+   // clipId: the clip a picked moment became ("Clip this and edit" opens the editor on it).
+   await db.prepare("UPDATE recording_requests SET state=?,clips=coalesce(?,clips),error=?,clip_id=coalesce(?,clip_id),updated_at=? WHERE id=? AND owner=?").bind(body.state,body.clips??null,body.error??null,body.clipId??null,now,body.id,owner).run();
    return Response.json({ok:true});
   }
   const streamer=await db.prepare("SELECT name FROM streamers WHERE id=? AND owner=?").bind(body.streamerId,owner).first<{name:string}>();

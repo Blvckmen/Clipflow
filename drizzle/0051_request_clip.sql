@@ -1,0 +1,1 @@
+ALTER TABLE `recording_requests` ADD `clip_id` text;

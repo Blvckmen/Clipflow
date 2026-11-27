@@ -212,6 +212,8 @@ export const recordingRequests=sqliteTable("recording_requests",{
  start:integer("start"),end:integer("end"),count:integer("count"),
  state:text("state").notNull().default("queued"),error:text("error"),clips:integer("clips").notNull().default(0),
  createdAt:text("created_at").notNull(),updatedAt:text("updated_at").notNull(),
+ // The clip a picked moment became (reported by the worker), so "Clip this and edit" can open the editor on it.
+ clipId:text("clip_id"),
 },t=>[index("recording_requests_recording").on(t.recordingId),index("recording_requests_owner_state").on(t.owner,t.state)]);
 // Split-screen background videos a workspace has uploaded (stored in R2 under backgrounds/<id>.mp4).
 export const backgrounds=sqliteTable("backgrounds",{

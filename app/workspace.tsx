@@ -174,6 +174,9 @@ export default function Dashboard(){
  },[dialog]);
  // Settings in categories (app/settings-nav.tsx), and this browser's own preferences (Settings → This device).
  const [settingsTab,setSettingsTab]=useState<SettingsTab>("clips"),device=useDevicePrefs();
+ // Recordings → "Clip this and edit": the request asked for (the moment requests that existed before it are skipped),
+ // until its clip is made and listed with its edit; then the editor opens on it.
+ const [editWait,setEditWait]=useState<{recordingId:string;start:number;before:string[]}|null>(null);
  // Returning from Instagram sign-in: show the outcome once, then tidy the address bar.
  useEffect(()=>{
   const params=new URLSearchParams(window.location.search),ok=params.get("connected"),problem=params.get("connect_error")??params.get("signin_error"),who=params.get("account");
@@ -224,6 +227,18 @@ export default function Dashboard(){
  // Older clips loaded with "Load older clips" (the dashboard sends the newest 200), kept across refreshes.
  const [older,setOlder]=useState<{clips:Clip[];more:boolean}>({clips:[],more:true}),[loadingOlder,setLoadingOlder]=useState(false);
  const clips=useMemo(()=>{const fresh=data?.clips||[],ids=new Set(fresh.map(c=>c.id));return [...fresh,...older.clips.filter(c=>!ids.has(c.id))].filter(c=>!hidden.includes(c.id));},[data?.clips,older.clips,hidden]);
+ // "Clip this and edit": once the moment asked for is made (its request names the clip) and the clip is listed with
+ // its edit, open the editor on it. A failed request says why. Look every 10 seconds meanwhile.
+ useEffect(()=>{
+  if(!editWait||!data)return;
+  const q=(data.recordingRequests??[]).find(x=>x.recording_id===editWait.recordingId&&x.kind==="moment"&&x.start===editWait.start&&!editWait.before.includes(x.id));
+  if(!q)return;
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  if(q.state==="failed"){setEditWait(null);setError("That clip couldn't be made: "+(q.error??"unknown reason")+".");return;}
+  const clip=q.clip_id?clips.find(c=>c.id===q.clip_id):null;
+  if(clip?.editable){setEditWait(null);setEditing(clip.id);}
+ },[editWait,data,clips]);
+ useEffect(()=>{if(!editWait)return;const t=setInterval(()=>{if(document.visibilityState==="visible")void load(true);},10_000);return()=>clearInterval(t);},[editWait,load]);
  const canLoadOlder=!!data?.moreClips&&older.more;
  const loadOlder=async()=>{
   const last=[...(data?.clips||[]),...older.clips].at(-1);if(!last||loadingOlder)return;
@@ -396,7 +411,7 @@ export default function Dashboard(){
  {settingsTab==="device"&&<DeviceSettings {...device}/>}
  {settingsTab==="account"&&data?.account&&(data.account.twitch||data.account.session)&&<section className="panel settings-group"><div className="group-head"><Link2 size={18}/><div><h2>Sign-in</h2><p>How you sign in to this workspace.</p></div></div><div className="group-body">
   {data.account.twitch&&<div className="settings-row"><div><strong>Sign in with Twitch</strong><small>{data.account.twitchLogin!==null?<>Linked{data.account.twitchLogin?<> to <b>@{data.account.twitchLogin}</b></>:null}. You can sign in with it.</>:"Link your Twitch account to sign in with it. Your clips, channels and settings stay in this workspace."}</small></div>{data.account.twitchLogin===null?<a className="primary button-link" href="/api/auth/twitch/start?return_to=/" target="_top">Link Twitch</a>:<span className="settings-state">Linked</span>}</div>}
-  {data.account.session&&<form method="post" action="/api/auth/signout" className="settings-row"><div><strong>Sign out</strong><small>End this browser's session. Your workspace stays as it is.</small></div><button className="secondary" type="submit">Sign out</button></form>}
+  {data.account.session&&<form method="post" action="/api/auth/signout" className="settings-row"><div><strong>Sign out</strong><small>End this browser&apos;s session. Your workspace stays as it is.</small></div><button className="secondary" type="submit">Sign out</button></form>}
  </div></section>}
  {settingsTab==="account"&&data&&<AccountData/>}
  <form onSubmit={async e=>{e.preventDefault();await mutate({action:"settings",settings:draft});}} className="settings-groups">
@@ -447,7 +462,8 @@ export default function Dashboard(){
   {posts.length?<div className="table-scroll"><table className="phone-cards"><thead><tr><th>Clip</th><th>Account</th><th>Status</th><th>Queued</th><th>Result</th><th></th></tr></thead><tbody>{posts.map(p=><tr key={p.id}><td className="c-clip"><strong>{p.streamer||"Removed streamer"}</strong></td><td className="c-account"><span className="inline-brand"><Brand name={platformName(p.platform)}/>{p.account?"@"+p.account:"Removed account"}</span></td><td className="c-state"><span className={"tag "+postStates[p.state].tone}>{postStates[p.state].label}</span>{(p.round??0)>0&&<small className="muted"> repost</small>}{p.draft&&<small className="muted" title="Sent to TikTok drafts: finish it in the TikTok app"> · to drafts</small>}</td><td className="c-when" data-label="Queued">{when(p.created_at)}</td><td className="c-result">{p.state==="published"?(p.permalink?<a href={p.permalink} target="_blank" rel="noreferrer">View post <ExternalLink size={11}/></a>:"Posted "+(p.published_at?when(p.published_at):"")):p.error?<span className="muted post-error" title={p.error}>{p.error}</span>:<span className="muted">—</span>}</td><td className="c-act">{p.state==="review"&&<div className="row-actions"><button className="secondary" disabled={busy} title="Post it when the account has room" onClick={()=>void reviewPosts([p.id],"queue")}>Queue</button><button className="secondary" disabled={busy} title="Don't post this clip to this account" onClick={()=>void reviewPosts([p.id],"skip")}>Skip</button></div>}{p.state==="failed"&&<button className="secondary" disabled={busy} onClick={()=>void mutate({action:"retryPost",id:p.id})}>Retry</button>}{p.state==="published"&&clips.some(c=>c.id===p.clip_id&&c.stored)&&<button className="secondary" disabled={busy} title="Post this clip again, e.g. after editing it" onClick={()=>setDialog("post:"+p.clip_id)}>Post again</button>}</td></tr>)}</tbody></table></div>
   :<div className="empty tall"><div className="empty-icon"><Clapperboard size={30}/></div><h3>{accounts.length?"Nothing queued yet":"Connect an account to start posting"}</h3><p>{accounts.length?(streamers.some(s=>s.accounts.length)?"Approved clips appear here as they are queued for their streamer's accounts.":"Pick which account posts each streamer's clips under Channels → Posts to."):canConnect?"Connect your accounts under Accounts.":"Publishing needs a Zernio API key on this site; see DEPLOY.md."}</p><button className="secondary" onClick={()=>changeView(accounts.length?"Streamers":"Connections")}>{accounts.length?"Open channels":"Open accounts"}</button></div>}</section></>}
  {view==="Highlights"&&data&&<HighlightsPanel highlights={(data as {highlights?:Highlight[]}).highlights??[]} streamers={streamers} busy={busy} workerOnline={!!engine?.connected} weekly={!!(settings as {weeklyHighlights?:boolean}).weeklyHighlights} mutate={body=>mutate(body)}/>}
- {view==="Recordings"&&<RecordingsView recordings={recordings} requests={data?.recordingRequests??[]} streamers={streamers.map(s=>({id:s.id,name:s.name}))} storage={!!data?.storage} busy={busy} workerOnline={!!engine?.connected} duration={settings.duration} mutate={mutate} onRefresh={load} onOpenLibrary={()=>changeView("Clip library")}/>}
+ {view==="Recordings"&&editWait&&<div className="notice edit-wait" role="status"><div><strong>Making your clip</strong><p>It&apos;s cut ahead of the automatic clips. The editor opens on it here as soon as it&apos;s ready, usually within a couple of minutes.</p></div><button className="secondary" onClick={()=>setEditWait(null)}>Don&apos;t open it</button></div>}
+ {view==="Recordings"&&<RecordingsView recordings={recordings} requests={data?.recordingRequests??[]} streamers={streamers.map(s=>({id:s.id,name:s.name}))} storage={!!data?.storage} busy={busy} workerOnline={!!engine?.connected} duration={settings.duration} mutate={mutate} onRefresh={load} onOpenLibrary={()=>changeView("Clip library")} editWaiting={!!editWait} onClipAndEdit={async(recordingId,start,end)=>{const before=(data?.recordingRequests??[]).map(q=>q.id);if(!await mutate({action:"makeClip",recordingId,start,end}))return false;setEditWait({recordingId,start,before});return true;}}/>}
  {view==="Calendar"&&<PublishingCalendar accounts={accounts} brand={name=><Brand name={name}/>} platformName={platformName} busy={busy} mutate={body=>mutate(body)} onDataChanged={()=>void load(true)}/>}
  {view==="Analytics"&&<AnalyticsView analytics={analytics??null} hasAccounts={accounts.length>0} brand={name=><Brand name={name}/>} platformName={platformName} onConnect={()=>changeView("Connections")}/>}
  

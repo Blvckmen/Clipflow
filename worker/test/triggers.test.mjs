@@ -78,6 +78,7 @@ test("in a backlog the biggest moments are made first: chosen ones, then the str
   // Someone typed !clip or a viewer clipped it: ahead of any chat spike.
   assert.equal(pickJob([job("a", { strength: 19 }), job("v", { reason: "viewer" })]).id, "v");
   assert.equal(pickJob([job("a", { strength: 19 }), job("c", { reason: "crowd" })]).id, "c", "a moment viewers clipped live comes before chat spikes");
+  assert.equal(pickJob([job("a", { strength: 19 }), job("m", { reason: "manual" })]).id, "m", "a moment picked by hand (Clip this and edit) comes before chat spikes");
   assert.equal(pickJob([job("a", { strength: 19 }), job("k", { reason: "command", strength: 1 })]).id, "k");
   // Ties (or no strength measured) keep arrival order.
   assert.equal(pickJob([job("a", { strength: 3 }), job("b", { strength: 3 })]).id, "a");
