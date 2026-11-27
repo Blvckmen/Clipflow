@@ -2,7 +2,8 @@ import { currentUser, googleSignIn, signedInWithApp, signInPath, twitchSignIn } 
 import { bucket, database, clipKey, sourceKey, highlightKey } from "../../../db/raw";
 import { defaultCaption, defaults, parseStreamer, readWorkerSettings, settingsSchema, workerSettingsRev, streamerViewerClipsSchema } from "../../../lib/clipflow";
 import { readStreamerViewerClips, readViewerClips } from "../../../lib/viewer-clips.mjs";
-import { instagramConfig } from "../../../lib/publisher";
+import { instagramConfig, postingHours } from "../../../lib/publisher";
+import { MAX_SPREAD_DAYS, spreadTimes } from "../../../lib/posting-plan.mjs";
 import { connectionFor, connections, hashKey, listKeys, siteConnection, zernioApiUrl } from "../../../lib/zernio-keys";
 import { deleteAccount, deletePost, verifyKey, VIDEO_PLATFORMS, ZernioError } from "../../../lib/zernio";
 import { syncZernioAccounts } from "../../../lib/zernio-sync";
@@ -32,6 +33,9 @@ import { PLANS } from "../../../lib/plans.mjs";
 import { z } from "zod";
 const accountIds=z.array(z.string().uuid()).max(50).transform(x=>[...new Set(x)]);
 const clipIds=z.array(z.string().uuid()).min(1).max(200).transform(x=>[...new Set(x)]);
+// Post… → when: at a time (all of them from then, the account's gap and limits still apply), or spread over a number
+// of days through each account's posting hours (lib/posting-plan.mjs spreadTimes). Left out: as soon as there's room.
+const postSchedule=z.union([z.object({at:z.string().datetime()}),z.object({days:z.number().int().min(1).max(MAX_SPREAD_DAYS)})]);
 const captureMode=z.enum(["clip","record","both"]);
 // A streamer's publishing mode: review first, post directly, or the workspace's ("workspace" is stored as null).
 const publishMode=z.enum(["workspace","review","automatic"]);
@@ -75,9 +79,9 @@ const actionSchema=z.discriminatedUnion("action",[
  z.object({action:z.literal("markPosted"),id:z.string().uuid(),accountId:z.string().uuid()}),
  // Posts a clip's current version to the chosen accounts now: its first post, or again after an edit.
  // draft: send to the accounts' TikTok drafts (to finish in the app) instead of publishing; TikTok accounts only.
- z.object({action:z.literal("postClip"),id:z.string().uuid(),accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)]),draft:z.boolean().optional()}),
+ z.object({action:z.literal("postClip"),id:z.string().uuid(),accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)]),draft:z.boolean().optional(),schedule:postSchedule.optional()}),
  // Bulk actions on clips picked in the library: post them all to the chosen accounts, or review, edit or delete them.
- z.object({action:z.literal("postClips"),ids:clipIds,accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)]),draft:z.boolean().optional()}),
+ z.object({action:z.literal("postClips"),ids:clipIds,accounts:z.array(z.string().uuid()).min(1).max(50).transform(x=>[...new Set(x)]),draft:z.boolean().optional(),schedule:postSchedule.optional()}),
  // hookOn/hookOff: show or hide each clip's opening title (one is written from the transcript where there is none);
  // textStyle: the subtitle and title look of clip `from`, or without it the clip's channel look.
  z.object({action:z.literal("bulkClips"),ids:clipIds,op:z.enum(["approve","reject","pending","delete","captionsOn","captionsOff","frame","hookOn","hookOff","textStyle"]),from:z.string().uuid().optional(),styleId:z.string().uuid().optional(),frame:z.enum(["blur","crop","fit","split","phone"]).optional()}),
@@ -439,12 +443,30 @@ export async function POST(request:Request){
     ?"Disconnected "+(VIDEO_PLATFORMS[account.platform]??account.platform)+" account @"+account.username+"."
     :"Disconnected Instagram account @"+account.username+". Remove Clipflow under Instagram settings → Apps and websites to revoke its access fully.";
   }
+  // When each of `count` new posts goes out on each account, for Post… → when (postSchedule); null: as soon as there's
+  // room. Scheduled posts are queued by hand (they skip the posting hours, keep the gap and limits) with scheduled_for,
+  // so the calendar shows them as scheduled and they can be moved there.
+  const scheduleTimes=async(sched:z.infer<typeof postSchedule>|undefined,accounts:{id:string;options:string|null}[],count:number):Promise<Record<string,string[]>|null>=>{
+   if(!sched)return null;
+   const now=Date.now();
+   if("at" in sched){const at=new Date(Math.max(Date.parse(sched.at),now)).toISOString();return Object.fromEntries(accounts.map(a=>[a.id,Array(count).fill(at)]));}
+   const out:Record<string,string[]>={};
+   for(const a of accounts){const o=readOptions(a.options);out[a.id]=spreadTimes({count,days:sched.days,now,hours:await postingHours(db,a.id,o,now),timeZone:o.timeZone}).map(t=>new Date(t).toISOString());}
+   return out;
+  };
+  const whenText=(times:Record<string,string[]>|null)=>{
+   const all=times?Object.values(times).flat().sort():[];
+   if(!all.length)return "";
+   const first=Date.parse(all[0]),last=Date.parse(all.at(-1)!),days=Math.round((last-first)/86_400_000)+1;
+   return first===last?" at the chosen time":" from "+new Date(first).toISOString().slice(0,16).replace("T"," ")+" UTC, spread over "+days+" day"+(days===1?"":"s");
+  };
   if(payload.action==="postClip"){
    const clip=await db.prepare("SELECT c.id,c.review,c.file_key,c.render_state,s.name FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(payload.id,owner).first<{id:string;review:string;file_key:string|null;render_state:string|null;name:string|null}>();
    if(!clip)return Response.json({error:"Clip not found."},{status:404});
    if(!clip.file_key)return Response.json({error:"This clip's video isn't uploaded yet, so it can't be posted."},{status:409});
-   const {results:chosen}=await db.prepare("SELECT id,username,platform,status FROM accounts WHERE owner=? AND id IN ("+payload.accounts.map(()=>"?").join(",")+")").bind(owner,...payload.accounts).all<{id:string;username:string;platform:string;status:string}>();
+   const {results:chosen}=await db.prepare("SELECT id,username,platform,status,options FROM accounts WHERE owner=? AND id IN ("+payload.accounts.map(()=>"?").join(",")+")").bind(owner,...payload.accounts).all<{id:string;username:string;platform:string;status:string;options:string|null}>();
    if(chosen.length!==payload.accounts.length)return Response.json({error:"One of those accounts is no longer connected."},{status:404});
+   const times=await scheduleTimes(payload.schedule,chosen,1),due=(a:{id:string})=>times?.[a.id]?.[0]??null;
    // Only TikTok has an app drafts inbox; drafts skip the other accounts.
    const asDraft=!!payload.draft,skippedNoDrafts=asDraft?chosen.filter(a=>a.platform!=="tiktok").map(a=>(VIDEO_PLATFORMS[a.platform]??a.platform)+" @"+a.username):[];
    if(asDraft){chosen.splice(0,chosen.length,...chosen.filter(a=>a.platform==="tiktok"));if(!chosen.length)return Response.json({error:"Drafts are a TikTok feature: tick a TikTok account."},{status:400});}
@@ -458,25 +480,31 @@ export async function POST(request:Request){
     if(mine.some(p=>p.state==="queued"||p.state==="processing")){busyNow.push(label(a));continue;}
     // Held for review: posting it by hand queues that same post.
     const held=mine.find(p=>p.state==="review");
-    if(held){statements.push(db.prepare("UPDATE posts SET state='queued',queued_by_hand=1,draft=?,error=NULL,next_attempt_at=?,updated_at=? WHERE id=?").bind(Number(asDraft),iso,iso,held.id));queued.push(label(a));continue;}
+    if(held){statements.push(db.prepare("UPDATE posts SET state='queued',queued_by_hand=1,draft=?,error=NULL,scheduled_for=?,next_attempt_at=?,updated_at=? WHERE id=?").bind(Number(asDraft),due(a),due(a)??iso,iso,held.id));queued.push(label(a));continue;}
     const round=mine.length?Math.max(...mine.map(p=>p.round))+1:0;
-    statements.push(db.prepare("INSERT INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at,round,draft,queued_by_hand) VALUES (lower(hex(randomblob(16))),?,?,?,?,'queued',?,?,?,?,?,1)").bind(owner,clip.id,a.platform,a.id,iso,iso,iso,round,Number(asDraft)));
+    statements.push(db.prepare("INSERT INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at,round,draft,queued_by_hand,scheduled_for) VALUES (lower(hex(randomblob(16))),?,?,?,?,'queued',?,?,?,?,?,1,?)").bind(owner,clip.id,a.platform,a.id,due(a)??iso,iso,iso,round,Number(asDraft),due(a)));
     queued.push(label(a)+(round?" (again)":""));
    }
    if(!queued.length)return Response.json({error:[busyNow.length?"Already on its way to "+busyNow.join(", ")+".":"",offline.length?"Reconnect "+offline.join(", ")+" first.":""].filter(Boolean).join(" ")},{status:409});
    // Posting a clip by hand approves it.
    if(clip.review!=="approved")statements.push(db.prepare("UPDATE clips SET review='approved',reviewed_at=? WHERE id=? AND owner=?").bind(iso,clip.id,owner));
-   message=(asDraft?"Saving "+(clip.name?clip.name+"'s clip":"the clip")+" to the TikTok drafts of ":"Posting "+(clip.name?clip.name+"'s clip":"the clip")+" to ")+queued.join(", ")+(clip.render_state==="queued"?" once the edit has finished rendering":"")+"."
+   message=(times?"Scheduled "+(clip.name?clip.name+"'s clip":"the clip")+(asDraft?" for the TikTok drafts of ":" for ")+queued.join(", ")+whenText(times)+"."+(clip.render_state==="queued"?" It waits for the edit to finish rendering.":"")+" Move it any time in Publishing → Calendar."
+    :(asDraft?"Saving "+(clip.name?clip.name+"'s clip":"the clip")+" to the TikTok drafts of ":"Posting "+(clip.name?clip.name+"'s clip":"the clip")+" to ")+queued.join(", ")+(clip.render_state==="queued"?" once the edit has finished rendering":"")+".")
     +(asDraft?" Finish it in the TikTok app.":"")+(busyNow.length?" Already on its way to "+busyNow.join(", ")+".":"")+(offline.length?" Skipped "+offline.join(", ")+" (reconnect needed).":"")+(skippedNoDrafts.length?" "+skippedNoDrafts.join(", ")+" skipped: drafts are TikTok only.":"");
   }
   // Clip id lists go in as one JSON value (json_each): D1 allows at most 100 bound values per query.
   if(payload.action==="postClips"){
    const marks="SELECT value FROM json_each(?)",idList=JSON.stringify(payload.ids);
-   const {results:clips}=await db.prepare("SELECT id,review,file_key FROM clips WHERE owner=? AND id IN ("+marks+")").bind(owner,idList).all<{id:string;review:string;file_key:string|null}>();
-   const {results:chosen}=await db.prepare("SELECT id,username,platform,status FROM accounts WHERE owner=? AND id IN ("+payload.accounts.map(()=>"?").join(",")+")").bind(owner,...payload.accounts).all<{id:string;username:string;platform:string;status:string}>();
+   const {results:found}=await db.prepare("SELECT id,review,file_key FROM clips WHERE owner=? AND id IN ("+marks+")").bind(owner,idList).all<{id:string;review:string;file_key:string|null}>();
+   // In the order they were picked, so a spread posts them in that order.
+   const clips=payload.ids.map(id=>found.find(c=>c.id===id)).filter((c):c is {id:string;review:string;file_key:string|null}=>!!c);
+   const {results:chosen}=await db.prepare("SELECT id,username,platform,status,options FROM accounts WHERE owner=? AND id IN ("+payload.accounts.map(()=>"?").join(",")+")").bind(owner,...payload.accounts).all<{id:string;username:string;platform:string;status:string;options:string|null}>();
    if(chosen.length!==payload.accounts.length)return Response.json({error:"One of those accounts is no longer connected."},{status:404});
    const asDraft=!!payload.draft,live=chosen.filter(a=>a.status==="connected"&&(!asDraft||a.platform==="tiktok"));
    if(!live.length)return Response.json({error:asDraft?"Drafts are a TikTok feature: tick a connected TikTok account.":"Reconnect those accounts first."},{status:asDraft?400:409});
+   // The uploaded clips get one time each per account (the i-th uploaded clip the i-th time).
+   const uploaded=clips.filter(c=>c.file_key),times=await scheduleTimes(payload.schedule,live,uploaded.length);
+   const due=(a:{id:string},clipId:string)=>times?.[a.id]?.[uploaded.findIndex(c=>c.id===clipId)]??null;
    const {results:existing}=await db.prepare("SELECT id,clip_id,account_id,state,round FROM posts WHERE owner=? AND clip_id IN ("+marks+")").bind(owner,idList).all<{id:string;clip_id:string;account_id:string;state:string;round:number}>();
    let posts=0,clipsPosted=0,busyNow=0;const notUploaded=payload.ids.length-clips.filter(c=>c.file_key).length;
    for(const clip of clips){
@@ -486,16 +514,19 @@ export async function POST(request:Request){
      const mine=existing.filter(p=>p.clip_id===clip.id&&p.account_id===a.id);
      if(mine.some(p=>p.state==="queued"||p.state==="processing")){busyNow++;continue;}
      const held=mine.find(p=>p.state==="review");
-     if(held){statements.push(db.prepare("UPDATE posts SET state='queued',queued_by_hand=1,error=NULL,next_attempt_at=?,updated_at=? WHERE id=?").bind(iso,iso,held.id));posts++;any=true;continue;}
+     const when=due(a,clip.id);
+     if(held){statements.push(db.prepare("UPDATE posts SET state='queued',queued_by_hand=1,error=NULL,scheduled_for=?,next_attempt_at=?,updated_at=? WHERE id=?").bind(when,when??iso,iso,held.id));posts++;any=true;continue;}
      const round=mine.length?Math.max(...mine.map(p=>p.round))+1:0;
-     statements.push(db.prepare("INSERT INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at,round,draft,queued_by_hand) VALUES (lower(hex(randomblob(16))),?,?,?,?,'queued',?,?,?,?,?,1)").bind(owner,clip.id,a.platform,a.id,iso,iso,iso,round,Number(asDraft)));
+     statements.push(db.prepare("INSERT INTO posts (id,owner,clip_id,platform,account_id,state,next_attempt_at,created_at,updated_at,round,draft,queued_by_hand,scheduled_for) VALUES (lower(hex(randomblob(16))),?,?,?,?,'queued',?,?,?,?,?,1,?)").bind(owner,clip.id,a.platform,a.id,when??iso,iso,iso,round,Number(asDraft),when));
      posts++;any=true;
     }
     if(any){clipsPosted++;if(clip.review!=="approved")statements.push(db.prepare("UPDATE clips SET review='approved',reviewed_at=? WHERE id=? AND owner=?").bind(iso,clip.id,owner));}
    }
    if(!posts)return Response.json({error:busyNow?"Those clips are already on their way to those accounts.":"None of those clips can be posted yet (their videos aren't uploaded)."},{status:409});
    const limit=(await db.prepare("SELECT daily_limit FROM preferences WHERE owner=?").bind(owner).first<{daily_limit:number}>())?.daily_limit??defaults.dailyLimit;
-   message=(asDraft?"Saving "+clipsPosted+" clip"+(clipsPosted===1?"":"s")+" to the TikTok drafts of ":"Posting "+clipsPosted+" clip"+(clipsPosted===1?"":"s")+" to ")+live.map(a=>(VIDEO_PLATFORMS[a.platform]??a.platform)+" @"+a.username).join(", ")+" ("+posts+" post"+(posts===1?"":"s")+"). "+(asDraft?"TikTok takes about 5 drafts per account a day; the rest wait their turn. Finish them in the TikTok app.":"Each account posts about one a minute, up to "+limit+" a day; the rest wait their turn.")
+   message=times?"Scheduled "+clipsPosted+" clip"+(clipsPosted===1?"":"s")+(asDraft?" for the TikTok drafts of ":" for ")+live.map(a=>(VIDEO_PLATFORMS[a.platform]??a.platform)+" @"+a.username).join(", ")+" ("+posts+" post"+(posts===1?"":"s")+")"+whenText(times)+". The accounts' daily limits and spacing still apply; move any of them in Publishing → Calendar."
+    +(busyNow?" "+busyNow+" already on their way were skipped.":"")+(notUploaded?" "+notUploaded+" not uploaded yet were skipped.":"")+(live.length<chosen.length?" Accounts needing reconnection were skipped.":"")
+    :(asDraft?"Saving "+clipsPosted+" clip"+(clipsPosted===1?"":"s")+" to the TikTok drafts of ":"Posting "+clipsPosted+" clip"+(clipsPosted===1?"":"s")+" to ")+live.map(a=>(VIDEO_PLATFORMS[a.platform]??a.platform)+" @"+a.username).join(", ")+" ("+posts+" post"+(posts===1?"":"s")+"). "+(asDraft?"TikTok takes about 5 drafts per account a day; the rest wait their turn. Finish them in the TikTok app.":"Each account posts about one a minute, up to "+limit+" a day; the rest wait their turn.")
     +(busyNow?" "+busyNow+" already on their way were skipped.":"")+(notUploaded?" "+notUploaded+" not uploaded yet were skipped.":"")+(live.length<chosen.length?" Accounts needing reconnection were skipped.":"");
   }
   if(payload.action==="bulkClips"){

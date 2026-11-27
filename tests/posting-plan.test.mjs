@@ -1,6 +1,30 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { planNext, tiktokBusy } from "../lib/posting-plan.mjs";
+import { MAX_SPREAD_DAYS, localClock, planNext, spreadTimes, tiktokBusy } from "../lib/posting-plan.mjs";
+
+test("spreading posts over days: shared out in turn, inside each day's posting hours", () => {
+  const at = Date.parse("2026-11-27T19:30:00Z"), evening = [17, 18, 19, 20, 21, 22];
+  const times = spreadTimes({ count: 10, days: 5, now: at, hours: evening, timeZone: "Europe/London" });
+  assert.equal(times.length, 10);
+  assert.ok(times.every((t, i) => i === 0 || t > times[i - 1]), "in order");
+  assert.ok(times.every(t => t >= at), "never in the past");
+  assert.ok(times.every(t => evening.includes(localClock(t, "Europe/London").hour)), "only in posting hours");
+  assert.ok(times.every(t => t % 60_000 === 0), "whole minutes");
+  const days = new Set(times.map(t => new Date(t).toISOString().slice(0, 10)));
+  assert.equal(days.size, 5, "five days, two a day");
+  assert.ok(times.at(-1) < at + 5 * 24 * 3600_000);
+  // Uneven: the earlier days take the extra.
+  const seven = spreadTimes({ count: 7, days: 3, now: Date.parse("2026-11-28T06:00:00Z"), hours: evening, timeZone: "UTC" });
+  const perDay = Object.values(seven.reduce((m, t) => { const d = new Date(t).toISOString().slice(0, 10); m[d] = (m[d] ?? 0) + 1; return m; }, {}));
+  assert.deepEqual(perDay, [3, 2, 2]);
+  // Late at night, with no posting hours left today, the days start tomorrow.
+  const late = spreadTimes({ count: 2, days: 1, now: Date.parse("2026-11-27T23:30:00Z"), hours: [20, 21], timeZone: "UTC" });
+  assert.deepEqual(late.map(t => new Date(t).toISOString().slice(0, 13)), ["2026-11-28T20", "2026-11-28T21"]);
+  // Any hour allowed: daytime, 9am to 9pm, in the account's time zone.
+  assert.ok(spreadTimes({ count: 6, days: 3, now: at, hours: null, timeZone: "Africa/Accra" }).every(t => { const h = localClock(t, "Africa/Accra").hour; return h >= 9 && h < 21; }));
+  assert.deepEqual(spreadTimes({ count: 0, days: 3, now: at }), []);
+  assert.ok(spreadTimes({ count: 40, days: 999, now: at }).at(-1) < at + (MAX_SPREAD_DAYS + 1) * 24 * 3600_000, "at most 30 days");
+});
 
 const now = Date.parse("2026-11-16T12:00:00Z"), h = 3600_000;
 const base = { platform: "tiktok", wantsDraft: false, limit: 50, gapMinutes: 0, directToday: 0, draftsToday: 0, lastSentAt: null, oldestSentAt: null, now };
