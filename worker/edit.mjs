@@ -121,6 +121,15 @@ export const HOOK_OUTLINE = 5;
 // Where the hook sits: x is its centre and y its top, as fractions of the frame; size is its text size in pixels.
 // x stays in the middle half so a line always has room to wrap.
 export const HOOK_X = [0.25, 0.75], HOOK_Y = [0.02, 0.9], HOOK_SIZE = [28, 120], HOOK_DEFAULT = { x: 0.5, y: 0.117, size: 52 };
+// Text formatting shared by subtitles and the hook: bold, italic and a drop shadow (pixels, 0 for none). The hook
+// follows the subtitles' font, bold, italic and shadow unless hook.own; its capitals and alignment are its own.
+export const ALIGNS = ["left", "center", "right"], SHADOW_MAX = 8;
+export function hookLook(edit) {
+  const c = edit.captions, h = edit.hook, own = h.own === true, from = own ? h : c;
+  return { font: (own && h.font) || c.font, bold: from.bold !== false, italic: from.italic === true, shadow: from.shadow ?? 0, uppercase: h.uppercase === true, align: h.align ?? "center" };
+}
+// The x of a line of text `total` wide, in a wrap area `wrap` wide centred on cx (canvas preview and render agree).
+export const alignedX = (align, cx, wrap, total) => align === "left" ? cx - wrap / 2 : align === "right" ? cx + wrap / 2 - total : cx - total / 2;
 // The hook's anchor in pixels and the side margins that give it the same wrap width either side of its centre.
 export function hookPlacement(edit) {
   const { W, H } = canvas(edit.frame), h = { ...HOOK_DEFAULT, ...edit.hook };
@@ -173,10 +182,15 @@ export function normalizeStyle(input, base = defaultStyle()) {
       uppercase: bool(c.uppercase, "Uppercase"), animation: pick(c.animation, ANIMATIONS, "Animation"), words: int(c.words, 1, 8, "Words per line"), y: num(c.y, 0.08, 0.95, "Caption position"), mask: bool(c.mask, "Profanity filter"),
       // Looks saved before keyword highlighting get it on, in their preset's colour.
       keywords: bool(c.keywords ?? true, "Keyword highlight"), keywordColor: color(s.captions?.keywordColor ?? PRESETS[c.preset]?.keywordColor ?? c.keywordColor ?? "#ffe14d", "Keyword colour"),
+      // Looks saved before these: bold, upright, no shadow, centred (as they were drawn).
+      bold: bool(c.bold ?? true, "Bold"), italic: bool(c.italic ?? false, "Italic"), shadow: int(c.shadow ?? 0, 0, SHADOW_MAX, "Shadow"), align: pick(c.align ?? "center", ALIGNS, "Subtitle alignment"),
     },
     // on: whether the hook is shown; off keeps its text for turning it back on (edits from before it: shown).
     hook: { on: bool(h.on ?? true, "Opening title"), color: color(h.color, "Hook text colour"), bg: h.bg === null ? null : color(h.bg, "Hook background"), seconds: num(h.seconds ?? DEFAULT_HOOK_SECONDS, 1, MAX_CLIP, "Hook length"),
-      x: num(h.x ?? HOOK_DEFAULT.x, ...HOOK_X, "Hook position"), y: num(h.y ?? HOOK_DEFAULT.y, ...HOOK_Y, "Hook position"), size: int(h.size ?? HOOK_DEFAULT.size, ...HOOK_SIZE, "Hook size") },
+      x: num(h.x ?? HOOK_DEFAULT.x, ...HOOK_X, "Hook position"), y: num(h.y ?? HOOK_DEFAULT.y, ...HOOK_Y, "Hook position"), size: int(h.size ?? HOOK_DEFAULT.size, ...HOOK_SIZE, "Hook size"),
+      // own: the hook's font, bold, italic and shadow below instead of the subtitles' (see hookLook).
+      own: bool(h.own ?? false, "Opening title style"), font: pick(h.font ?? c.font, FONTS, "Opening title font"), bold: bool(h.bold ?? true, "Opening title bold"), italic: bool(h.italic ?? false, "Opening title italic"),
+      shadow: int(h.shadow ?? 0, 0, SHADOW_MAX, "Opening title shadow"), uppercase: bool(h.uppercase ?? false, "Opening title capitals"), align: pick(h.align ?? "center", ALIGNS, "Opening title alignment") },
     progress: { on: bool(p.on, "Progress bar"), color: color(p.color, "Progress bar colour") },
     pace: { cuts: pick(pc.cuts, CUT_LEVELS, "Jump cuts"), zooms: bool(pc.zooms, "Punch-in zooms") },
     chat: { on: bool(ch.on, "Chat on the clip"), y: num(ch.y, 0.15, 0.95, "Chat position") },
@@ -186,7 +200,9 @@ export function normalizeStyle(input, base = defaultStyle()) {
 
 export function styleOf(edit) {
   const { frame, look, captions, hook, progress, pace = { ...DEFAULT_PACE }, chat = { ...DEFAULT_CHAT }, audio = { ...DEFAULT_AUDIO } } = edit;
-  return { frame, look, captions, hook: { on: hook.on !== false, color: hook.color, bg: hook.bg, seconds: hook.seconds, x: hook.x, y: hook.y, size: hook.size }, progress, pace, chat, audio };
+  // Everything about the hook but its text.
+  const { text: _text, ...hookStyle } = hook;
+  return { frame, look, captions, hook: { ...hookStyle, on: hook.on !== false }, progress, pace, chat, audio };
 }
 // Whether an edit shows its hook: switched on and with text.
 export const showsHook = edit => edit.hook?.on !== false && !!edit.hook?.text;
@@ -480,21 +496,22 @@ export function chatWindows(messages, edit) {
 // `tl` (see timeline) moves every caption to its time in the finished clip, after any jump cuts.
 // `messages`: the clip's chat (signals.messages), drawn when edit.chat.on.
 export function buildAss(edit, words, tl = plain(edit), messages = []) {
-  const { W, H } = canvas(edit.frame), c = edit.captions, len = tl.length, y = Math.round(c.y * H), at = tl.toClip, hp = hookPlacement(edit);
+  const { W, H } = canvas(edit.frame), c = edit.captions, len = tl.length, y = Math.round(c.y * H), at = tl.toClip, hp = hookPlacement(edit), hk = hookLook(edit);
   const stamp = t => clock(at(t));
   const boxStyle = c.box ? { border: 3, outline: Math.max(8, Math.round(c.size * 0.22)), outlineColor: assColor(c.boxColor) } : { border: 1, outline: c.outline, outlineColor: assColor(c.outlineColor) };
   const lines = [
     "[Script Info]", "ScriptType: v4.00+", "PlayResX: " + W, "PlayResY: " + H, "WrapStyle: 0", "ScaledBorderAndShadow: yes", "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-    `Style: Cap,${c.font},${c.size},${assColor(c.color)},${assColor(c.highlight)},${boxStyle.outlineColor},${assColor("#000000", 0x80)},-1,0,0,0,100,100,0,0,${boxStyle.border},${boxStyle.outline},0,5,40,40,0,1`,
+    `Style: Cap,${c.font},${c.size},${assColor(c.color)},${assColor(c.highlight)},${boxStyle.outlineColor},${assColor("#000000", 0x80)},${c.bold === false ? 0 : -1},${c.italic ? -1 : 0},0,0,100,100,0,0,${boxStyle.border},${boxStyle.outline},${c.shadow ?? 0},5,40,40,0,1`,
     `Style: Chat,Arial,${CHAT_SIZE},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,0,1,40,40,0,1`,
     edit.hook.bg
-      ? `Style: Hook,${c.font},${hp.size},${assColor(edit.hook.color)},${assColor(edit.hook.color)},${assColor(edit.hook.bg)},${assColor("#000000", 0x80)},-1,0,0,0,100,100,0,0,3,${Math.round(hp.size * 14 / 52)},0,8,60,60,0,1`
-      : `Style: Hook,${c.font},${hp.size},${assColor(edit.hook.color)},${assColor(edit.hook.color)},${assColor(hookOutlineColor(edit.hook.color))},${assColor("#000000", 0x80)},-1,0,0,0,100,100,0,0,1,${Math.max(3, Math.round(hp.size * HOOK_OUTLINE / 52))},0,8,60,60,0,1`,
+      ? `Style: Hook,${hk.font},${hp.size},${assColor(edit.hook.color)},${assColor(edit.hook.color)},${assColor(edit.hook.bg)},${assColor("#000000", 0x80)},${hk.bold ? -1 : 0},${hk.italic ? -1 : 0},0,0,100,100,0,0,3,${Math.round(hp.size * 14 / 52)},${hk.shadow},8,60,60,0,1`
+      : `Style: Hook,${hk.font},${hp.size},${assColor(edit.hook.color)},${assColor(edit.hook.color)},${assColor(hookOutlineColor(edit.hook.color))},${assColor("#000000", 0x80)},${hk.bold ? -1 : 0},${hk.italic ? -1 : 0},0,0,100,100,0,0,1,${Math.max(3, Math.round(hp.size * HOOK_OUTLINE / 52))},${hk.shadow},8,60,60,0,1`,
     "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
   ];
-  const pos = "{\\an5\\pos(" + W / 2 + "," + y + ")}";
+  // Left or right aligned subtitles sit against the style's 40-pixel margins, lines lined up on that side.
+  const pos = c.align === "left" ? "{\\an4\\pos(40," + y + ")}" : c.align === "right" ? "{\\an6\\pos(" + (W - 40) + "," + y + ")}" : "{\\an5\\pos(" + W / 2 + "," + y + ")}";
   const hl = "{\\c" + assColor(c.highlight) + "}", base = "{\\c" + assColor(c.color) + "}";
   // A keyword: its own colour (the karaoke highlight while it's spoken) and KEYWORD_SCALE bigger.
   const big = "\\fscx" + Math.round(KEYWORD_SCALE * 100) + "\\fscy" + Math.round(KEYWORD_SCALE * 100);
@@ -525,7 +542,9 @@ export function buildAss(edit, words, tl = plain(edit), messages = []) {
     lines.push("Dialogue: 0," + stamp(w.start - t0) + "," + stamp(w.end - t0) + ",Chat,,0,0,0,,{\\an1\\pos(40," + Math.round(edit.chat.y * H) + ")\\q2}" + body);
   }
   // The hook's times are already in the finished clip.
-  if (showsHook(edit)) lines.push(`Dialogue: 1,${clock(0)},${clock(Math.min(len, edit.hook.seconds))},Hook,,${hp.margin},${hp.margin},0,,{\\an8\\pos(${hp.x},${hp.y})}${POP}${esc(edit.hook.text).replace(/\n/g, "\\N")}`);
+  // A left or right aligned hook lines up on that side of its wrap area (the same width either side of hook.x).
+  const hookAt = hk.align === "left" ? `\\an7\\pos(${hp.x - hp.wrap / 2},${hp.y})` : hk.align === "right" ? `\\an9\\pos(${hp.x + hp.wrap / 2},${hp.y})` : `\\an8\\pos(${hp.x},${hp.y})`;
+  if (showsHook(edit)) lines.push(`Dialogue: 1,${clock(0)},${clock(Math.min(len, edit.hook.seconds))},Hook,,${hp.margin},${hp.margin},0,,{${hookAt}}${POP}${esc(hk.uppercase ? edit.hook.text.toUpperCase() : edit.hook.text).replace(/\n/g, "\\N")}`);
   return lines.join("\n") + "\n";
 }
 

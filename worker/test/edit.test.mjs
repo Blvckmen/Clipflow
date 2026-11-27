@@ -311,3 +311,39 @@ test("opening title on/off keeps its text, and a look copies without the clip's 
   assert.equal(copied.hook.text, "He did NOT see that");
   assert.doesNotThrow(() => normalizeEdit(copied, { duration: 40 }));
 });
+
+test("text style: bold, italic, shadow and alignment, the title following the subtitles unless it has its own", async () => {
+  const { hookLook, alignedX } = await import("../edit.mjs");
+  const base = normalizeEdit({ ...defaultEdit(defaultStyle({ captions: true }), { trimStart: 0, trimEnd: 30 }), hook: { text: "Watch this" } }, { duration: 40 });
+  assert.equal(base.captions.bold, true, "older looks stay bold");
+  assert.equal(base.captions.italic, false);
+  assert.equal(base.captions.shadow, 0);
+  assert.equal(base.captions.align, "center");
+  assert.equal(base.hook.own, false);
+  const styleLine = (ass, name) => ass.split("\n").find(l => l.startsWith("Style: " + name + ",")).split(",");
+  // Format: Name, Fontname, Fontsize, Primary, Secondary, Outline, Back, Bold, Italic, ..., Shadow at index 17.
+  let ass = buildAss(base, [], undefined);
+  assert.equal(styleLine(ass, "Cap")[7], "-1");
+  assert.equal(styleLine(ass, "Hook")[1], base.captions.font, "the title uses the subtitle font");
+  const styled = normalizeEdit({ ...base, captions: { ...base.captions, bold: false, italic: true, shadow: 3, align: "left" } }, { duration: 40 });
+  ass = buildAss(styled, [[1, 1.5, "hello"]], undefined);
+  assert.deepEqual(styleLine(ass, "Cap").slice(7, 9), ["0", "-1"]);
+  assert.equal(styleLine(ass, "Cap")[17], "3");
+  assert.deepEqual(styleLine(ass, "Hook").slice(7, 9), ["0", "-1"], "the title follows bold and italic");
+  assert.equal(styleLine(ass, "Hook")[17], "3", "and the shadow");
+  const own = normalizeEdit({ ...styled, hook: { ...styled.hook, own: true, font: "Arial", bold: true, italic: false, shadow: 0, uppercase: true, align: "right" } }, { duration: 40 });
+  assert.deepEqual(hookLook(own), { font: "Arial", bold: true, italic: false, shadow: 0, uppercase: true, align: "right" });
+  ass = buildAss(own, [], undefined);
+  assert.equal(styleLine(ass, "Hook")[1], "Arial");
+  assert.deepEqual(styleLine(ass, "Hook").slice(7, 9), ["-1", "0"]);
+  assert.ok(ass.includes("WATCH THIS"), "capitals");
+  assert.ok(ass.includes("{\\an9\\pos("), "right aligned title");
+  assert.equal(normalizeEdit(styled, { duration: 40 }).captions.align, "left");
+  assert.ok(buildAss(styled, [[0.5, 1, "hello"]], undefined).includes("{\\an4\\pos(40,"), "left aligned subtitles");
+  assert.equal(alignedX("left", 540, 1000, 300), 40);
+  assert.equal(alignedX("right", 540, 1000, 300), 740);
+  assert.equal(alignedX("center", 540, 1000, 300), 390);
+  assert.throws(() => normalizeEdit({ ...base, captions: { ...base.captions, align: "justify" } }, { duration: 40 }));
+  assert.equal(styleOf(own).hook.text, undefined, "a look has no title text");
+  assert.equal(styleOf(own).hook.font, "Arial");
+});

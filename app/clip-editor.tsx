@@ -3,7 +3,7 @@
 // worker renders with, so what you see is what gets posted. Saving stores the edit; the worker re-renders it.
 import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Eye, EyeOff, Loader2, Pause, Play, Redo2, RotateCcw, Scissors, Sparkles, Undo2, Copy } from "lucide-react";
-import { ANIMATIONS, ASPECTS, ASPECT_LABELS, KEYWORD_SCALE, CHAT_SIZE, DEFAULT_CHAT, chatWindows, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, HOOK_LINES, HOOK_OUTLINE, HOOK_DEFAULT, HOOK_SIZE, HOOK_X, HOOK_Y, hookOutlineColor, hookPlacement, MAX_CLIP, MIN_CLIP, PRESETS, RING, TEMPLATES, templateOf, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks, timeline, zoomAt } from "../worker/edit.mjs";
+import { ALIGNS, SHADOW_MAX, alignedX, hookLook, ANIMATIONS, ASPECTS, ASPECT_LABELS, KEYWORD_SCALE, CHAT_SIZE, DEFAULT_CHAT, chatWindows, DEFAULT_FACECAM, DEFAULT_SPLIT, FONTS, HOOK_LINES, HOOK_OUTLINE, HOOK_DEFAULT, HOOK_SIZE, HOOK_X, HOOK_Y, hookOutlineColor, hookPlacement, MAX_CLIP, MIN_CLIP, PRESETS, RING, TEMPLATES, templateOf, activeCue, camAreas, canvas as frameSize, cues, facecamPlacement, layout, splitAreas, stacks, timeline, zoomAt } from "../worker/edit.mjs";
 
 import { applyAutomaticHook } from "../worker/hooks.mjs";
 import { apiFetch, readJson } from "../lib/read-json.mjs";
@@ -13,9 +13,9 @@ type CamBox = { x: number; y: number; w: number; h: number };
 type Facecam = { box: CamBox | null; share: number; corner: "tl" | "tr" | "bl" | "br"; size: number; place?: "top" | "bottom"; shape?: "box" | "circle" };
 type Aspect = keyof typeof ASPECTS;
 type Frame = { mode: "blur" | "crop" | "fit" | "split" | "cam" | "pip" | "phone"; aspect?: Aspect; content?: CamBox | null; zoom: number; x: number; y: number; background?: string | null; split?: Split; facecam?: Facecam };
-type Captions = { on: boolean; preset: string; font: string; size: number; color: string; highlight: string; outline: number; outlineColor: string; box: boolean; boxColor: string; uppercase: boolean; animation: string; words: number; y: number; mask: boolean; keywords: boolean; keywordColor: string };
+type Captions = { on: boolean; preset: string; font: string; size: number; color: string; highlight: string; outline: number; outlineColor: string; box: boolean; boxColor: string; uppercase: boolean; animation: string; words: number; y: number; mask: boolean; keywords: boolean; keywordColor: string; bold?: boolean; italic?: boolean; shadow?: number; align?: string };
 type Word = [number, number, string];
-export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { on?: boolean; text: string; seconds: number; color: string; bg: string | null; x: number; y: number; size: number }; progress: { on: boolean; color: string }; pace?: Pace; chat?: ChatLook; audio?: { music: "keep" | "lower" | "voice" }; words?: Word[] };
+export type Edit = { v: number; trim: { start: number; end: number }; frame: Frame; look: { brightness: number; contrast: number; saturation: number }; captions: Captions; hook: { on?: boolean; text: string; seconds: number; color: string; bg: string | null; x: number; y: number; size: number; own?: boolean; font?: string; bold?: boolean; italic?: boolean; shadow?: number; uppercase?: boolean; align?: string }; progress: { on: boolean; color: string }; pace?: Pace; chat?: ChatLook; audio?: { music: "keep" | "lower" | "voice" }; words?: Word[] };
 type ChatLook = { on: boolean; y: number };
 // [seconds into the source, name, text, colour]: the Twitch chat sent during the clip's source.
 type ChatMessage = [number, string, string, string | null];
@@ -24,6 +24,7 @@ type Bundle = { id: string; streamerId: string; streamer: string | null; edit: E
 type Tab = "frame" | "captions" | "extras" | "transcript" | "post";
 
 const animationLabels: Record<string, string> = { none: "Static", pop: "Pop in", karaoke: "Karaoke", word: "One word at a time" };
+const alignLabels: Record<string, string> = { left: "Left", center: "Centre", right: "Right" };
 const fmt = (t: number) => Math.floor(t / 60) + ":" + (t % 60).toFixed(1).padStart(4, "0");
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 
@@ -148,10 +149,13 @@ function TemplatePicture({ still, frame }: { still: HTMLCanvasElement | null; fr
 // `margin` matches the subtitle style's left/right margins in buildAss (captions 40, hook 60), so lines wrap at
 // the same width as in the render.
 // A part with `big` (a caption keyword) is drawn KEYWORD_SCALE bigger, like its \fscx/\fscy in the render.
-function drawText(ctx: CanvasRenderingContext2D, parts: { t: string; color: string; big?: boolean }[], c: { font: string; size: number; outline: number; outlineColor: string; box: boolean; boxColor: string }, cx: number, y: number, anchor: "middle" | "top", scale = 1, margin = 40, wrapWidth = cx * 2 - 2 * margin) {
+// bold, italic, shadow and align as in buildAss (left/right line up on that side of the wrap area, see alignedX).
+type TextLook = { font: string; size: number; outline: number; outlineColor: string; box: boolean; boxColor: string; bold?: boolean; italic?: boolean; shadow?: number; align?: string };
+function drawText(ctx: CanvasRenderingContext2D, parts: { t: string; color: string; big?: boolean }[], c: TextLook, cx: number, y: number, anchor: "middle" | "top", scale = 1, margin = 40, wrapWidth = cx * 2 - 2 * margin) {
   ctx.save();
   let left = Infinity, right = -Infinity;
-  const font = (big?: boolean) => `bold ${big ? Math.round(c.size * KEYWORD_SCALE) : c.size}px "${c.font}", "DejaVu Sans", Arial, sans-serif`;
+  const font = (big?: boolean) => `${c.italic ? "italic " : ""}${c.bold === false ? "" : "bold "}${big ? Math.round(c.size * KEYWORD_SCALE) : c.size}px "${c.font}", "DejaVu Sans", Arial, sans-serif`;
+  const shadow = c.shadow ?? 0, shade = (on: boolean) => { ctx.shadowColor = on && shadow ? "rgba(0,0,0,0.5)" : "transparent"; ctx.shadowOffsetX = ctx.shadowOffsetY = on ? shadow : 0; };
   ctx.font = font();
   ctx.textBaseline = "middle"; ctx.lineJoin = "round";
   const measure = (t: string, i: number) => { if (!parts[i]?.big) return ctx.measureText(t).width; ctx.font = font(true); const w = ctx.measureText(t).width; ctx.font = font(); return w; };
@@ -161,13 +165,14 @@ function drawText(ctx: CanvasRenderingContext2D, parts: { t: string; color: stri
   lines.forEach((line, li) => {
     const widths = line.map(i => measure(parts[i].t, i)), total = widths.reduce((a, b) => a + b, 0) + space * (line.length - 1);
     const ly = top + li * lh + lh / 2;
-    let x = cx - total / 2;
+    let x = alignedX(c.align ?? "center", cx, wrapWidth, total);
     left = Math.min(left, x); right = Math.max(right, x + total);
-    if (c.box) { const pad = Math.max(8, Math.round(c.size * 0.22)); ctx.fillStyle = c.boxColor; ctx.fillRect(x - pad, ly - lh / 2 - pad / 2 + 4, total + pad * 2, lh + pad - 8); }
+    if (c.box) { const pad = Math.max(8, Math.round(c.size * 0.22)); shade(true); ctx.fillStyle = c.boxColor; ctx.fillRect(x - pad, ly - lh / 2 - pad / 2 + 4, total + pad * 2, lh + pad - 8); shade(false); }
     line.forEach((i, k) => {
       ctx.font = font(parts[i].big);
-      if (!c.box && c.outline > 0) { ctx.lineWidth = c.outline * 2; ctx.strokeStyle = c.outlineColor; ctx.strokeText(parts[i].t, x, ly); }
-      ctx.fillStyle = parts[i].color; ctx.textAlign = "left"; ctx.fillText(parts[i].t, x, ly);
+      const outlined = !c.box && c.outline > 0;
+      if (outlined) { shade(true); ctx.lineWidth = c.outline * 2; ctx.strokeStyle = c.outlineColor; ctx.strokeText(parts[i].t, x, ly); shade(false); }
+      shade(!c.box && !outlined); ctx.fillStyle = parts[i].color; ctx.textAlign = "left"; ctx.fillText(parts[i].t, x, ly); shade(false);
       ctx.font = font();
       x += widths[k] + space;
     });
@@ -342,8 +347,9 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
       }
       // Word by word (wrapped like the render), with the hook's own line breaks.
       const hp = hookPlacement(e), placing = v.paused && tabRef.current === "extras";
-      hookBox.current = e.hook.text && e.hook.on !== false && (out < e.hook.seconds || placing) ? drawText(ctx, e.hook.text.split("\n").flatMap((l, i) => [...(i ? [{ t: "\n", color: e.hook.color }] : []), ...l.split(" ").filter(Boolean).map(t => ({ t, color: e.hook.color }))]),
-        e.hook.bg ? { font: c.font, size: hp.size, outline: 0, outlineColor: "#000000", box: true, boxColor: e.hook.bg } : { font: c.font, size: hp.size, outline: Math.max(3, Math.round(hp.size * HOOK_OUTLINE / 52)), outlineColor: hookOutlineColor(e.hook.color), box: false, boxColor: "#000000" },
+      const hl = hookLook(e), hookWords = hl.uppercase ? e.hook.text.toUpperCase() : e.hook.text, hf = { font: hl.font, bold: hl.bold, italic: hl.italic, shadow: hl.shadow, align: hl.align, size: hp.size };
+      hookBox.current = e.hook.text && e.hook.on !== false && (out < e.hook.seconds || placing) ? drawText(ctx, hookWords.split("\n").flatMap((l, i) => [...(i ? [{ t: "\n", color: e.hook.color }] : []), ...l.split(" ").filter(Boolean).map(t => ({ t, color: e.hook.color }))]),
+        e.hook.bg ? { ...hf, outline: 0, outlineColor: "#000000", box: true, boxColor: e.hook.bg } : { ...hf, outline: Math.max(3, Math.round(hp.size * HOOK_OUTLINE / 52)), outlineColor: hookOutlineColor(e.hook.color), box: false, boxColor: "#000000" },
         hp.x, hp.y, "top", placing ? 1 : pop(out), 60, hp.wrap) : null;
       if (hookBox.current && placing) { const b = hookBox.current; ctx.save(); ctx.setLineDash([10, 8]); ctx.lineWidth = 3; ctx.strokeStyle = "#bcfa76"; ctx.strokeRect(b.left - 16, b.top - 8, b.right - b.left + 32, b.bottom - b.top + 16); ctx.restore(); }
       if (e.progress.on) { ctx.fillStyle = e.progress.color; ctx.fillRect(0, H - 10, W * clamp(out / clipLen, 0, 1), 10); }
@@ -545,6 +551,8 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
               <label>Words per line <span>{c.words}</span><input type="range" min={1} max={8} value={c.words} onChange={e => setCaption({ words: Number(e.target.value) })} /></label>
               <label>Position <span>{Math.round(c.y * 100)}% down</span><input type="range" min={8} max={95} value={Math.round(c.y * 100)} onChange={e => setCaption({ y: Number(e.target.value) / 100 })} /></label>
               <label>Outline <span>{c.outline}px</span><input type="range" min={0} max={12} value={c.outline} disabled={c.box} onChange={e => setCaption({ outline: Number(e.target.value) })} /></label>
+              <label>Shadow <span>{c.shadow ? (c.shadow) + "px" : "None"}</span><input type="range" min={0} max={SHADOW_MAX} value={c.shadow ?? 0} onChange={e => setCaption({ shadow: Number(e.target.value) })} /></label>
+              <label>Line up<select value={c.align ?? "center"} onChange={e => setCaption({ align: e.target.value })}>{ALIGNS.map((a: string) => <option key={a} value={a}>{alignLabels[a]}</option>)}</select></label>
               <label className="color">Text<input type="color" value={c.color} onChange={e => setCaption({ color: e.target.value })} /></label>
               <label className="color">Highlight<input type="color" value={c.highlight} onChange={e => setCaption({ highlight: e.target.value })} /></label>
               <label className="color" title="The colour of each line's most important word">Key words<input type="color" value={c.keywordColor} disabled={!c.keywords} onChange={e => setCaption({ keywordColor: e.target.value })} /></label>
@@ -552,11 +560,14 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
               <label className="color">Box<input type="color" value={c.boxColor} onChange={e => setCaption({ boxColor: e.target.value })} /></label>
             </div>
             <div className="toggles">
+              <label><input type="checkbox" checked={c.bold !== false} onChange={e => setCaption({ bold: e.target.checked })} /><strong>Bold</strong></label>
+              <label><input type="checkbox" checked={!!c.italic} onChange={e => setCaption({ italic: e.target.checked })} /><em>Italic</em></label>
               <label><input type="checkbox" checked={c.box} onChange={e => setCaption({ box: e.target.checked })} />Background box</label>
               <label><input type="checkbox" checked={c.uppercase} onChange={e => setCaption({ uppercase: e.target.checked })} />ALL CAPS</label>
               <label title="Each line's most important word (a strong word, a number, a name, or one that was shouted) in its own colour and a little bigger"><input type="checkbox" checked={c.keywords} onChange={e => setCaption({ keywords: e.target.checked })} />Highlight key words</label>
               <label title="Replaces swear words with asterisks, e.g. f***, which keeps clips safer for brand-friendly accounts"><input type="checkbox" checked={c.mask} onChange={e => setCaption({ mask: e.target.checked })} />Bleep swear words in subtitles</label>
             </div>
+            <p className="hint">The opening title uses this font, bold, italic and shadow too, unless you give it its own style under Opening title &amp; extras.</p>
             </div>
           </>}
           {tab === "frame" && <>
@@ -668,7 +679,20 @@ export default function ClipEditor({ clipId, onClose, onSaved, onCopied }: { cli
                 <span className="check-inline"><button type="button" className="text-button" onClick={() => set("hook", { ...HOOK_DEFAULT })}>Reset title size and place</button></span></label>
               <label className="color">Title text<input type="color" value={edit.hook.color} onChange={e => set("hook", { color: e.target.value })} /></label>
               <label className="color" title="Turn off for the text alone, with an outline so it stays readable">Title background<div className="color-pair"><input type="checkbox" aria-label="Show a title background" checked={!!edit.hook.bg} onChange={e => set("hook", { bg: e.target.checked ? "#ffffff" : null })} />{edit.hook.bg && <input type="color" value={edit.hook.bg} onChange={e => set("hook", { bg: e.target.value })} />}</div></label>
+              <label>Title line up<select value={edit.hook.align ?? "center"} onChange={e => set("hook", { align: e.target.value })}>{ALIGNS.map((a: string) => <option key={a} value={a}>{alignLabels[a]}</option>)}</select></label>
             </div>
+            <div className="toggles">
+              <label><input type="checkbox" checked={!!edit.hook.uppercase} onChange={e => set("hook", { uppercase: e.target.checked })} />ALL CAPS</label>
+              <label title="Off: the title uses the subtitles' font, bold, italic and shadow, and changes with them"><input type="checkbox" checked={!!edit.hook.own} onChange={e => set("hook", e.target.checked ? { own: true, font: edit.hook.font ?? c.font, bold: edit.hook.bold ?? c.bold !== false, italic: edit.hook.italic ?? !!c.italic, shadow: edit.hook.shadow ?? c.shadow ?? 0 } : { own: false })} />Own text style (not the subtitles&apos;)</label>
+            </div>
+            {edit.hook.own ? <div className="control-grid">
+              <label>Title font<select value={edit.hook.font ?? c.font} onChange={e => set("hook", { font: e.target.value })}>{FONTS.map((f: string) => <option key={f} style={{ fontFamily: f }}>{f}</option>)}</select></label>
+              <label>Title shadow <span>{edit.hook.shadow ? edit.hook.shadow + "px" : "None"}</span><input type="range" min={0} max={SHADOW_MAX} value={edit.hook.shadow ?? 0} onChange={e => set("hook", { shadow: Number(e.target.value) })} /></label>
+              <span className="toggles">
+                <label><input type="checkbox" checked={edit.hook.bold !== false} onChange={e => set("hook", { bold: e.target.checked })} /><strong>Bold</strong></label>
+                <label><input type="checkbox" checked={!!edit.hook.italic} onChange={e => set("hook", { italic: e.target.checked })} /><em>Italic</em></label>
+              </span>
+            </div> : <p className="hint">Font, bold, italic and shadow follow the subtitles ({c.font}{c.bold === false ? "" : ", bold"}{c.italic ? ", italic" : ""}{c.shadow ? ", shadow" : ""}).</p>}
             <div className="pace-controls">
               <label className="wide">Jump cuts <small>Takes quiet pauses out between words. Pauses full of game sound or shouting are kept, and so are the opening and ending.</small>
                 <div className="segmented">{(["off", "gentle", "tight"] as const).map(level => <button key={level} type="button" className={pace.cuts === level ? "active" : ""} onClick={() => change("pace-cuts", e => ({ ...e, pace: { ...pace, ...e.pace, cuts: level } }))}>{{ off: "Off", gentle: "Gentle", tight: "Tight" }[level]}</button>)}</div>
