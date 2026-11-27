@@ -43,6 +43,9 @@ export const preferences=sqliteTable("preferences",{
  aiCaptions:integer("ai_captions",{mode:"boolean"}).notNull().default(true),captionNotes:text("caption_notes").notNull().default(""),
  // Whether the worker transcribes new clips. Off skips Whisper: no subtitles, no sentence-aligned cuts.
  transcribe:integer("transcribe",{mode:"boolean"}).notNull().default(true),
+ // An automatic opening title on new clips. Subtitles and opening titles each transcribe a clip when they need to,
+ // whatever transcribe says (worker/core.mjs clipTextFor).
+ hooks:integer("hooks",{mode:"boolean"}).notNull().default(true),
  // Days full stream recordings are kept (on the worker PC, and their previews in R2).
  recordingDays:integer("recording_days").notNull().default(7),
  // Viewers' Twitch clips: the fewest views a clip needs for the worker to import it (0: off).

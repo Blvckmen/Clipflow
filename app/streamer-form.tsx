@@ -17,21 +17,21 @@ const readText = (json?: string | null): ClipText => { try { const v = json ? JS
 const choiceOf = (v?: boolean): Choice => v === undefined ? "workspace" : v ? "on" : "off";
 
 // Transcription, subtitles and the automatic hook for one streamer's new clips: on, off, or the workspace's setting.
-// Subtitles and hooks are made from the transcript, so they are off while transcription is.
-function ClipTextFields({ value, onChange, ws }: { value: Record<(typeof TEXT_KEYS)[number], Choice>; onChange: (v: Record<(typeof TEXT_KEYS)[number], Choice>) => void; ws: { transcribe: boolean; subtitles: boolean } }) {
-  const wsValue = { transcribe: ws.transcribe, subtitles: ws.subtitles, hook: true };
+// Each is independent: subtitles and hooks transcribe the clip themselves when transcription is off (worker/core.mjs).
+function ClipTextFields({ value, onChange, ws }: { value: Record<(typeof TEXT_KEYS)[number], Choice>; onChange: (v: Record<(typeof TEXT_KEYS)[number], Choice>) => void; ws: { transcribe: boolean; subtitles: boolean; hooks?: boolean } }) {
+  const wsValue = { transcribe: ws.transcribe, subtitles: ws.subtitles, hook: ws.hooks !== false };
   const on = (k: (typeof TEXT_KEYS)[number]) => value[k] === "workspace" ? wsValue[k] : value[k] === "on";
-  const noTranscript = !on("transcribe");
+  const stillTranscribed = !on("transcribe") && (on("subtitles") || on("hook"));
   const rows = [
-    ["transcribe", "Transcription", "Whisper on your worker PC writes down what is said. Needed for subtitles, opening titles and AI post text."],
+    ["transcribe", "Transcription", "Whisper on your worker PC writes down what is said, for cuts on full sentences and automatic post text."],
     ["subtitles", "Subtitles", "Word-by-word subtitles on the video."],
     ["hook", "Automatic opening title", "A short title at the start of each clip, written from what is said. You can still type or change one in the editor."],
   ] as const;
-  return <fieldset className="clip-text-fields"><legend>Text on new clips</legend>
-    {rows.map(([k, label, note]) => { const off = k !== "transcribe" && noTranscript; return <label key={k} className={off ? "muted-field" : ""}>{label}
-      <select value={value[k]} disabled={off} onChange={e => onChange({ ...value, [k]: e.target.value as Choice })}>
-        <option value="workspace">Workspace setting ({k === "hook" ? "on" : wsValue[k] ? "on" : "off"})</option><option value="on">On</option><option value="off">Off</option>
-      </select><small>{off ? "Off while transcription is off for this streamer." : note}</small></label>; })}
+  return <fieldset className="clip-text-fields"><legend>Text on new clips <small>Each one turns on or off by itself.</small></legend>
+    {rows.map(([k, label, note]) => <label key={k}>{label}
+      <select value={value[k]} onChange={e => onChange({ ...value, [k]: e.target.value as Choice })}>
+        <option value="workspace">Workspace setting ({wsValue[k] ? "on" : "off"})</option><option value="on">On</option><option value="off">Off</option>
+      </select><small>{k === "transcribe" && stillTranscribed ? "Off, but subtitles or the opening title still transcribe each clip because they need what is said." : note}</small></label>)}
   </fieldset>;
 }
 
@@ -79,7 +79,7 @@ export function PublishModeField({ value, onChange, ws }: { value: string; onCha
 }
 
 export function StreamerForm({ streamer, hasAccounts, busy, workspaceMode, workspaceText, workspaceViewer, workspaceLimit, picker, onSave }: {
-  streamer: Streamer; hasAccounts: boolean; busy: boolean; workspaceMode: string; workspaceText: { transcribe: boolean; subtitles: boolean }; workspaceViewer: { importClips: number } & ViewerClipsWs; workspaceLimit: number;
+  streamer: Streamer; hasAccounts: boolean; busy: boolean; workspaceMode: string; workspaceText: { transcribe: boolean; subtitles: boolean; hooks?: boolean }; workspaceViewer: { importClips: number } & ViewerClipsWs; workspaceLimit: number;
   picker: (value: string[], onChange: (next: string[]) => void) => ReactNode; onSave: (changes: StreamerChanges) => void;
 }) {
   const [name, setName] = useState(streamer.name), [url, setUrl] = useState(streamer.url), [status, setStatus] = useState(streamer.status), [accounts, setAccounts] = useState(streamer.accounts), [mode, setMode] = useState(streamer.capture_mode ?? "clip"), [publish, setPublish] = useState(streamer.publish_mode ?? "workspace");

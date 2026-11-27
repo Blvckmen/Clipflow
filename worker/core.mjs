@@ -24,11 +24,13 @@ export function channelUrl(value) {
   return u.href;
 }
 // A streamer's transcription, subtitles and automatic hook: its own choice where it made one, else the workspace's
-// (transcription and subtitles are workspace settings; automatic hooks are on). Subtitles and hooks are made from the
-// transcript, so without transcription there are neither.
+// (dashboards that predate the hooks setting omit it: on). Each switch is independent: subtitles and hooks are made
+// from what was said, so either one being on transcribes the clip even with transcription off (which then only
+// leaves out the transcript's other uses when both are off: sentence-aligned cuts and post text from it).
 export function clipTextFor(settings, streamer) {
   const own = streamer?.text ?? {}, transcribe = own.transcribe ?? settings.transcribe !== false;
-  return { transcribe, subtitles: transcribe && (own.subtitles ?? !!settings.captions), hook: transcribe && (own.hook ?? true) };
+  const subtitles = own.subtitles ?? !!settings.captions, hook = own.hook ?? settings.hooks !== false;
+  return { transcribe: transcribe || subtitles || hook, subtitles, hook };
 }
 export function validateControl(c) {
   if (!c || !["running","paused","stopped"].includes(c.control) || !Array.isArray(c.streamers)) throw new Error("Invalid control response");

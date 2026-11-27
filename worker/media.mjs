@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { command } from "./process.mjs";
 import { fileURLToPath } from "node:url";
-import { channelUrl, clipHash, probeResult } from "./core.mjs";
+import { channelUrl, clipHash, clipTextFor, probeResult } from "./core.mjs";
 import { candidateWindows, chooseMoment, pickWindow, snapToSentences } from "./highlights.mjs";
 import { defaultEdit, defaultStyle, maskWord, normalizeStyle } from "./edit.mjs";
 import { encodeTimeout, findPhonePicture, renderClip, videoInfo } from "./render.mjs";
@@ -109,9 +109,9 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
     took("loudness");
     const {energy}=JSON.parse(await readFile(energyFile,"utf8"));
     let segments=[];
-    // Transcription off (for this streamer, or the workspace): no Whisper, so no subtitles, no automatic hook and no
-    // sentence-aligned cuts. `text` is the streamer's choices (see clipTextFor); without it, the workspace's.
-    const transcribe=text?text.transcribe:settings.transcribe!==false, captions=text?text.subtitles:transcribe&&!!settings.captions;
+    // Transcription, subtitles and the automatic hook: `text` is the streamer's choices, without it the workspace's
+    // (clipTextFor). Whisper runs when any of the three needs it; with all three off there are no sentence-aligned cuts.
+    const own=text??clipTextFor(settings), transcribe=own.transcribe, captions=own.subtitles;
     if(transcribe)try {
       // The kept-loaded transcriber (whisper.mjs) when it can, else a process of its own.
       await whisper(raw,wordsFile,{hint,python,signal,timeout:600_000});
@@ -158,7 +158,7 @@ export async function processWindow(raw,{settings,text=null,style,focusFrom=0,fo
     // Build the title before the first render; the saved edit and dashboard preview share it. The AI writer's hook
     // comes first when it has one; otherwise the transcript-based one. autoHooks: the dashboard's "Opening titles on
     // new clips" (AUTO_HOOKS=false when the dashboard doesn't set it).
-    const hooks=transcribe && (text?text.hook:true) && autoHooks;
+    const hooks=own.hook && autoHooks;
     // The AI writer only needs what was said, so it works while the source is encoded (the two longest steps).
     const said=words.filter(w=>w[0]>=initialEdit.trim.start-.05&&w[1]<=initialEdit.trim.end+.05).map(w=>w[2]).join(" ");
     const writing=writer&&!signal.aborted?writer({transcript:said,from,to:to}).catch(()=>null):Promise.resolve(null);

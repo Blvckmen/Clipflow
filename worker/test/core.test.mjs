@@ -290,7 +290,12 @@ test("transcription, subtitles and hooks: the streamer's own choice, else the wo
   assert.deepEqual(clipTextFor(ws, { text: {} }), { transcribe: true, subtitles: true, hook: true });
   assert.deepEqual(clipTextFor(ws, { text: { subtitles: false } }), { transcribe: true, subtitles: false, hook: true });
   assert.deepEqual(clipTextFor({ transcribe: true, captions: false }, { text: { subtitles: true, hook: false } }), { transcribe: true, subtitles: true, hook: false });
-  assert.deepEqual(clipTextFor(ws, { text: { transcribe: false, subtitles: true, hook: true } }), { transcribe: false, subtitles: false, hook: false }, "no transcript, no text");
+  // Each switch is independent: subtitles or a hook transcribe the clip even with transcription off.
+  assert.deepEqual(clipTextFor(ws, { text: { transcribe: false, subtitles: true, hook: false } }), { transcribe: true, subtitles: true, hook: false }, "subtitles transcribe on their own");
+  assert.deepEqual(clipTextFor(ws, { text: { transcribe: false, subtitles: false, hook: true } }), { transcribe: true, subtitles: false, hook: true }, "a hook transcribes on its own");
+  assert.deepEqual(clipTextFor(ws, { text: { transcribe: false, subtitles: false, hook: false } }), { transcribe: false, subtitles: false, hook: false }, "all three off: no Whisper");
+  assert.deepEqual(clipTextFor({ transcribe: true, captions: true, hooks: false }, { text: {} }), { transcribe: true, subtitles: true, hook: false }, "the workspace's hooks setting");
+  assert.deepEqual(clipTextFor({ transcribe: false, captions: false, hooks: false }, { text: { hook: true } }), { transcribe: true, subtitles: false, hook: true });
   assert.deepEqual(clipTextFor({ transcribe: false, captions: true }, { text: { transcribe: true } }), { transcribe: true, subtitles: true, hook: true });
   assert.deepEqual(clipTextFor(ws, undefined), { transcribe: true, subtitles: true, hook: true }, "a removed streamer follows the workspace");
   assert.deepEqual(validateControl(config({ streamers: [{ ...config().streamers[0], text: { hook: false } }] })).streamers[0].text, { hook: false });

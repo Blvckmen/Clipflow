@@ -29,6 +29,8 @@ export const settingsSchema=z.object({mode:z.enum(["automatic","review"]),durati
  aiCaptions:z.boolean().optional(),captionNotes:z.string().trim().max(1000).optional(),
  // Whether the worker transcribes clips (Whisper). Off saves time and CPU; captions then need it back on.
  transcribe:z.boolean().optional(),
+ // An automatic opening title on new clips (each streamer can choose its own).
+ hooks:z.boolean().optional(),
  // Days whole-stream recordings are kept.
  recordingDays:z.number().int().min(1).max(30).optional(),
  // Viewers' Twitch clips: the fewest views a clip needs for the worker to import it; 0 is off.
@@ -47,7 +49,7 @@ export const settingsSchema=z.object({mode:z.enum(["automatic","review"]),durati
 export const publishModes={workspace:"Use the workspace setting",review:"Review clips first",automatic:"Post to social media directly"} as const;
 export const defaultCaption="{streamer} on {platform} #clips #{platform}";
 // New workspaces review clips before they post (mode "review"); each one can switch to posting directly in Settings.
-export const defaults={mode:"review",duration:45,dailyLimit:5,captions:true,framing:"blur",destinations:[] as string[],control:"paused",captionTemplate:defaultCaption,aiCaptions:true,captionNotes:"",transcribe:true,recordingDays:7,importClips:0,viewerClips:{perDay:2,maxHours:24,ask:false},clipCommand:"mods" as "off"|"mods"|"everyone",learn:true,weeklyHighlights:false,worker:{} as WorkerSettings};
+export const defaults={mode:"review",duration:45,dailyLimit:5,captions:true,framing:"blur",destinations:[] as string[],control:"paused",captionTemplate:defaultCaption,aiCaptions:true,captionNotes:"",transcribe:true,hooks:true,recordingDays:7,importClips:0,viewerClips:{perDay:2,maxHours:24,ask:false},clipCommand:"mods" as "off"|"mods"|"everyone",learn:true,weeklyHighlights:false,worker:{} as WorkerSettings};
 export const captureModes={clip:"Clip live",record:"Record the whole stream, clip it afterwards",both:"Clip live and record the whole stream"} as const;
 // Platforms this build can actually publish to once an account is connected.
 export const publishable=["Instagram"] as const;
