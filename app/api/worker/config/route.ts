@@ -21,7 +21,7 @@ export async function GET(request:Request){
    // signals: the source's loudness, for jump cuts and punch-in zooms.
    db.prepare("SELECT id,edit,edit_rev,transcript,source_meta,signals FROM clips WHERE owner=? AND render_state='queued' AND edit IS NOT NULL ORDER BY coalesce(rendered_at,created_at) LIMIT 5").bind(owner).all<{id:string;edit:string;edit_rev:number;transcript:string|null;source_meta:string|null;signals:string|null}>(),
    // Checking in; restart_at: a restart asked for from Settings → This PC, done by the worker once it is idle.
-   db.prepare("UPDATE worker_tokens SET last_seen=? WHERE owner=? RETURNING restart_at").bind(new Date().toISOString(),owner).first<{restart_at:string|null}>(),
+   db.prepare("UPDATE worker_tokens SET last_seen=? WHERE owner=? RETURNING restart_at,restart_now,power").bind(new Date().toISOString(),owner).first<{restart_at:string|null;restart_now:number|null;power:string|null}>(),
    // Split-screen background videos the worker may download (GET /api/worker/backgrounds/<id>).
    db.prepare("SELECT id,name,size,duration,content_type FROM backgrounds WHERE owner=? ORDER BY created_at").bind(owner).all<{id:string;name:string;size:number;duration:number|null;content_type:string}>(),
    // Recordings the dashboard still has (the worker deletes its copies of the rest), videos waiting to be imported
@@ -45,7 +45,9 @@ export async function GET(request:Request){
    style:parse(p?.style),
    // Settings → This PC; each choice left out follows the worker's .env (worker/core.mjs workerTuning).
    // workerRev: their fingerprint, which the worker reports back once it runs with them (Saved → Applied).
-   restartAt:wt?.restart_at??null,
+   restartAt:wt?.restart_at??null,restartNow:!!wt?.restart_now,
+   // Settings → This PC → Stop: the worker ends recordings and clip-making and waits until Start.
+   power:wt?.power==="stopped"?"stopped":"running",
    retries:ry.results.map(x=>x.clip_id),
    // Whether this site lends its Twitch app to workers without one (app/api/worker/twitch).
    twitchApp:!!((env as {TWITCH_CLIENT_ID?:string}).TWITCH_CLIENT_ID&&(env as {TWITCH_CLIENT_SECRET?:string}).TWITCH_CLIENT_SECRET),

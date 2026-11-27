@@ -337,6 +337,13 @@
       "when": 1795768639770,
       "tag": "0047_text_switches",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "6",
+      "when": 1795770073641,
+      "tag": "0048_worker_power",
+      "breakpoints": true
     }
   ]
 }

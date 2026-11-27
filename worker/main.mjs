@@ -163,7 +163,7 @@ function deviceReport() {
     oldestWaitMin: oldest === null ? 0 : Math.floor((Date.now() - oldest) / 300_000) * 5,
     uses: { maxCaptures: tuning.maxCaptures, clipWorkers: tuning.clipWorkers, whisperModel: tuning.whisperModel, aiWriter: tuning.aiWriter, retentionHours: tuning.retentionHours },
     cores: availableParallelism(), memoryGb: Math.round(totalmem() / 2 ** 30 * 10) / 10,
-    health, restartPending,
+    health, restartPending, stopped: config?.power === "stopped",
     // Each clip being made or about to be (Clips → Being made): its stage, and failures from the last two hours.
     clips: clipsInProgress({
       making: [...running].map(r => r.job).filter(j => !j.kind),
@@ -226,6 +226,12 @@ function maybeCheckHealth() {
 const startedAt = Date.now(), startedStamp = await codeStamp();
 let restartPending = false;
 function restartIfIdle() {
+  // Restart now (Settings → This PC): straight away. What's cut off picks up again after it (resumeInterrupted).
+  if (config?.restartNow && config.restartAt && Date.parse(config.restartAt) > startedAt) {
+    console.log("Restarting now, as asked from the dashboard");
+    void shutdown();
+    return true;
+  }
   if (!restartPending && config?.restartAt && Date.parse(config.restartAt) > startedAt) {
     restartPending = true;
     console.log("Restart asked for from the dashboard; restarting once idle");
@@ -1353,9 +1359,22 @@ async function resumeInterrupted() {
   if (count) { console.log("Resuming", count, "clip(s) interrupted by the last stop"); void processJobs(); }
 }
 
+// Stopped from the dashboard (Settings → This PC → Stop): with anything recording or being made, the worker exits as
+// for a restart (what's cut off is kept to pick up again), and the launcher starts it again; then, idle, it only checks
+// in and says it's stopped until Start. It stays connected so Start can reach it.
+let saidStopped = false;
+async function stayStopped() {
+  if (config?.power !== "stopped") { if (saidStopped) console.log("Started again from the dashboard"); saidStopped = false; return false; }
+  if (sessions.size || running.size) { console.log("Stopping as asked from the dashboard"); void shutdown(); return true; }
+  if (!saidStopped) { saidStopped = true; console.log("Stopped from the dashboard: not recording or making clips until Start"); }
+  await reportStatus();
+  return true;
+}
+
 async function tick() {
   await refresh();
   if (restartIfIdle()) return;
+  if (await stayStopped()) return;
   maybeCheckHealth();
   await resumeInterrupted();
   queueRenders(config?.renders);

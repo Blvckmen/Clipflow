@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef } from "react";
-import { AlertTriangle, Check, Cpu, Info, Loader2, MonitorSmartphone, RotateCw, Settings2, XCircle } from "lucide-react";
+import { AlertTriangle, Check, Cpu, Info, Loader2, MonitorSmartphone, Play, RotateCw, Settings2, Square, XCircle } from "lucide-react";
 import { pcProblems } from "../lib/pc-health.mjs";
 import type { WorkerSettings } from "../lib/clipflow";
 
@@ -12,10 +12,10 @@ export type Device = {
   applied: string | null; recording: string[]; making: number; waiting: number; held: number;
   uses: { maxCaptures: number; clipWorkers: number; whisperModel: string; aiWriter: boolean; retentionHours: number };
   cores: number; memoryGb: number;
-  oldestWaitMin?: number; restartPending?: boolean;
+  oldestWaitMin?: number; restartPending?: boolean; stopped?: boolean;
   health?: { checkedAt: string; diskFreeGb: number | null; diskTotalGb: number | null; ffmpeg: boolean; streamlink: boolean; whisper: boolean; whisperModel: string; whisperReady: boolean | null; ollama: "off" | "down" | "ok"; ollamaMissing: string[]; codeChanged: boolean } | null;
 };
-export type PcEngine = { connected: boolean; lastSeen: string | null; tokenCreated: string | null; lastError: string | null; lastErrorAt: string | null; device?: Device | null; deviceAt?: string | null; settingsRev?: string; restartAt?: string | null };
+export type PcEngine = { connected: boolean; lastSeen: string | null; tokenCreated: string | null; lastError: string | null; lastErrorAt: string | null; device?: Device | null; deviceAt?: string | null; settingsRev?: string; restartAt?: string | null; restartNow?: boolean; power?: "running" | "stopped" };
 
 const POWER = { light: "Light", balanced: "Balanced", maximum: "Maximum" } as const;
 const POWER_OF: Record<number, keyof typeof POWER> = { 1: "light", 2: "balanced", 3: "maximum" };
@@ -36,9 +36,9 @@ export function applyState(engine: PcEngine | null | undefined): "applied" | "wa
   return engine.connected ? "waiting" : "offline";
 }
 
-export function ThisPcSettings({ value, onChange, engine, dirty, channelName, onRefresh, onRestart, busy }: {
+export function ThisPcSettings({ value, onChange, engine, dirty, channelName, onRefresh, onRestart, onPower, busy }: {
   value: WorkerSettings; onChange: (v: WorkerSettings) => void; engine: PcEngine | null | undefined; dirty: boolean;
-  channelName: (id: string) => string | null; onRefresh: () => void; onRestart: () => void; busy: boolean;
+  channelName: (id: string) => string | null; onRefresh: () => void; onRestart: (now?: boolean) => void; onPower: (stop: boolean) => void; busy: boolean;
 }) {
   const set = <K extends keyof WorkerSettings>(k: K, v: WorkerSettings[K] | undefined) => { const next = { ...value }; if (v === undefined) delete next[k]; else next[k] = v; onChange(next); };
   const device = engine?.device ?? null, uses = device?.uses, state = applyState(engine);
@@ -56,6 +56,7 @@ export function ThisPcSettings({ value, onChange, engine, dirty, channelName, on
   const checked = !!device?.health && !!engine?.connected;
   // A restart was asked for but the PC hasn't said it's waiting yet (it hears within a minute).
   const restartAsked = !!engine?.restartAt && !device?.restartPending && Date.now() - Date.parse(engine.restartAt) < 3 * 60_000;
+  const stopped = engine?.power === "stopped";
 
   return <section className="panel settings-group this-pc">
     <div className="group-head"><Settings2 size={18} /><div><h2>This PC</h2><p>How the PC that records and makes your clips runs. Changes reach it within a minute, without a restart, and never cut off a recording or a clip in progress.</p></div>
@@ -84,9 +85,18 @@ export function ThisPcSettings({ value, onChange, engine, dirty, channelName, on
     {problems.length > 0 && <ul className="pc-problems">{problems.map(p => <li key={p.id} className={p.level}>
       {p.level === "bad" ? <XCircle size={16} /> : p.level === "warn" ? <AlertTriangle size={16} /> : <Info size={16} />}
       <div><strong>{p.title}</strong><small>{p.fix}</small></div>
-      {p.action === "restart" && <button type="button" className="secondary" disabled={busy || restartAsked} onClick={onRestart}><RotateCw size={14} />{restartAsked ? "Restart asked for" : "Restart when idle"}</button>}
+      {p.action === "restart" && <button type="button" className="secondary" disabled={busy || restartAsked} onClick={() => onRestart(false)}><RotateCw size={14} />{restartAsked ? "Restart asked for" : "Restart when idle"}</button>}
     </li>)}</ul>}
-    {engine?.connected && !problems.some(p => p.action === "restart" || p.id === "restarting") && <p className="pc-restart"><button type="button" className="text-button" disabled={busy || restartAsked} onClick={onRestart}><RotateCw size={13} />{restartAsked ? "Restart asked for: it happens once nothing is recording or being made" : "Restart the worker when idle"}</button></p>}
+    {/* Stop / Start / Restart the worker from here. It acts within a minute, as it checks in; it can't start a PC
+        that's off or a worker that isn't running. */}
+    {engine?.tokenCreated && <div className="pc-controls">
+      {stopped
+        ? <button type="button" className="primary" disabled={busy} onClick={() => onPower(false)}><Play size={14} />Start</button>
+        : <button type="button" className="secondary" disabled={busy || !engine.connected} onClick={() => { if (window.confirm("Stop this PC? It ends its recordings and stops making clips until you press Start. Clips cut off now pick up again then.")) onPower(true); }}><Square size={14} />Stop</button>}
+      {!problems.some(p => p.action === "restart") && <button type="button" className="secondary" disabled={busy || restartAsked || !engine.connected} onClick={() => onRestart(false)}><RotateCw size={14} />{restartAsked && !engine.restartNow ? "Restart asked for" : "Restart when idle"}</button>}
+      <button type="button" className="text-button" disabled={busy || restartAsked || !engine.connected} onClick={() => { if (window.confirm("Restart this PC's worker now? Recordings stop for about a minute; clips being made pick up again after it.")) onRestart(true); }}>{restartAsked && engine.restartNow ? "Restarting…" : "Restart now"}</button>
+      <small>{stopped ? (device?.stopped ? "Stopped: not recording or making clips. Press Start to carry on." : "Stopping… the PC hears within a minute.") : restartAsked && !engine.restartNow ? "Restarts once nothing is recording or being made." : "These reach the PC within a minute. A PC that's off, or a worker that isn't running, has to be started on the PC itself."}</small>
+    </div>}
 
     <div className="group-body">
       <label>Computer usage<select value={value.power ?? ""} onChange={e => set("power", (e.target.value || undefined) as WorkerSettings["power"])}><option value="">{auto(uses ? POWER[POWER_OF[uses.clipWorkers]] ?? uses.clipWorkers + " clips at a time" : null)}</option><option value="light">Light: one clip at a time</option><option value="balanced">Balanced: two clips at a time</option><option value="maximum">Maximum: three clips at a time</option></select>

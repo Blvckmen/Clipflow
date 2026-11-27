@@ -59,7 +59,8 @@ const actionSchema=z.discriminatedUnion("action",[
  // `platform` is the pre-multi-account form: it disconnects that platform's only account.
  z.object({action:z.literal("disconnect"),id:z.string().uuid().optional(),platform:z.enum(["instagram"]).optional()}),
  z.object({action:z.literal("retryPost"),id:z.string().min(1).max(64)}),
- z.object({action:z.literal("restartWorker")}),
+ z.object({action:z.literal("restartWorker"),now:z.boolean().optional()}),
+ z.object({action:z.literal("workerPower"),power:z.enum(["running","stopped"])}),
  z.object({action:z.literal("schedulePost"),id:z.string().min(1).max(64),at:z.string().regex(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/).nullable()}),
  // Posts held for review (their account had reached its daily limit): queue them to post when there's room, or skip them.
  z.object({action:z.literal("reviewPosts"),ids:z.array(z.string().min(1).max(64)).min(1).max(200).transform(x=>[...new Set(x)]),op:z.enum(["queue","skip"])}),
@@ -143,12 +144,12 @@ export async function GET(request:Request){
    // Why clips were rejected lately (lib/reject-reasons.mjs), for the line above the library.
    db.prepare("SELECT reject_reason AS reason,count(*) AS n FROM clips WHERE owner=? AND review='rejected' AND reject_reason IS NOT NULL AND reviewed_at>=? GROUP BY reject_reason").bind(owner,new Date(Date.now()-REJECT_WINDOW_DAYS*86_400_000).toISOString()).all<{reason:string;n:number}>(),
   ]);
-  const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(owner).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(owner).all(),db.prepare(CLIPS_SQL+" WHERE c.owner=? ORDER BY c.created_at DESC LIMIT "+CLIPS_PAGE).bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at,device,device_at,restart_at FROM worker_tokens WHERE owner=?").bind(owner).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null;device:string|null;device_at:string|null;restart_at:string|null}>()]);
+  const [s,p,e,c,w]=await Promise.all([db.prepare("SELECT * FROM streamers WHERE owner=? ORDER BY created_at DESC").bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT * FROM preferences WHERE owner=?").bind(owner).first(),db.prepare("SELECT id,message,created_at FROM events WHERE owner=? ORDER BY created_at DESC LIMIT 30").bind(owner).all(),db.prepare(CLIPS_SQL+" WHERE c.owner=? ORDER BY c.created_at DESC LIMIT "+CLIPS_PAGE).bind(owner).all<Record<string,unknown>>(),db.prepare("SELECT created_at,last_seen,last_error,last_error_at,device,device_at,restart_at,restart_now,power FROM worker_tokens WHERE owner=?").bind(owner).first<{created_at:string;last_seen:string|null;last_error:string|null;last_error_at:string|null;device:string|null;device_at:string|null;restart_at:string|null;restart_now:number|null;power:string|null}>()]);
   const lastSeen=w?.last_seen??null,connected=!!lastSeen&&Date.now()-Date.parse(lastSeen)<ENGINE_FRESH_MS;
   const engine={connected,lastSeen,tokenCreated:w?.created_at??null,lastError:w?.last_error??null,lastErrorAt:w?.last_error_at??null,
     // Settings → This PC: what the worker last said about itself, and the fingerprint of the saved settings to compare
     // with the one it runs with (Saved → Waiting for device → Applied).
-    device:(()=>{try{return w?.device?JSON.parse(w.device):null;}catch{return null;}})(),deviceAt:w?.device_at??null,restartAt:w?.restart_at??null,settingsRev:workerSettingsRev(readWorkerSettings(p?.worker_settings)),status:connected?"Worker connected":w?(lastSeen?"Worker offline":"Waiting for worker"):"Setup required"};
+    device:(()=>{try{return w?.device?JSON.parse(w.device):null;}catch{return null;}})(),deviceAt:w?.device_at??null,restartAt:w?.restart_at??null,restartNow:!!w?.restart_now,power:w?.power==="stopped"?"stopped":"running",settingsRev:workerSettingsRev(readWorkerSettings(p?.worker_settings)),status:connected?"Worker connected":w?(lastSeen?"Worker offline":"Waiting for worker"):"Setup required"};
   const streamers=s.results.map(x=>({...x,style:parse(x.style),posting_rules:readRules(x.posting_rules),viewer_clips:readStreamerViewerClips(x.viewer_clips),accounts:l.results.filter(k=>k.streamer_id===x.id).map(k=>k.account_id)}));
   // Stored Zernio keys never leave the server: only their labels and how many accounts each holds.
   const prefs=Object.fromEntries(Object.entries((p??{}) as Record<string,unknown>).filter(([k])=>k!=="zernio_key_enc"&&k!=="zernio_label"&&k!=="discord_webhook_enc"));
@@ -535,9 +536,21 @@ export async function POST(request:Request){
   if(payload.action==="restartWorker"){
    // Settings → This PC: the worker restarts on the code on its disk once nothing is recording or being made
    // (worker/main.mjs restartIfIdle), so nothing in progress is cut short.
-   const r=await db.prepare("UPDATE worker_tokens SET restart_at=? WHERE owner=?").bind(iso,owner).run();
+   // now: straight away (recordings stop; clips being made pick up again after it, if under a day old).
+   const r=await db.prepare("UPDATE worker_tokens SET restart_at=?,restart_now=? WHERE owner=?").bind(iso,payload.now?1:0,owner).run();
    if(!r.meta.changes)return Response.json({error:"Connect a PC first."},{status:409});
-   return Response.json({ok:true,message:"Your PC restarts as soon as nothing is recording or being made."});
+   statements.push(db.prepare("INSERT INTO events (id,owner,message,created_at) VALUES (?,?,?,?)").bind(crypto.randomUUID(),owner,payload.now?"Asked the PC to restart now.":"Asked the PC to restart once idle.",iso));
+   await db.batch(statements);
+   return Response.json({ok:true,message:payload.now?"Your PC restarts within a minute. Anything cut off picks up again after it.":"Your PC restarts as soon as nothing is recording or being made."});
+  }
+  if(payload.action==="workerPower"){
+   // Settings → This PC → Stop / Start (worker/main.mjs): stopped, the worker ends its recordings and clip-making
+   // and waits, still checking in, so Start reaches it. It can't start a PC that's off or a worker that isn't running.
+   const r=await db.prepare("UPDATE worker_tokens SET power=? WHERE owner=?").bind(payload.power==="stopped"?"stopped":null,owner).run();
+   if(!r.meta.changes)return Response.json({error:"Connect a PC first."},{status:409});
+   statements.push(db.prepare("INSERT INTO events (id,owner,message,created_at) VALUES (?,?,?,?)").bind(crypto.randomUUID(),owner,payload.power==="stopped"?"Stopped the PC from the dashboard.":"Started the PC from the dashboard.",iso));
+   await db.batch(statements);
+   return Response.json({ok:true,message:payload.power==="stopped"?"Your PC stops recording and making clips within a minute. Press Start to carry on.":"Your PC carries on within a minute."});
   }
   if(payload.action==="schedulePost"){
    // From the calendar: post at a chosen time (it waits until then, then skips the posting hours; the daily limit

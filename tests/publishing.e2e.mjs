@@ -473,6 +473,26 @@ test("Plans: a new workspace starts a trial, pays through Stripe, is held to its
   for (const s of (await as()).body.streamers) await as({ action: "remove", id: s.id });
 });
 
+test("This PC: Stop, Start and Restart now reach the worker; the dashboard shows what was asked", async () => {
+  const config = async () => (await (await worker("/api/worker/config")).json());
+  let c = await config();
+  assert.equal(c.power, "running");
+  assert.equal((await dash({ action: "workerPower", power: "stopped" })).status, 200);
+  assert.equal((c = await config()).power, "stopped", "the worker hears Stop");
+  assert.equal((await dash()).body.engine.power, "stopped");
+  assert.equal((await dash({ action: "workerPower", power: "running" })).status, 200);
+  assert.equal((await config()).power, "running", "and Start");
+  assert.equal((await dash({ action: "restartWorker", now: true })).status, 200);
+  c = await config();
+  assert.equal(c.restartNow, true);
+  assert.ok(Date.parse(c.restartAt) > Date.now() - 60_000);
+  assert.equal((await dash({ action: "restartWorker" })).status, 200);
+  assert.equal((await config()).restartNow, false, "when idle, the default");
+  assert.equal((await dash({ action: "workerPower", power: "off" })).status, 400);
+  const events = (await dash()).body.events.map(e => e.message);
+  assert.ok(events.includes("Stopped the PC from the dashboard.") && events.includes("Asked the PC to restart now."));
+});
+
 test("an account set to Spanish posts the Spanish version the worker made, or fails with the reason", async () => {
   const words = [[6.2, 6.6, "No"], [6.7, 7.0, "way"], [7.1, 8.6, "that!"]];
   const material = () => { const src = randomBytes(2048); return { edit: defaultEdit(defaultStyle(), { trimStart: 6, trimEnd: 36 }), transcript: words, source: { width: 1920, height: 1080, duration: 42, sha: createHash("sha256").update(src).digest("hex"), size: src.length } }; };
