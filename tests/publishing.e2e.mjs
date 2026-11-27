@@ -160,6 +160,9 @@ test("an approved clip is posted once: container, processing, publish, permalink
 
 test("a lost publish response is checked, never sent again; a clip rejected while Instagram processes it isn't posted", async () => {
   const publishes = async () => (await fakeLog()).log.filter(e => e.path.endsWith("/media_publish")).length;
+  // Room for these two posts on top of the workspace's 2 a day (put back at the end).
+  const [account] = (await dash()).body.accounts;
+  assert.equal((await dash({ action: "accountOptions", id: account.id, options: { dailyLimit: 20 } })).status, 200);
   // Lost answer: Instagram publishes, but Clipflow hears a 500.
   const lost = await addClip();
   await cron();
@@ -184,6 +187,7 @@ test("a lost publish response is checked, never sent again; a clip rejected whil
   await cron(61_000);  // FINISHED, but the clip is rejected now
   assert.equal(await publishes(), was, "not published");
   assert.equal((await posts()).find(p => p.clip_id === late.clip.id), undefined, "its post is gone");
+  await dash({ action: "accountOptions", id: account.id, options: {} });
 });
 
 test("signed media links refuse missing, altered or foreign signatures", async () => {
@@ -200,7 +204,7 @@ test("rejected clips are not posted and pausing stops publishing", async () => {
   await dash({ action: "control", control: "paused" });
   const second = await addClip();
   await cron(120_000);
-  assert.equal((await posts()).length, 1, "nothing queued while paused, rejected clip never");
+  assert.equal((await posts()).filter(p => p.clip_id === clip.id || p.clip_id === second.clip.id).length, 0, "nothing queued while paused, rejected clip never");
   await dash({ action: "control", control: "running" });
   await cron(120_000);
   const queued = (await posts()).find(p => p.clip_id === second.clip.id);

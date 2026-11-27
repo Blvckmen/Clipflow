@@ -279,7 +279,10 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   const handle = async (post: PostRow, error: unknown) => {
     const problem = adapter.accountProblem(error);
     if (problem) await db.prepare("UPDATE accounts SET status=?,last_error=? WHERE id=?").bind(problem.expire ? "expired" : "connected", problem.message, account.id).run();
-    else if (!(error instanceof zernio.ZernioError && error.inFlight)) await fail(post, (error as Error).message);
+    else if (!(error instanceof zernio.ZernioError && error.inFlight)) return fail(post, (error as Error).message);
+    // Not the post's fault (its account, or Zernio still busy with it): let go of the claim, so it goes again as soon
+    // as it can (once the account is reconnected) rather than after CLAIM_MS.
+    await db.prepare("UPDATE posts SET next_attempt_at=? WHERE id=? AND state='queued'").bind(iso, post.id).run();
   };
 
   // 1. Finish a post the platform is still processing.
