@@ -40,9 +40,11 @@ def clean_hint(hint):
     surrogate, e.g. from a title cut mid-emoji) replaced. The tokenizer refuses those with "TextInputSequence must
     be str"."""
     return str(hint or "").encode("utf-8","replace").decode("utf-8").strip()[:200]
-def transcribe(source, target, hint="", model_name=None):
+def transcribe(source, target, hint="", model_name=None, language=None):
     """Writes {"segments": [{"start", "end", "words": [[start, end, text], ...]}]} for the whole file. `hint` (the
-    streamer's name, the stream title) nudges Whisper towards spelling those words right."""
+    streamer's name, the stream title) nudges Whisper towards spelling those words right. `language` ("en"), from
+    Settings → This PC "Speech language", skips Whisper's guess, which can be wrong on noisy stream audio (English
+    over music was taken for Haitian Creole); none lets Whisper detect it."""
     import json
     import numpy as np
     # Decode with ffmpeg rather than faster-whisper's PyAV path, whose keyword arguments break across PyAV releases.
@@ -52,7 +54,7 @@ def transcribe(source, target, hint="", model_name=None):
     # Measured on a 4-core laptop: small with beam 1 runs faster than real time; beam 5 is slower than real time for
     # little gain. Keeping earlier text as context gives fuller punctuation (clip cuts snap to sentence ends);
     # WHISPER_CONTEXT=off trades that for fewer repeated lines in very noisy audio.
-    segments,_=model.transcribe(audio,beam_size=int(os.getenv("WHISPER_BEAM","1")),vad_filter=True,word_timestamps=True,condition_on_previous_text=os.getenv("WHISPER_CONTEXT","on")!="off",hotwords=clean_hint(hint) or None)
+    segments,_=model.transcribe(audio,beam_size=int(os.getenv("WHISPER_BEAM","1")),vad_filter=True,word_timestamps=True,condition_on_previous_text=os.getenv("WHISPER_CONTEXT","on")!="off",hotwords=clean_hint(hint) or None,language=language or os.getenv("WHISPER_LANGUAGE") or None)
     out=[{"start":s.start,"end":s.end,"words":[[w.start,w.end,w.word] for w in (s.words or [])]} for s in segments]
     with open(target,"w",encoding="utf-8") as f: json.dump({"segments":out},f)
 def window(segments, start, end):
@@ -65,7 +67,7 @@ def write_srt(words_file, start, end, target):
         for index,(s,e,text) in enumerate(chunk(window(segments,start,end)),1):
             f.write(f"{index}\n{stamp(s)} --> {stamp(e)}\n{text}\n\n")
 def serve():
-    """One request per line on stdin, {"id", "source", "target", "hint", "model"}, answered with one line on stdout,
+    """One request per line on stdin, {"id", "source", "target", "hint", "model", "language"}, answered with one line on stdout,
     {"id", "ok"} or {"id", "ok": false, "error"}. Models stay loaded between requests (worker/whisper.mjs). Exits when
     stdin closes, so it never outlives the worker that started it."""
     import json
@@ -77,7 +79,7 @@ def serve():
         except ValueError:
             continue
         try:
-            transcribe(req["source"],req["target"],req.get("hint",""),req.get("model"))
+            transcribe(req["source"],req["target"],req.get("hint",""),req.get("model"),req.get("language"))
             reply={"id":req.get("id"),"ok":True}
         except Exception as error:
             reply={"id":req.get("id"),"ok":False,"error":(type(error).__name__+": "+str(error))[:300]}

@@ -15,6 +15,10 @@ let seq = 0;
 // set by main.mjs with every settings load, so a change applies from the next clip without a restart.
 let defaultModel = process.env.WHISPER_MODEL || "small";
 export function setWhisperModel(name) { if (typeof name === "string" && name) defaultModel = name; }
+// Speech language (Settings → This PC): "en" tells Whisper the speech is English instead of letting it guess; null
+// lets it detect. Set the same way as the model.
+let defaultLanguage = process.env.WHISPER_LANGUAGE || null;
+export function setWhisperLanguage(code) { defaultLanguage = typeof code === "string" && /^[a-z]{2}$/.test(code) ? code : null; }
 
 function stopServer(reason) {
   const s = server;
@@ -83,17 +87,17 @@ export const hintText = hint => [...String(hint ?? "")].slice(0, 200).join("").t
 
 // Writes Whisper's words for `source` to `target` (captions.py's {"segments": [...]} JSON).
 // model: a Whisper model name (the setting above unless given); hint: names and titles to spell right.
-export async function transcribe(source, target, { hint = "", model = defaultModel, python = process.env.PYTHON || "python", signal, timeout = 600_000 } = {}) {
+export async function transcribe(source, target, { hint = "", model = defaultModel, language = defaultLanguage, python = process.env.PYTHON || "python", signal, timeout = 600_000 } = {}) {
   hint = hintText(hint);
-  const oneShot = () => command(python, [script, "words", source, target, hint], { signal, timeout, env: { ...process.env, WHISPER_MODEL: model } }).done;
+  const oneShot = () => command(python, [script, "words", source, target, hint], { signal, timeout, env: { ...process.env, WHISPER_MODEL: model, WHISPER_LANGUAGE: language ?? "" } }).done;
   if ((process.env.WHISPER_SERVER ?? "on").toLowerCase() === "off") return oneShot();
   if (signal?.aborted) throw new Error("Cancelled");
   const release = await turn(signal);
-  try { return await sendOne(source, target, { hint, model, python, signal, timeout, oneShot }); }
+  try { return await sendOne(source, target, { hint, model, language, python, signal, timeout, oneShot }); }
   finally { release(); }
 }
 
-async function sendOne(source, target, { hint, model, python, signal, timeout, oneShot }) {
+async function sendOne(source, target, { hint, model, language, python, signal, timeout, oneShot }) {
   if (signal?.aborted) throw new Error("Cancelled");
   server ??= startServer(python);
   const s = server, id = ++seq;
@@ -104,7 +108,7 @@ async function sendOne(source, target, { hint, model, python, signal, timeout, o
   const abort = () => { if (s.pending.has(id)) stopServer("Cancelled"); };
   signal?.addEventListener("abort", abort, { once: true });
   try {
-    s.child.stdin.write(JSON.stringify({ id, source, target, hint, model }) + "\n");
+    s.child.stdin.write(JSON.stringify({ id, source, target, hint, model, language }) + "\n");
     await done;
   } catch (error) {
     if (signal?.aborted || /timed out/.test(error.message)) throw error;

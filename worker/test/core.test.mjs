@@ -61,13 +61,14 @@ test("queued clips wait while paused and are dropped only once stopped", () => {
 });
 
 test("worker settings: the dashboard's choices win, then the environment, then the defaults", () => {
-  assert.deepEqual(workerTuning(null, {}), { minRating: 6, coverageShare: 0.7, spikeFactor: 2.5, autoHooks: true, aiWriter: true, maxCaptures: 1, clipWorkers: 2, retentionHours: 72, whisperModel: "small" });
-  const env = { AI_MIN_RATING: "5", COVERAGE_SHARE: "1", CHAT_SPIKE_FACTOR: "3", AUTO_HOOKS: "false", AI_WRITER: "off", MAX_CAPTURES: "2", CLIP_WORKERS: "3", RETENTION_HOURS: "48", WHISPER_MODEL: "tiny" };
-  assert.deepEqual(workerTuning({}, env), { minRating: 5, coverageShare: 1, spikeFactor: 3, autoHooks: false, aiWriter: false, maxCaptures: 2, clipWorkers: 3, retentionHours: 48, whisperModel: "tiny" });
-  const worker = { pickiness: "strict", chatSensitivity: "high", autoHooks: true, aiWriter: true, maxCaptures: 3, power: "light", retentionHours: 24, transcription: "accurate" };
-  assert.deepEqual(workerTuning({ worker }, env), { minRating: 8, coverageShare: 0.5, spikeFactor: 1.8, autoHooks: true, aiWriter: true, maxCaptures: 3, clipWorkers: 1, retentionHours: 24, whisperModel: "medium" });
+  assert.deepEqual(workerTuning(null, {}), { minRating: 6, coverageShare: 0.7, spikeFactor: 2.5, autoHooks: true, aiWriter: true, maxCaptures: 1, clipWorkers: 2, retentionHours: 72, whisperModel: "small", language: null });
+  const env = { AI_MIN_RATING: "5", COVERAGE_SHARE: "1", CHAT_SPIKE_FACTOR: "3", AUTO_HOOKS: "false", AI_WRITER: "off", MAX_CAPTURES: "2", CLIP_WORKERS: "3", RETENTION_HOURS: "48", WHISPER_MODEL: "tiny", WHISPER_LANGUAGE: "fr" };
+  assert.deepEqual(workerTuning({}, env), { minRating: 5, coverageShare: 1, spikeFactor: 3, autoHooks: false, aiWriter: false, maxCaptures: 2, clipWorkers: 3, retentionHours: 48, whisperModel: "tiny", language: "fr" });
+  const worker = { pickiness: "strict", chatSensitivity: "high", autoHooks: true, aiWriter: true, maxCaptures: 3, power: "light", retentionHours: 24, transcription: "accurate", language: "en" };
+  assert.deepEqual(workerTuning({ worker }, env), { minRating: 8, coverageShare: 0.5, spikeFactor: 1.8, autoHooks: true, aiWriter: true, maxCaptures: 3, clipWorkers: 1, retentionHours: 24, whisperModel: "medium", language: "en" });
   // Bad values are ignored, not refused, so a typo can't stop recording.
-  const bad = { pickiness: "picky", chatSensitivity: 9, autoHooks: "yes", maxCaptures: 0, power: "turbo", retentionHours: 1, transcription: "perfect" };
+  const bad = { pickiness: "picky", chatSensitivity: 9, autoHooks: "yes", maxCaptures: 0, power: "turbo", retentionHours: 1, transcription: "perfect", language: "english" };
+  assert.equal(workerTuning({}, { WHISPER_LANGUAGE: "english" }).language, null, "only a two-letter code reaches Whisper");
   assert.deepEqual(workerTuning({ worker: bad }, env), workerTuning({}, env));
   assert.deepEqual(workerTuning({ worker: [] }, {}), workerTuning(null, {}));
   assert.equal(workerTuning({}, { CLIP_WORKERS: "9" }).clipWorkers, 4);

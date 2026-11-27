@@ -7,7 +7,7 @@ export const viewerClipsSchema=z.object({perDay:z.number().int().min(1).max(20),
 export const streamerViewerClipsSchema=z.object({on:z.boolean().optional(),minViews:z.number().int().min(1).max(100000).optional(),perDay:z.number().int().min(1).max(20).optional(),maxHours:z.number().int().min(1).max(72).optional(),ask:z.boolean().optional()}).strict();
 // Settings → This PC: choices the worker uses instead of its .env file (worker/core.mjs workerTuning). Each one left out
 // follows the worker's own setting.
-export const workerSettingsSchema=z.object({pickiness:z.enum(["relaxed","normal","strict"]).optional(),chatSensitivity:z.enum(["low","normal","high"]).optional(),autoHooks:z.boolean().optional(),aiWriter:z.boolean().optional(),maxCaptures:z.number().int().min(1).max(4).optional(),power:z.enum(["light","balanced","maximum"]).optional(),retentionHours:z.number().int().min(12).max(720).optional(),transcription:z.enum(["fast","balanced","accurate"]).optional()}).strict();
+export const workerSettingsSchema=z.object({pickiness:z.enum(["relaxed","normal","strict"]).optional(),chatSensitivity:z.enum(["low","normal","high"]).optional(),autoHooks:z.boolean().optional(),aiWriter:z.boolean().optional(),maxCaptures:z.number().int().min(1).max(4).optional(),power:z.enum(["light","balanced","maximum"]).optional(),retentionHours:z.number().int().min(12).max(720).optional(),transcription:z.enum(["fast","balanced","accurate"]).optional(),language:z.enum(["en"]).optional()}).strict();
 export type WorkerSettings=z.infer<typeof workerSettingsSchema>;
 // The saved JSON, keeping only the choices that are still valid.
 export function readWorkerSettings(json:unknown):WorkerSettings{

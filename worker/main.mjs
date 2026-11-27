@@ -1,4 +1,4 @@
-import { access, mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, open, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -23,7 +23,7 @@ import { screenText, screenTextAvailable } from "./screentext.mjs";
 import { Twitch, clipUrl, momentOf, momentTime, pickClips, twitchLogin, viewerSettings } from "./twitch.mjs";
 import { downloadUpload } from "./uploaded-video.mjs";
 import { PLATFORM_NAMES, downloadVideo, findYtDlp, videoLink, videoTitle } from "./vod.mjs";
-import { setWhisperModel, stopTranscriber, transcribe as whisper } from "./whisper.mjs";
+import { setWhisperLanguage, setWhisperModel, stopTranscriber, transcribe as whisper } from "./whisper.mjs";
 import { AI_BATCH, autoClipPicks, mergeAiMoments, transcriptWindows } from "./stream-pass.mjs";
 import { coverageRoom, coverageWindow, crowdMoments, enqueueTrigger, jobRank, pickJob } from "./triggers.mjs";
 
@@ -266,6 +266,7 @@ async function refresh() {
     setWriterEnabled(tuning.aiWriter);
     // Transcription quality: from the next transcription (one already running finishes with its model).
     setWhisperModel(tuning.whisperModel);
+    setWhisperLanguage(tuning.language);
     appliedRev = typeof config?.workerRev === "string" ? config.workerRev : null;
     // More clips at once takes effect now, not when the next job arrives.
     if (jobs.length) processJobs();
@@ -398,6 +399,21 @@ async function lane() {
     else await clipJob(job);
   }
 }
+// A clip whose transcription timed out keeps a copy of its raw window in DATA_DIR/diagnostics (the newest
+// DIAGNOSTICS_KEPT), so the exact audio can be run through Whisper again later. Try again keeps the window only for two
+// hours, and the one that hung on 27 Nov was deleted before anyone could look at it.
+const DIAGNOSTICS_KEPT = 3;
+async function keepForDiagnosis(job) {
+  try {
+    const dir = join(dataDir, "diagnostics");
+    await mkdir(dir, { recursive: true });
+    const name = new Date().toISOString().replace(/[:.]/g, "-") + "-" + job.id + ".m2t";
+    await copyFile(job.raw, join(dir, name));
+    const kept = (await readdir(dir)).filter(f => f.endsWith(".m2t")).sort();
+    for (const old of kept.slice(0, Math.max(0, kept.length - DIAGNOSTICS_KEPT))) await rm(join(dir, old), { force: true });
+    console.log("Kept the audio of clip " + job.id + " for diagnosis: " + join(dir, name));
+  } catch (error) { console.warn("Could not keep clip " + job.id + " for diagnosis: " + error.message); }
+}
 async function clipJob(job) {
   const startedAt = Date.now();
   {
@@ -448,7 +464,8 @@ async function clipJob(job) {
       // Skipped on purpose (nothing worth a clip): not a problem, and it doesn't count towards the daily limit.
       if (error.skip) console.log("Skipped a", reasonLabel[job.reason], "on", job.streamer.url + ":", error.message, "(after " + Math.round((Date.now() - startedAt) / 1000) + "s)");
       else if (!controller.signal.aborted) {
-        problem("Clip processing failed for " + job.streamer.url + ": " + error.message);
+        problem("Clip processing failed for " + job.streamer.url + ": " + error.message + " (after " + Math.round((Date.now() - startedAt) / 1000) + "s)");
+        if (/transcription timed out/.test(error.message)) void keepForDiagnosis(job);
         // Shown in "Being made" for a while, so a clip that never arrives isn't a mystery.
         recentFailures.unshift({ id: job.id, streamer: job.streamer.id, reason: job.reason ?? null, at: Date.now(), why: error.message, job });
         void trimFailures();

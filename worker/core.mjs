@@ -190,6 +190,8 @@ export function workerTuning(c, env = {}) {
     clipWorkers: PC_POWER[w.power] ?? Math.max(1, Math.min(4, Math.floor(num(env.CLIP_WORKERS, 2)) || 1)),
     retentionHours: int(w.retentionHours, 12, 720) ?? (num(env.RETENTION_HOURS, 72) > 0 ? num(env.RETENTION_HOURS, 72) : 72),
     whisperModel: TRANSCRIPTION[w.transcription] ?? (env.WHISPER_MODEL || "small"),
+    // Speech language: "en" when the dashboard says English; otherwise WHISPER_LANGUAGE, else null (Whisper detects).
+    language: w.language === "en" ? "en" : /^[a-z]{2}$/.test(env.WHISPER_LANGUAGE ?? "") ? env.WHISPER_LANGUAGE : null,
   };
 }
 // Where a clip being made is, for the dashboard's "Being made" list: after each step processWindow finishes (its
