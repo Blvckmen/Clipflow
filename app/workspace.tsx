@@ -14,6 +14,7 @@ import { BackgroundLibrary, type Background } from "./background-library";
 import { captureModes, defaults, destinations, framings, type WorkerSettings } from "../lib/clipflow";
 import { BeingMade, clipsOf } from "./being-made";
 import { PlanPanel, type Plan } from "./plan-panel";
+import { AccountData } from "./account-data";
 import { RejectReasonBar, RejectSummary } from "./reject-reason";
 import { viralityLabel } from "../lib/virality.mjs";
 import { ReviewFeed } from "./review-feed";
@@ -386,6 +387,7 @@ export default function Dashboard(){
  </>}
  {view==="Connections"&&<>{zernioPanel}{(data?.publishing.instagram||instagramAccounts.length>0)&&instagramPanel}<p className="muted connection-note">Connecting an account uses that platform&apos;s own sign-in. Clipflow never sees your password.</p></>}
  {view==="Settings"&&data?.plan&&<PlanPanel plan={data.plan}/>}
+ {view==="Settings"&&data&&<AccountData/>}
  {view==="Settings"&&data?.account&&(data.account.twitch||data.account.session)&&<section className="panel settings-group"><div className="group-head"><Link2 size={18}/><div><h2>Sign-in</h2><p>How you sign in to this workspace.</p></div></div><div className="group-body">
   {data.account.twitch&&(data.account.twitchLogin!==null?<p>Sign in with Twitch: linked{data.account.twitchLogin?<> to <strong>@{data.account.twitchLogin}</strong></>:null}.</p>:<p>Link your Twitch account to sign in with it. Your clips, channels and settings stay in this workspace. <a className="secondary" href="/api/auth/twitch/start?return_to=/" target="_top">Link Twitch</a></p>)}
   {data.account.session&&<form method="post" action="/api/auth/signout"><button className="secondary" type="submit">Sign out</button></form>}

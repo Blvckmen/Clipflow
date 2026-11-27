@@ -51,6 +51,7 @@ async function startFakeStripe() {
       stripeAsked.push({ path: req.url, auth: req.headers.authorization, params: new URLSearchParams(body) });
       if (req.url === "/checkout/sessions") return res.end(JSON.stringify({ url: "https://checkout.stripe.test/c" }));
       if (req.url === "/billing_portal/sessions") return res.end(JSON.stringify({ url: "https://billing.stripe.test/p" }));
+      if (req.method === "DELETE" && req.url.startsWith("/subscriptions/")) return res.end(JSON.stringify({ id: req.url.split("/")[2], status: "canceled" }));
       res.statusCode = 404; res.end("{}");
     });
   });
@@ -491,6 +492,32 @@ test("This PC: Stop, Start and Restart now reach the worker; the dashboard shows
   assert.equal((await dash({ action: "workerPower", power: "off" })).status, 400);
   const events = (await dash()).body.events.map(e => e.message);
   assert.ok(events.includes("Stopped the PC from the dashboard.") && events.includes("Asked the PC to restart now."));
+});
+
+test("Your data: the export has the workspace without its secrets; deleting cancels the plan first, then removes everything", async () => {
+  const me = { "oai-authenticated-user-id": owner + "_gone", "oai-authenticated-user-email": owner + "_gone@test.local" };
+  const as = async body => { const r = await fetch(base + "/api/dashboard", body ? { method: "POST", headers: { ...me, "content-type": "application/json" }, body: JSON.stringify(body) } : { headers: me }); return { status: r.status, body: await r.json() }; };
+  assert.equal((await as({ action: "add", url: "https://twitch.tv/" + owner + "gone" })).status, 200);
+  const token = (await as({ action: "token" })).body.token;
+  // A paid plan, as Stripe would report it.
+  const event = { type: "checkout.session.completed", data: { object: { mode: "subscription", client_reference_id: me["oai-authenticated-user-id"], customer: "cus_gone", subscription: "sub_gone", metadata: { plan: "streamer" } } } };
+  const payload = JSON.stringify(event), t = Math.floor(Date.now() / 1000);
+  assert.equal((await fetch(base + "/api/stripe/webhook", { method: "POST", headers: { "stripe-signature": "t=" + t + ",v1=" + createHmac("sha256", "whsec_test").update(t + "." + payload).digest("hex") }, body: payload })).status, 200);
+  const exported = await fetch(base + "/api/account/export", { headers: me });
+  assert.equal(exported.status, 200);
+  assert.match(exported.headers.get("content-disposition"), /attachment; filename="clipflow-data-/);
+  const data = await exported.json();
+  assert.equal(data.tables.streamers.length, 1);
+  assert.equal(data.tables.billing[0].stripe_subscription, "sub_gone");
+  assert.equal(data.tables.worker_tokens[0].token_hash, undefined, "no secrets");
+  assert.equal(data.tables.sessions, undefined);
+  const del = body => fetch(base + "/api/account/delete", { method: "POST", headers: { ...me, "content-type": "application/json" }, body: JSON.stringify(body) });
+  assert.equal((await del({ confirm: "yes" })).status, 400, "only an exact DELETE");
+  assert.equal((await del({ confirm: "DELETE" })).status, 200);
+  assert.ok(stripeAsked.some(a => a.path === "/subscriptions/sub_gone"), "the subscription was cancelled with Stripe");
+  const after = (await as()).body;
+  assert.equal(after.streamers.length, 0, "a fresh, empty workspace if they come back");
+  assert.equal((await fetch(base + "/api/worker/config", { headers: { authorization: "Bearer " + token } })).status, 401, "the PC's token no longer works");
 });
 
 test("an account set to Spanish posts the Spanish version the worker made, or fails with the reason", async () => {
