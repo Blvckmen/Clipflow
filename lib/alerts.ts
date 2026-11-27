@@ -2,6 +2,36 @@
 // pasted in Settings. A webhook URL lets anyone post into that channel, so it is stored encrypted with TOKEN_KEY
 // (preferences.discord_webhook_enc) and never sent back to the browser.
 import { decrypt } from "./secure";
+import { pcAlertStep } from "./pc-alerts.mjs";
+
+// How often the PCs are looked at for alerts (lib/pc-alerts.mjs): one sync_state row read until it's due.
+const PC_CHECK_MS = 5 * 60_000;
+/**
+ * Discord alerts when a workspace's PC goes offline, falls behind, or is back (lib/pc-alerts.mjs), for workspaces with
+ * a Discord webhook. Each one's open problem is kept in sync_state ("pc_alert:<owner>"), so it's said once. Never
+ * throws: alerts must not stop the publisher.
+ */
+export async function pcAlerts(db: D1Database, env: { TOKEN_KEY?: string }, now = Date.now()) {
+  try {
+    if (!env.TOKEN_KEY) return;
+    const last = await db.prepare("SELECT at FROM sync_state WHERE key='pc_alerts:scan'").first<{ at: string }>();
+    if (last && now - Date.parse(last.at) < PC_CHECK_MS) return;
+    await db.prepare("INSERT INTO sync_state (key,at,note) VALUES ('pc_alerts:scan',?,NULL) ON CONFLICT(key) DO UPDATE SET at=excluded.at").bind(new Date(now).toISOString()).run();
+    const { results } = await db.prepare(`SELECT w.owner,w.last_seen,w.device,w.power,p.control,p.discord_webhook_enc,s.note AS open
+      FROM worker_tokens w JOIN preferences p ON p.owner=w.owner LEFT JOIN sync_state s ON s.key='pc_alert:'||w.owner
+      WHERE p.discord_webhook_enc IS NOT NULL`).all<{ owner: string; last_seen: string | null; device: string | null; power: string | null; control: string | null; discord_webhook_enc: string; open: string | null }>();
+    for (const r of results) {
+      let oldestWaitMin = 0;
+      try { oldestWaitMin = Number(JSON.parse(r.device ?? "null")?.oldestWaitMin) || 0; } catch { /* no report yet */ }
+      const step = pcAlertStep({ lastSeen: r.last_seen, oldestWaitMin, power: r.power ?? "running", control: r.control ?? "running", previous: r.open === "offline" || r.open === "behind" ? r.open : null, now });
+      if ((step.state ?? null) === (r.open || null)) continue;
+      await db.prepare("INSERT INTO sync_state (key,at,note) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET at=excluded.at,note=excluded.note").bind("pc_alert:" + r.owner, new Date(now).toISOString(), step.state).run();
+      if (!step.message) continue;
+      const problem = await sendDiscord(await decrypt(r.discord_webhook_enc, env.TOKEN_KEY), step.message);
+      await db.prepare("UPDATE preferences SET alert_error=? WHERE owner=?").bind(problem, r.owner).run();
+    }
+  } catch (error) { console.error("PC alerts failed", error); }
+}
 
 // At most one review alert per this long; each says how many clips are waiting in total.
 export const ALERT_GAP_MS = 10 * 60_000;

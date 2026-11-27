@@ -18,6 +18,7 @@ import { pruneSources } from "./sources";
 import { planNext, tiktokBusy, TIKTOK_DAILY, bestHours, hoursLabel, nextOpenAt, windowHours, spreadGap } from "./posting-plan.mjs";
 import { applyRules, lengthProblem, readRules } from "./posting-rules.mjs";
 import { keyConnection, siteConnection, zernioApiUrl, type Connection } from "./zernio-keys";
+import { pcAlerts } from "./alerts";
 
 type Env = Cloudflare.Env;
 type AccountRow = { id: string; owner: string; provider: string; platform: string; external_id: string; username: string; token_enc: string; token_expires_at: string; token_refreshed_at: string; connected_at: string; options: string | null; control: string | null; daily_limit: number | null; caption_template: string | null; zernio_key_id: string | null; key_label: string | null; key_enc: string | null };
@@ -90,6 +91,8 @@ export async function runPublisher(env: Env, now = Date.now()) {
   await weeklyHighlights(env.DB, now).catch(error => console.error("Weekly highlights failed:", error));
   // Editable sources of clips past SOURCE_KEEP_DAYS (one sync_state row read once done for the day).
   await pruneSources(env, now).catch(error => console.error("Source cleanup failed:", error));
+  // Discord alerts when an owner's PC goes offline, falls behind or is back (one sync_state read until due).
+  await pcAlerts(env.DB, env, now);
   if (!env.MEDIA_KEY || !env.PUBLIC_URL) return;
   const ig = instagramConfig(env);
   // Clips flagged before this point are looked at by every account below; flags set meanwhile (a trigger, real time)
