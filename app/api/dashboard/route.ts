@@ -1,4 +1,4 @@
-import { currentUser, signedInWithApp, signInPath, twitchSignIn } from "../../auth";
+import { currentUser, googleSignIn, signedInWithApp, signInPath, twitchSignIn } from "../../auth";
 import { bucket, database, clipKey, sourceKey, highlightKey } from "../../../db/raw";
 import { defaultCaption, defaults, parseStreamer, readWorkerSettings, settingsSchema, workerSettingsRev, streamerViewerClipsSchema } from "../../../lib/clipflow";
 import { readStreamerViewerClips, readViewerClips } from "../../../lib/viewer-clips.mjs";
@@ -169,7 +169,9 @@ export async function GET(request:Request){
   // Sign in with Twitch (app/api/auth/*): whether it's set up here, the Twitch account linked to this workspace, and
   // whether this browser is signed in that way (then Sign out is offered).
   const twitchLink=twitchSignIn()?await db.prepare("SELECT login FROM auth_identities WHERE owner=? AND provider='twitch' ORDER BY created_at LIMIT 1").bind(owner).first<{login:string|null}>():null;
-  const account={twitch:twitchSignIn(),twitchLogin:twitchLink?.login??(twitchLink?"":null),session:await signedInWithApp()};
+  // googleEmail: the linked Google account's email ("" when Google gave none), null when none is linked.
+  const googleLink=googleSignIn()?await db.prepare("SELECT coalesce(email,login,'') AS email FROM auth_identities WHERE owner=? AND provider='google' ORDER BY created_at LIMIT 1").bind(owner).first<{email:string}>():null;
+  const account={twitch:twitchSignIn(),twitchLogin:twitchLink?.login??(twitchLink?"":null),google:googleSignIn(),googleEmail:googleLink?.email??null,session:await signedInWithApp()};
   // Settings → Plan (lib/plans.mjs): only with billing on. The first look starts a new workspace's trial.
   const plan=billingOn(env)?await workspaceStanding(db,owner).then(({standing,customer})=>({...standing,canManage:!!customer,usage:{channels:s.results.length,accounts:a.results.filter(x=>x.status==="connected").length},plans:PLANS})).catch(error=>{console.error("Billing lookup failed",error);return null;}):null;
   const settings=p?{...prefs,dailyLimit:p.daily_limit,captions:!!p.captions,destinations:JSON.parse(String(p.destinations)),captionTemplate:p.caption_template,aiCaptions:!!p.ai_captions,captionNotes:p.caption_notes,transcribe:p.transcribe===undefined?true:!!p.transcribe,hooks:p.hooks==null?true:!!p.hooks,importClips:Number(p.import_clips??0),viewerClips:readViewerClips(p.viewer_clips),clipCommand:p.clip_command??defaults.clipCommand,learn:p.learn===undefined?true:!!p.learn,weeklyHighlights:!!p.weekly_highlights,worker:readWorkerSettings(p.worker_settings),discordAlerts:!!p.discord_webhook_enc,alertError:p.alert_error??null,style:parse(p.style)}:{...defaults,style:null};

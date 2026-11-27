@@ -109,19 +109,24 @@ ok("Post captions are generated locally from transcripts; no AI API key needed."
 const twitchReady = !!(env.TWITCH_CLIENT_ID && env.TWITCH_CLIENT_SECRET);
 if (twitchReady) ok("Twitch app keys present; workers without their own can import viewers' Twitch clips, and people can sign in with Twitch");
 else warn("TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET not set; only workers with their own Twitch app can import viewers' clips (see DEPLOY.md).");
+// Sign in with Google (app/api/auth/google): the site's own Google OAuth client. Its redirect address must be
+// https://<site>/api/auth/google/callback in the Google Cloud console.
+const googleReady = !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+if (googleReady) ok("Google OAuth client present; people can sign in with Google");
+else ok("No GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET; Sign in with Google stays off");
 // Plans and billing (lib/plans.mjs): on only with a Stripe key. sk_test_ keys use Stripe's test mode (no real money).
 const stripeReady = !!env.STRIPE_SECRET_KEY;
 if (stripeReady) ok("Stripe key present (" + (env.STRIPE_SECRET_KEY.startsWith("sk_live_") ? "live" : "test mode") + "); plans and billing will be on");
 else ok("No STRIPE_SECRET_KEY; plans and billing stay off (nothing is limited)");
 if (publicMode) {
-  if (!twitchReady) fail("CLIPFLOW_PUBLIC=1 needs Sign in with Twitch (TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET): without Access nobody could sign in.");
-  // Every workspace made through Access must have a Twitch account linked first, or its owner is locked out once
-  // Access is gone (Settings → Sign-in → Link Twitch, on a deploy without CLIPFLOW_PUBLIC).
+  if (!twitchReady && !googleReady) fail("CLIPFLOW_PUBLIC=1 needs Sign in with Twitch (TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET) or Google (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET): without Access nobody could sign in.");
+  // Every workspace made through Access must have a sign-in (Twitch or Google) linked first, or its owner is locked
+  // out once Access is gone (Settings → Account & data → Link, on a deploy without CLIPFLOW_PUBLIC).
   const unlinked = db ? await cf(acct + "/d1/database/" + db.uuid + "/query", { method: "POST", body: JSON.stringify({ sql: "SELECT count(*) AS n FROM (SELECT owner FROM preferences WHERE owner LIKE 'access:%' UNION SELECT owner FROM streamers WHERE owner LIKE 'access:%') WHERE owner NOT IN (SELECT owner FROM auth_identities)" }) }) : null;
   const n = unlinked?.ok ? unlinked.result?.[0]?.results?.[0]?.n : db ? null : 0;
-  if (n == null) fail("Couldn't check that every workspace has Twitch linked (" + (unlinked?.errors ?? "") + "). Deploy once without CLIPFLOW_PUBLIC (migration 0043), link Twitch under Settings → Sign-in, then try again.");
-  if (n > 0) fail(n + " workspace(s) made through Cloudflare Access have no Twitch account linked; their owners couldn't sign in without Access. Link Twitch under Settings → Sign-in first.");
-  ok("public: no Access in front of the dashboard; sign-in with Twitch" + (env.CLIPFLOW_SIGNUPS === "open" ? ", sign-ups open" : ", sign-ups closed (CLIPFLOW_SIGNUPS=open opens them)"));
+  if (n == null) fail("Couldn't check that every workspace has a sign-in linked (" + (unlinked?.errors ?? "") + "). Deploy once without CLIPFLOW_PUBLIC (migration 0043), link Twitch or Google under Settings → Account & data, then try again.");
+  if (n > 0) fail(n + " workspace(s) made through Cloudflare Access have no Twitch or Google account linked; their owners couldn't sign in without Access. Link one under Settings → Account & data first.");
+  ok("public: no Access in front of the dashboard; sign-in with " + [twitchReady && "Twitch", googleReady && "Google"].filter(Boolean).join(" or ") + (env.CLIPFLOW_SIGNUPS === "open" ? ", sign-ups open" : ", sign-ups closed (CLIPFLOW_SIGNUPS=open opens them)"));
 }
 
 if (checkOnly) { console.log("\nAll prerequisites look good. Run without --check to deploy.\n"); return; }
@@ -209,7 +214,7 @@ const deployConfig = {
   ...(env.CLIPFLOW_HOSTNAME && { routes: [{ pattern: env.CLIPFLOW_HOSTNAME, custom_domain: true }] }),
   d1_databases: [{ binding: "DB", database_name: dbName, database_id: db.uuid, migrations_dir: "../../drizzle" }],
   r2_buckets: bucketReady ? [{ binding: "BUCKET", bucket_name: bucketName }] : [],
-  vars: { ...built.vars, ...(publicMode ? { AUTH_MODE: "app" } : { AUTH_MODE: "access", CF_ACCESS_TEAM_DOMAIN: teamDomain, CF_ACCESS_AUD: dashboardApp.aud }), ...(env.CLIPFLOW_SIGNUPS && { CLIPFLOW_SIGNUPS: env.CLIPFLOW_SIGNUPS }), PUBLIC_URL: "https://" + host, WORKER_VERSION: pack.commit, ...(instagramReady && { INSTAGRAM_APP_ID: env.INSTAGRAM_APP_ID }), ...(twitchReady && { TWITCH_CLIENT_ID: env.TWITCH_CLIENT_ID }) },
+  vars: { ...built.vars, ...(publicMode ? { AUTH_MODE: "app" } : { AUTH_MODE: "access", CF_ACCESS_TEAM_DOMAIN: teamDomain, CF_ACCESS_AUD: dashboardApp.aud }), ...(env.CLIPFLOW_SIGNUPS && { CLIPFLOW_SIGNUPS: env.CLIPFLOW_SIGNUPS }), PUBLIC_URL: "https://" + host, WORKER_VERSION: pack.commit, ...(instagramReady && { INSTAGRAM_APP_ID: env.INSTAGRAM_APP_ID }), ...(twitchReady && { TWITCH_CLIENT_ID: env.TWITCH_CLIENT_ID }), ...(googleReady && { GOOGLE_CLIENT_ID: env.GOOGLE_CLIENT_ID }) },
   // The publisher runs once a minute.
   triggers: { crons: ["* * * * *"] },
 };
@@ -225,7 +230,7 @@ wrangler(["deploy", "--config", deployConfigPath], auth);
 console.log("\nUploading secrets…");
 const secretsFile = join(root, "dist/server/secrets.json");
 try {
-  writeFileSync(secretsFile, JSON.stringify({ TOKEN_KEY: env.TOKEN_KEY, MEDIA_KEY: env.MEDIA_KEY, ...(instagramReady && { INSTAGRAM_APP_SECRET: env.INSTAGRAM_APP_SECRET }), ...(zernioReady && { ZERNIO_API_KEY: env.ZERNIO_API_KEY }), ...(twitchReady && { TWITCH_CLIENT_SECRET: env.TWITCH_CLIENT_SECRET }), ...(stripeReady && { STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET: env.STRIPE_WEBHOOK_SECRET }) }));
+  writeFileSync(secretsFile, JSON.stringify({ TOKEN_KEY: env.TOKEN_KEY, MEDIA_KEY: env.MEDIA_KEY, ...(instagramReady && { INSTAGRAM_APP_SECRET: env.INSTAGRAM_APP_SECRET }), ...(zernioReady && { ZERNIO_API_KEY: env.ZERNIO_API_KEY }), ...(twitchReady && { TWITCH_CLIENT_SECRET: env.TWITCH_CLIENT_SECRET }), ...(googleReady && { GOOGLE_CLIENT_SECRET: env.GOOGLE_CLIENT_SECRET }), ...(stripeReady && { STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET: env.STRIPE_WEBHOOK_SECRET }) }));
   wrangler(["secret", "bulk", secretsFile, "--config", deployConfigPath], auth);
 } finally { rmSync(secretsFile, { force: true }); }
 

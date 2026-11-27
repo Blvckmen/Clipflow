@@ -66,7 +66,11 @@ export async function currentUser(): Promise<User | null> {
 }
 
 // Where the dashboard should send a signed-out visitor.
-// With the site's Twitch app set up, Sign in with Twitch; else as before.
+// With the site's Twitch app or Google client set up, Clipflow's own sign-in; else as before.
 export const twitchApp = () => { const e = config as { TWITCH_CLIENT_ID?: string; TWITCH_CLIENT_SECRET?: string }; return e.TWITCH_CLIENT_ID && e.TWITCH_CLIENT_SECRET ? { clientId: e.TWITCH_CLIENT_ID, clientSecret: e.TWITCH_CLIENT_SECRET } : null; };
 export const twitchSignIn = () => !!twitchApp();
-export const signInPath = () => (twitchSignIn() ? "/api/auth/twitch/start" : authMode() === "access" ? "/" : "/signin-with-chatgpt?return_to=/");
+// Sign in with Google: the site's Google OAuth client (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET).
+export const googleApp = () => { const e = config as { GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string }; return e.GOOGLE_CLIENT_ID && e.GOOGLE_CLIENT_SECRET ? { clientId: e.GOOGLE_CLIENT_ID, clientSecret: e.GOOGLE_CLIENT_SECRET } : null; };
+export const googleSignIn = () => !!googleApp();
+// With both, a page to choose (app/api/auth/signin); with one, straight to it.
+export const signInPath = () => (twitchSignIn() && googleSignIn() ? "/api/auth/signin" : twitchSignIn() ? "/api/auth/twitch/start" : googleSignIn() ? "/api/auth/google/start" : authMode() === "access" ? "/" : "/signin-with-chatgpt?return_to=/");
