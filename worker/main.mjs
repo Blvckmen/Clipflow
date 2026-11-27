@@ -25,6 +25,7 @@ import { downloadUpload } from "./uploaded-video.mjs";
 import { PLATFORM_NAMES, downloadVideo, findYtDlp, videoLink, videoTitle } from "./vod.mjs";
 import { setWhisperLanguage, setWhisperModel, stopTranscriber, transcribe as whisper } from "./whisper.mjs";
 import { AI_BATCH, autoClipPicks, mergeAiMoments, transcriptWindows } from "./stream-pass.mjs";
+import { applyUpdate, inGitCheckout, localVersion, shouldUpdate, unzip, updateFiles } from "./update.mjs";
 import { coverageRoom, coverageWindow, crowdMoments, enqueueTrigger, jobRank, pickJob } from "./triggers.mjs";
 
 // Every log line starts with the time (HH:MM:SS), so how long things take can be read off worker.log.
@@ -1359,6 +1360,37 @@ async function resumeInterrupted() {
   if (count) { console.log("Resuming", count, "clip(s) interrupted by the last stop"); void processJobs(); }
 }
 
+// Automatic updates (worker/update.mjs): a worker installed from the download, on another version than the site's,
+// downloads that version, backs up what it replaces (data/update/backup-<old>), writes it and restarts once idle.
+// data/update/pending.json says an update is on trial: run-windows.ps1 puts the backup back if the new version keeps
+// crashing on start, and 10 minutes of running clears it. Not for a worker run from a git checkout, or AUTO_UPDATE=off.
+const workerDir = dirname(fileURLToPath(import.meta.url)), myVersion = await localVersion(workerDir), fromCheckout = inGitCheckout(workerDir);
+const pendingFile = join(dataDir, "update", "pending.json");
+let updating = false, triedVersion = null, updateConfirmed = false;
+async function maybeUpdate() {
+  if (!updateConfirmed && Date.now() - startedAt > 10 * 60_000) { updateConfirmed = true; await rm(pendingFile, { force: true }); }
+  const site = config?.workerVersion;
+  if (updating || stopping || restartPending || site === triedVersion || !shouldUpdate({ local: myVersion, site, gitCheckout: fromCheckout, setting: env.AUTO_UPDATE })) return;
+  updating = true; triedVersion = site;
+  try {
+    console.log("Updating the worker from", myVersion, "to", site);
+    const response = await api("/api/worker/download", { timeout: 120_000 });
+    if (!response.ok) throw new Error("download HTTP " + response.status);
+    const files = updateFiles(unzip(Buffer.from(await response.arrayBuffer())));
+    const got = files.find(f => f.rel === "version.txt")?.data.toString().trim();
+    if (got !== site) throw new Error("the download is version " + (got ?? "unknown") + ", not " + site);
+    if (!files.some(f => f.rel === "main.mjs")) throw new Error("the download has no main.mjs");
+    const backup = join(dataDir, "update", "backup-" + myVersion);
+    await rm(backup, { recursive: true, force: true });
+    await applyUpdate(files, workerDir, backup);
+    await mkdir(dirname(pendingFile), { recursive: true });
+    await writeFile(pendingFile, JSON.stringify({ from: myVersion, to: site, backup, at: new Date().toISOString() }));
+    restartPending = true;
+    console.log("Updated the worker to", site + "; restarting once nothing is recording or being made");
+  } catch (error) { problem("Couldn't update the worker to " + site + ": " + error.message); }
+  finally { updating = false; }
+}
+
 // Stopped from the dashboard (Settings → This PC → Stop): with anything recording or being made, the worker exits as
 // for a restart (what's cut off is kept to pick up again), and the launcher starts it again; then, idle, it only checks
 // in and says it's stopped until Start. It stays connected so Start can reach it.
@@ -1374,6 +1406,7 @@ async function stayStopped() {
 async function tick() {
   await refresh();
   if (restartIfIdle()) return;
+  await maybeUpdate();
   if (await stayStopped()) return;
   maybeCheckHealth();
   await resumeInterrupted();

@@ -48,6 +48,9 @@ export async function GET(request:Request){
    restartAt:wt?.restart_at??null,restartNow:!!wt?.restart_now,
    // Settings → This PC → Stop: the worker ends recordings and clip-making and waits until Start.
    power:wt?.power==="stopped"?"stopped":"running",
+   // The worker version this site was deployed with (scripts/deploy-cloudflare.mjs): a downloaded worker on another
+   // updates itself to it (worker/update.mjs).
+   workerVersion:(env as {WORKER_VERSION?:string}).WORKER_VERSION??null,
    retries:ry.results.map(x=>x.clip_id),
    // Whether this site lends its Twitch app to workers without one (app/api/worker/twitch).
    twitchApp:!!((env as {TWITCH_CLIENT_ID?:string}).TWITCH_CLIENT_ID&&(env as {TWITCH_CLIENT_SECRET?:string}).TWITCH_CLIENT_SECRET),

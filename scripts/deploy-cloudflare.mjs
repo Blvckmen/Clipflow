@@ -209,7 +209,7 @@ const deployConfig = {
   ...(env.CLIPFLOW_HOSTNAME && { routes: [{ pattern: env.CLIPFLOW_HOSTNAME, custom_domain: true }] }),
   d1_databases: [{ binding: "DB", database_name: dbName, database_id: db.uuid, migrations_dir: "../../drizzle" }],
   r2_buckets: bucketReady ? [{ binding: "BUCKET", bucket_name: bucketName }] : [],
-  vars: { ...built.vars, ...(publicMode ? { AUTH_MODE: "app" } : { AUTH_MODE: "access", CF_ACCESS_TEAM_DOMAIN: teamDomain, CF_ACCESS_AUD: dashboardApp.aud }), ...(env.CLIPFLOW_SIGNUPS && { CLIPFLOW_SIGNUPS: env.CLIPFLOW_SIGNUPS }), PUBLIC_URL: "https://" + host, ...(instagramReady && { INSTAGRAM_APP_ID: env.INSTAGRAM_APP_ID }), ...(twitchReady && { TWITCH_CLIENT_ID: env.TWITCH_CLIENT_ID }) },
+  vars: { ...built.vars, ...(publicMode ? { AUTH_MODE: "app" } : { AUTH_MODE: "access", CF_ACCESS_TEAM_DOMAIN: teamDomain, CF_ACCESS_AUD: dashboardApp.aud }), ...(env.CLIPFLOW_SIGNUPS && { CLIPFLOW_SIGNUPS: env.CLIPFLOW_SIGNUPS }), PUBLIC_URL: "https://" + host, WORKER_VERSION: pack.commit, ...(instagramReady && { INSTAGRAM_APP_ID: env.INSTAGRAM_APP_ID }), ...(twitchReady && { TWITCH_CLIENT_ID: env.TWITCH_CLIENT_ID }) },
   // The publisher runs once a minute.
   triggers: { crons: ["* * * * *"] },
 };
