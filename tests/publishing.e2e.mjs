@@ -158,6 +158,34 @@ test("an approved clip is posted once: container, processing, publish, permalink
   assert.equal((await posts()).length, 1);
 });
 
+test("a lost publish response is checked, never sent again; a clip rejected while Instagram processes it isn't posted", async () => {
+  const publishes = async () => (await fakeLog()).log.filter(e => e.path.endsWith("/media_publish")).length;
+  // Lost answer: Instagram publishes, but Clipflow hears a 500.
+  const lost = await addClip();
+  await cron();
+  await cron(61_000);  // still IN_PROGRESS
+  await fetch("http://127.0.0.1:" + fake.port + "/__lose_publish", { method: "POST" });
+  const before = await publishes();
+  await cron(61_000);  // FINISHED -> publish (answer lost)
+  let post = (await posts()).find(p => p.clip_id === lost.clip.id);
+  assert.equal(post.state, "processing", "kept with its container, not sent afresh: " + (post.error ?? ""));
+  assert.match(post.error ?? "", /Checking whether it posted/);
+  await cron(301_000);  // checked again: Instagram says PUBLISHED
+  post = (await posts()).find(p => p.clip_id === lost.clip.id);
+  assert.equal(post.state, "published", post.error ?? "");
+  assert.equal(await publishes(), before + 1, "published once");
+  // Rejected after the upload started, before Instagram finished: never published, and the post goes.
+  const late = await addClip();
+  await cron(120_000);
+  assert.equal((await posts()).find(p => p.clip_id === late.clip.id)?.state, "processing");
+  await cron(61_000);  // still IN_PROGRESS
+  assert.equal((await dash({ action: "reviewClip", id: late.clip.id, review: "rejected" })).status, 200);
+  const was = await publishes();
+  await cron(61_000);  // FINISHED, but the clip is rejected now
+  assert.equal(await publishes(), was, "not published");
+  assert.equal((await posts()).find(p => p.clip_id === late.clip.id), undefined, "its post is gone");
+});
+
 test("signed media links refuse missing, altered or foreign signatures", async () => {
   const url = new URL((await fakeLog()).containers.at(-1)[1].videoUrl);
   assert.equal((await fetch(base + url.pathname)).status, 404);

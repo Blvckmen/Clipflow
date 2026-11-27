@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 
 export function startFakeInstagram({ port = 0, appId = "test-app", appSecret = "test-secret" } = {}) {
   const log = [], containers = new Map(), valid = new Map(), users = new Map([["17890000", "clipflow_test"]]), published = new Map();
-  let tokenSeq = 0, signingIn = "17890000";
+  let tokenSeq = 0, signingIn = "17890000", losePublish = false;
   const issue = (prefix, user) => { const t = prefix + "-" + ++tokenSeq; valid.set(t, user); return t; };
   const send = (res, status, body, headers = {}) => { res.writeHead(status, { "content-type": "application/json", ...headers }); res.end(JSON.stringify(body)); };
   const oauthError = res => send(res, 400, { error: { message: "Error validating access token: Session has expired", type: "OAuthException", code: 190 } });
@@ -21,6 +21,8 @@ export function startFakeInstagram({ port = 0, appId = "test-app", appSecret = "
 
     if (path === "/__log") return send(res, 200, { log, containers: [...containers.entries()] });
     if (path === "/__revoke") { valid.clear(); return send(res, 200, { ok: true }); }
+    // POST /__lose_publish: the next publish goes through, but its answer is lost (a 500), as when a response is dropped.
+    if (path === "/__lose_publish") { losePublish = true; return send(res, 200, { ok: true }); }
     if (path === "/__signin") { signingIn = q.get("id"); users.set(signingIn, q.get("username")); return send(res, 200, { ok: true }); }
 
     // 1. Authorization: approve immediately and bounce back with a code (Instagram appends "#_").
@@ -69,6 +71,7 @@ export function startFakeInstagram({ port = 0, appId = "test-app", appSecret = "
       if (!c || c.status !== "FINISHED" || c.user !== me) return send(res, 400, { error: { message: "Media not ready for publishing" } });
       c.status = "PUBLISHED"; published.set(me, (published.get(me) ?? 0) + 1);
       const total = [...published.values()].reduce((a, b) => a + b, 0);
+      if (losePublish) { losePublish = false; return send(res, 500, { error: { message: "An unexpected error has occurred. Please retry your request later." } }); }
       return send(res, 200, { id: "m-" + total });
     }
     if (containers.has(rest)) {

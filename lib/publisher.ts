@@ -26,12 +26,15 @@ type PostRow = { id: string; clip_id: string; state: string; container_id: strin
 const heldNote = (why: string) => "Held for your review: " + why + ". Queue it to post when there's room, or skip it.";
 type ClipInfo = { reviewed: boolean; streamer: string; platform: string; draft: boolean };
 // What an adapter reports back: done, still going (check again later), or failed with a reason.
-type Outcome = { state: "published"; mediaId: string | null; permalink: string | null; externalId?: string } | { state: "processing"; containerId: string; until?: string; note?: string } | { state: "failed"; message: string } | { state: "wait"; until?: string; note?: string };
+// cancelled: the clip was rejected or deleted before the platform's last step, so it was never posted.
+type Outcome = { state: "published"; mediaId: string | null; permalink: string | null; externalId?: string } | { state: "processing"; containerId: string; until?: string; note?: string } | { state: "failed"; message: string } | { state: "wait"; until?: string; note?: string } | { state: "cancelled" };
 // A post the platform is holding (its own daily posting limit): `until` is when it goes out, `note` says why.
 type Adapter = {
   timeoutMs: number; linkTtlMs: number;
   start(post: PostRow, link: string, caption: string, clip: ClipInfo): Promise<Outcome>;
-  check(post: PostRow): Promise<Outcome>;
+  // wanted: the clip is still approved and there. Where posting is a separate last step (Instagram publishes a finished
+  // container), a clip that no longer is isn't posted.
+  check(post: PostRow, wanted: boolean): Promise<Outcome>;
   // A problem with the account as a whole (expired sign-in, revoked key): stop this account rather than fail the post.
   accountProblem(error: unknown): { message: string; expire: boolean } | null;
 };
@@ -43,6 +46,9 @@ const CHECK_EVERY_MS = 60_000;   // Instagram recommends checking a container ab
 const LAST_DAY = `(SELECT draft,state,published_at AS at FROM posts WHERE account_id=? AND state='published' AND published_at>=?
   UNION ALL SELECT draft,state,updated_at AS at FROM posts WHERE account_id=? AND state='processing' AND updated_at>=?)`;
 const MAX_ATTEMPTS = 3;
+// How long a run holds a post it's working on (see claim in runAccount), and how long a post whose outcome isn't
+// known keeps being checked before it stops (see unsure).
+const CLAIM_MS = 5 * 60_000, UNSURE_MS = 6 * 3600_000;
 const REFRESH_WITHIN_MS = 10 * 24 * 3600_000;
 
 export function instagramConfig(env: Env): instagram.InstagramConfig | null {
@@ -130,8 +136,10 @@ async function instagramAdapter(env: Env, config: instagram.InstagramConfig, acc
       if (quota.used >= quota.total) return { state: "wait" };
       return { state: "processing", containerId: await instagram.createReel(config, token, account.external_id, link, caption) };
     },
-    async check(post) {
+    async check(post, wanted) {
       const status = await instagram.containerStatus(config, token, post.container_id!);
+      // Rejected or deleted while Instagram was processing it: the container is never published (it expires by itself).
+      if (status.code === "FINISHED" && !wanted) return { state: "cancelled" };
       if (status.code === "FINISHED" || status.code === "PUBLISHED") {
         // PUBLISHED means an earlier publish call succeeded but its response was lost; don't publish twice.
         const mediaId = status.code === "FINISHED" ? await instagram.publish(config, token, account.external_id, post.container_id!) : null;
@@ -247,8 +255,21 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
     await db.prepare("UPDATE posts SET state=?,container_id=NULL," + UNDRAFT + ",attempts=?,error=?,next_attempt_at=?,updated_at=? WHERE id=?")
       .bind(final ? "failed" : "queued", attempts, message.slice(0, 500), new Date(now + 5 * 60_000 * attempts).toISOString(), iso, post.id).run();
   };
+  // A run claims a post before acting on it: one conditional UPDATE that only one run can win, holding it for
+  // CLAIM_MS. Publisher runs can overlap (a slow one still going when the next minute's starts), and both used to
+  // read the same post and send it.
+  const claim = async (post: PostRow) => !!await db.prepare("UPDATE posts SET next_attempt_at=? WHERE id=? AND state=? AND next_attempt_at<=? RETURNING id")
+    .bind(new Date(now + CLAIM_MS).toISOString(), post.id, post.state, iso).first();
+  // Something went wrong while a post was already with the platform (a lost response, the network): whether it went
+  // out isn't known, so the platform's id is kept and it's checked again, never sent afresh (which could post it
+  // twice: Instagram says PUBLISHED for a container already published). Past UNSURE_MS it stops, still keeping the id.
+  const unsure = async (post: PostRow, message: string) => {
+    if (now - Date.parse(post.updated_at) > UNSURE_MS) await db.prepare("UPDATE posts SET state='failed',error=?,updated_at=? WHERE id=?").bind(("Couldn't confirm whether this posted (" + message + "). Check the account before retrying, or it may post twice.").slice(0, 500), iso, post.id).run();
+    else await db.prepare("UPDATE posts SET next_attempt_at=?,error=? WHERE id=?").bind(new Date(now + 5 * CHECK_EVERY_MS).toISOString(), ("Checking whether it posted: " + message).slice(0, 500), post.id).run();
+  };
   const apply = async (post: PostRow, result: Outcome) => {
-    if (result.state === "published")
+    if (result.state === "cancelled") await db.prepare("DELETE FROM posts WHERE id=?").bind(post.id).run();
+    else if (result.state === "published")
       // The Zernio post id (when there is one) is kept to match the post's analytics later.
       await db.prepare("UPDATE posts SET state='published',media_id=?,permalink=?,container_id=coalesce(?,container_id),error=NULL,published_at=?,updated_at=? WHERE id=?").bind(result.mediaId, result.permalink, result.externalId ?? null, iso, iso, post.id).run();
     else if (result.state === "processing")
@@ -264,14 +285,21 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
   // 1. Finish a post the platform is still processing.
   const processing = await db.prepare("SELECT id,clip_id,state,container_id,attempts,updated_at FROM posts WHERE account_id=? AND state='processing' AND next_attempt_at<=? ORDER BY created_at LIMIT 1").bind(account.id, iso).first<PostRow>();
   if (processing) {
+    if (!await claim(processing)) return;
     try {
-      const result = await adapter.check(processing);
+      const clipNow = await db.prepare("SELECT review,file_key FROM clips WHERE id=? AND owner=?").bind(processing.clip_id, account.owner).first<{ review: string; file_key: string | null }>();
+      const result = await adapter.check(processing, clipNow?.review === "approved" && !!clipNow.file_key);
       if (result.state !== "wait") await apply(processing, result);
       // Held by the platform until a known time: not stuck, so it is checked again then rather than timed out.
       else if (result.until) await db.prepare("UPDATE posts SET next_attempt_at=?,error=?,updated_at=? WHERE id=?").bind(new Date(Math.max(now + CHECK_EVERY_MS, Date.parse(result.until) + CHECK_EVERY_MS)).toISOString(), result.note ?? null, iso, processing.id).run();
       else if (now - Date.parse(processing.updated_at) > adapter.timeoutMs) await fail(processing, "The platform took too long to process the video.");
       else await db.prepare("UPDATE posts SET next_attempt_at=? WHERE id=?").bind(new Date(now + CHECK_EVERY_MS).toISOString(), processing.id).run();
-    } catch (error) { await handle(processing, error); }
+    } catch (error) {
+      const problem = adapter.accountProblem(error);
+      if (problem) await db.prepare("UPDATE accounts SET status=?,last_error=? WHERE id=?").bind(problem.expire ? "expired" : "connected", problem.message, account.id).run();
+      // Zernio's own "still in flight" answer: just look again next time.
+      else if (!(error instanceof zernio.ZernioError && error.inFlight)) await unsure(processing, (error as Error).message);
+    }
     return;
   }
 
@@ -281,7 +309,7 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
 
   // 2. Otherwise start the oldest queued post, within the daily limit.
   const queued = await db.prepare("SELECT id,clip_id,state,container_id,attempts,updated_at,draft,queued_by_hand FROM posts WHERE account_id=? AND state='queued' AND next_attempt_at<=? ORDER BY created_at LIMIT 1").bind(account.id, iso).first<PostRow>();
-  if (!queued) return;
+  if (!queued || !await claim(queued)) return;
   const clip = await db.prepare("SELECT c.review,c.reviewed_at,c.file_key,c.render_state,c.duration,c.edit_rev,c.edit IS NOT NULL AS editable,s.name,s.platform,s.url,s.posting_rules FROM clips c LEFT JOIN streamers s ON s.id=c.streamer_id AND s.owner=c.owner WHERE c.id=? AND c.owner=?").bind(queued.clip_id, account.owner).first<{ review: string; reviewed_at: string | null; file_key: string | null; render_state: string | null; duration: number | null; edit_rev: number; editable: number; name: string | null; platform: string | null; url: string | null; posting_rules: string | null }>();
   if (!clip || clip.review !== "approved" || !clip.file_key) {
     // Rejected or deleted after it was queued: drop it rather than post it.
@@ -289,7 +317,8 @@ async function runAccount(env: Env, adapter: Adapter, account: AccountRow, now: 
     return;
   }
   // Edited after it was queued: post the new version once the worker has rendered it.
-  if (clip.render_state === "queued") return;
+  // (The claim is let go, so it's looked at again next minute.)
+  if (clip.render_state === "queued") { await db.prepare("UPDATE posts SET next_attempt_at=? WHERE id=?").bind(iso, queued.id).run(); return; }
   // A clip the streamer's campaign won't accept (too short or long) waits for the owner, unless they queued it by hand.
   const rules = readRules(clip.posting_rules), tooLong = queued.queued_by_hand ? null : lengthProblem(rules, clip.duration ?? NaN);
   if (tooLong) {
