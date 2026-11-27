@@ -347,3 +347,29 @@ test("text style: bold, italic, shadow and alignment, the title following the su
   assert.equal(styleOf(own).hook.text, undefined, "a look has no title text");
   assert.equal(styleOf(own).hook.font, "Arial");
 });
+
+test("opening title: fade or no animation, and lines in their own colour and size", async () => {
+  const { hookLines, HOOK_FADE_MS } = await import("../edit.mjs");
+  const base = normalizeEdit({ ...defaultEdit(defaultStyle({ captions: true }), { trimStart: 0, trimEnd: 30 }), hook: { text: "He did NOT\nsee that coming" } }, { duration: 40 });
+  const hookLine = e => buildAss(e, []).split("\n").find(l => l.startsWith("Dialogue: 1,"));
+  assert.equal(base.hook.anim, "pop", "older titles pop in");
+  const B = String.fromCharCode(92); // a backslash, as in ASS override tags
+  assert.ok(hookLine(base).includes(B + "fscx82"), "pop");
+  assert.ok(hookLine(base).endsWith("He did NOT" + B + "Nsee that coming"), "no per-line tags when no line has its own look");
+  const fade = normalizeEdit({ ...base, hook: { ...base.hook, anim: "fade" } }, { duration: 40 });
+  assert.ok(hookLine(fade).includes(B + "fad(" + HOOK_FADE_MS + "," + HOOK_FADE_MS + ")") && !hookLine(fade).includes(B + "fscx82"));
+  const still = normalizeEdit({ ...base, hook: { ...base.hook, anim: "none" } }, { duration: 40 });
+  assert.ok(!hookLine(still).includes(B + "fad") && !hookLine(still).includes(B + "fscx82"));
+  assert.throws(() => normalizeEdit({ ...base, hook: { ...base.hook, anim: "spin" } }, { duration: 40 }));
+  const lined = normalizeEdit({ ...base, hook: { ...base.hook, lines: [null, { color: "#FF0000", size: 80 }] } }, { duration: 40 });
+  assert.deepEqual(lined.hook.lines, [null, { color: "#ff0000", size: 80 }]);
+  assert.deepEqual(hookLines(lined).map(l => [l.color, l.size]), [[base.hook.color, base.hook.size], ["#ff0000", 80]]);
+  const ass = hookLine(lined);
+  assert.ok(ass.includes("{" + B + "c&H000000FF" + B + "fs80}see") && ass.includes(B + "fs80}see that coming"), "the second line red and bigger");
+  assert.ok(ass.includes(B + "fs" + base.hook.size + "}He did NOT"), "the first line in the title's own size");
+  assert.throws(() => normalizeEdit({ ...base, hook: { ...base.hook, lines: [{ size: 500 }, null, null, null] } }, { duration: 40 }));
+  // A look carries the animation but not one clip's line formatting.
+  assert.equal(styleOf(lined).hook.lines, undefined);
+  assert.equal(styleOf(fade).hook.anim, "fade");
+  assert.equal(hookLines({ ...lined, hook: { ...lined.hook, uppercase: true } })[1].text, "SEE THAT COMING");
+});

@@ -128,6 +128,14 @@ export function hookLook(edit) {
   const c = edit.captions, h = edit.hook, own = h.own === true, from = own ? h : c;
   return { font: (own && h.font) || c.font, bold: from.bold !== false, italic: from.italic === true, shadow: from.shadow ?? 0, uppercase: h.uppercase === true, align: h.align ?? "center" };
 }
+// How the hook comes in: "pop" (grows into place, as before), "fade" (fades in and out) or "none".
+export const HOOK_ANIMS = ["pop", "fade", "none"], HOOK_FADE_MS = 250;
+// The hook's lines as drawn: its text split on its line breaks (in capitals when hook.uppercase), each line in its own
+// colour and size when hook.lines gives one ([{ color?, size? } | null] per line), else the hook's.
+export function hookLines(edit) {
+  const h = edit.hook, upper = hookLook(edit).uppercase, size = hookPlacement(edit).size, own = Array.isArray(h.lines) ? h.lines : [];
+  return (h.text ?? "").split("\n").filter(Boolean).map((line, i) => ({ text: upper ? line.toUpperCase() : line, color: own[i]?.color ?? h.color, size: own[i]?.size ?? size }));
+}
 // The x of a line of text `total` wide, in a wrap area `wrap` wide centred on cx (canvas preview and render agree).
 export const alignedX = (align, cx, wrap, total) => align === "left" ? cx - wrap / 2 : align === "right" ? cx + wrap / 2 - total : cx - total / 2;
 // The hook's anchor in pixels and the side margins that give it the same wrap width either side of its centre.
@@ -190,7 +198,8 @@ export function normalizeStyle(input, base = defaultStyle()) {
       x: num(h.x ?? HOOK_DEFAULT.x, ...HOOK_X, "Hook position"), y: num(h.y ?? HOOK_DEFAULT.y, ...HOOK_Y, "Hook position"), size: int(h.size ?? HOOK_DEFAULT.size, ...HOOK_SIZE, "Hook size"),
       // own: the hook's font, bold, italic and shadow below instead of the subtitles' (see hookLook).
       own: bool(h.own ?? false, "Opening title style"), font: pick(h.font ?? c.font, FONTS, "Opening title font"), bold: bool(h.bold ?? true, "Opening title bold"), italic: bool(h.italic ?? false, "Opening title italic"),
-      shadow: int(h.shadow ?? 0, 0, SHADOW_MAX, "Opening title shadow"), uppercase: bool(h.uppercase ?? false, "Opening title capitals"), align: pick(h.align ?? "center", ALIGNS, "Opening title alignment") },
+      shadow: int(h.shadow ?? 0, 0, SHADOW_MAX, "Opening title shadow"), uppercase: bool(h.uppercase ?? false, "Opening title capitals"), align: pick(h.align ?? "center", ALIGNS, "Opening title alignment"),
+      anim: pick(h.anim ?? "pop", HOOK_ANIMS, "Opening title animation") },
     progress: { on: bool(p.on, "Progress bar"), color: color(p.color, "Progress bar colour") },
     pace: { cuts: pick(pc.cuts, CUT_LEVELS, "Jump cuts"), zooms: bool(pc.zooms, "Punch-in zooms") },
     chat: { on: bool(ch.on, "Chat on the clip"), y: num(ch.y, 0.15, 0.95, "Chat position") },
@@ -200,8 +209,8 @@ export function normalizeStyle(input, base = defaultStyle()) {
 
 export function styleOf(edit) {
   const { frame, look, captions, hook, progress, pace = { ...DEFAULT_PACE }, chat = { ...DEFAULT_CHAT }, audio = { ...DEFAULT_AUDIO } } = edit;
-  // Everything about the hook but its text.
-  const { text: _text, ...hookStyle } = hook;
+  // Everything about the hook but its text and the formatting of that text's lines.
+  const { text: _text, lines: _lines, ...hookStyle } = hook;
   return { frame, look, captions, hook: { ...hookStyle, on: hook.on !== false }, progress, pace, chat, audio };
 }
 // Whether an edit shows its hook: switched on and with text.
@@ -212,7 +221,7 @@ export const showsHook = edit => edit.hook?.on !== false && !!edit.hook?.text;
 export function withTextStyle(edit, source) {
   const s = normalizeStyle(source), sameFrame = s.frame.mode === edit.frame.mode;
   return { ...edit, captions: { ...s.captions, on: edit.captions.on, y: sameFrame ? s.captions.y : edit.captions.y },
-    hook: { ...s.hook, on: edit.hook.on !== false, text: edit.hook.text ?? "", seconds: Math.min(s.hook.seconds, MAX_CLIP) } };
+    hook: { ...s.hook, on: edit.hook.on !== false, text: edit.hook.text ?? "", seconds: Math.min(s.hook.seconds, MAX_CLIP), ...(edit.hook.lines && { lines: edit.hook.lines }) } };
 }
 
 // A first edit for a freshly captured clip: the chosen moment, in the streamer's (or workspace's) style.
@@ -231,6 +240,11 @@ export function normalizeEdit(input, { duration }) {
   const style = normalizeStyle(e);
   const hook = obj(e.hook ?? {}, "Hook");
   const out = { v: 1, trim: { start: round(start), end: round(end) }, ...style, hook: { ...style.hook, text: hookText(hook.text ?? ""), seconds: num(hook.seconds ?? style.hook.seconds, 1, MAX_CLIP, "Hook length") } };
+  // Per-line colour and size: one entry (or null, the hook's own) for each line, at most HOOK_LINES.
+  if (hook.lines !== undefined) {
+    if (!Array.isArray(hook.lines) || hook.lines.length > HOOK_LINES) fail("Opening title lines are invalid");
+    out.hook.lines = hook.lines.map(l => { if (l === null) return null; const o = obj(l, "Opening title line"); return { ...(o.color != null && { color: color(o.color, "Line colour") }), ...(o.size != null && { size: int(o.size, ...HOOK_SIZE, "Line size") }) }; });
+  }
   if (e.words !== undefined) out.words = normalizeWords(e.words, total);
   if (e.speakers !== undefined) out.speakers = normalizeSpeakers(e.speakers, total);
   return out;
@@ -555,7 +569,12 @@ export function buildAss(edit, words, tl = plain(edit), messages = []) {
   // The hook's times are already in the finished clip.
   // A left or right aligned hook lines up on that side of its wrap area (the same width either side of hook.x).
   const hookAt = hk.align === "left" ? `\\an7\\pos(${hp.x - hp.wrap / 2},${hp.y})` : hk.align === "right" ? `\\an9\\pos(${hp.x + hp.wrap / 2},${hp.y})` : `\\an8\\pos(${hp.x},${hp.y})`;
-  if (showsHook(edit)) lines.push(`Dialogue: 1,${clock(0)},${clock(Math.min(len, edit.hook.seconds))},Hook,,${hp.margin},${hp.margin},0,,{${hookAt}}${POP}${esc(hk.uppercase ? edit.hook.text.toUpperCase() : edit.hook.text).replace(/\n/g, "\\N")}`);
+  // Lines with their own colour or size get it, then the next line goes back to the hook's.
+  const enter = edit.hook.anim === "fade" ? `{\\fad(${HOOK_FADE_MS},${HOOK_FADE_MS})}` : edit.hook.anim === "none" ? "" : POP;
+  const hookRows = hookLines(edit), restyled = hookRows.some(l => l.color !== edit.hook.color || l.size !== hp.size);
+  const lineTags = l => `{\\c${assColor(l.color)}${edit.hook.bg ? "" : `\\3c${assColor(hookOutlineColor(l.color))}`}\\fs${l.size}}`;
+  const hookBody = hookRows.map(l => (restyled ? lineTags(l) : "") + esc(l.text)).join("\\N");
+  if (showsHook(edit)) lines.push(`Dialogue: 1,${clock(0)},${clock(Math.min(len, edit.hook.seconds))},Hook,,${hp.margin},${hp.margin},0,,{${hookAt}}${enter}${hookBody}`);
   return lines.join("\n") + "\n";
 }
 
