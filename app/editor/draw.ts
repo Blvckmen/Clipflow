@@ -1,6 +1,6 @@
 // Drawing the preview on a canvas from the same layout and caption code (worker/edit.mjs) the worker renders with,
 // so what you see is what gets posted.
-import { CHAT_SIZE, KEYWORD_SCALE, RING, alignedX, camAreas, canvas as frameSize, facecamPlacement, layout, splitAreas } from "../../worker/edit.mjs";
+import { CHAT_SIZE, KEYWORD_SCALE, RING, alignedX, camAreas, canvas as frameSize, facecamPlacement, layout, multiAreas, multiPlacements, splitAreas, uiPlacement } from "../../worker/edit.mjs";
 import { clamp, type Box, type CamBox, type Facecam, type Frame } from "./types";
 
 // Breaks words into lines no wider than `max` with the current font (or `measure`, for words drawn bigger).
@@ -50,6 +50,24 @@ export function drawCam(ctx: CanvasRenderingContext2D, src: CanvasImageSource, f
   ctx.drawImage(src, fp.sx, fp.sy, fp.sw, fp.sh, fp.x, fp.y, fp.w, fp.h);
 }
 
+// The game in its area (box: the layout() of the frame) and each person in theirs, for the multi-webcam layouts;
+// false when a person has no box (the render shows the blurred fill then).
+export function drawMulti(ctx: CanvasRenderingContext2D, src: CanvasImageSource, frame: Frame, sw: number, sh: number, box: { x: number; y: number; w: number; h: number }) {
+  const a = multiAreas(frame), cams = multiPlacements(frame, sw, sh) as Placement[] | null;
+  if (!a || !cams) return false;
+  ctx.save(); ctx.beginPath(); ctx.rect(0, a.game.y, a.game.w, a.game.h); ctx.clip(); ctx.drawImage(src, box.x, box.y + a.game.y, box.w, box.h); ctx.restore();
+  for (const c of cams) ctx.drawImage(src, c.sx, c.sy, c.sw, c.sh, c.x, c.y, c.w, c.h);
+  return true;
+}
+// The game filling the frame, the game UI pinned under the title, and with uiCam the bordered webcam in a bottom corner.
+export function drawGameUi(ctx: CanvasRenderingContext2D, src: CanvasImageSource, frame: Frame, sw: number, sh: number, box: { x: number; y: number; w: number; h: number }) {
+  ctx.drawImage(src, box.x, box.y, box.w, box.h);
+  const ui = uiPlacement(frame, sw, sh) as Placement | null;
+  if (ui) ctx.drawImage(src, ui.sx, ui.sy, ui.sw, ui.sh, ui.x, ui.y, ui.w, ui.h);
+  const fp = frame.uiCam ? facecamPlacement(frame, sw, sh) as Placement | null : null;
+  if (fp) drawCam(ctx, src, { ...frame, mode: "pip" }, fp);
+}
+
 // A template's picture in the gallery: the clip's current frame (`still`, sw x sh) laid out the way the template
 // would, scaled down to the tile. Webcam templates use the clip's webcam box, or a top-right guess without one.
 // Background video shows a plain panel where the background goes.
@@ -59,7 +77,9 @@ export function drawTemplate(ctx: CanvasRenderingContext2D, still: HTMLCanvasEle
   ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
   const f = (frame.mode === "cam" || frame.mode === "pip") && !frame.facecam?.box ? { ...frame, facecam: { ...(frame.facecam as Facecam), box: guess } } : frame;
   const box = layout(f, sw, sh);
-  if (f.mode === "split") {
+  if (f.mode === "gameui") drawGameUi(ctx, still, f, sw, sh, box);
+  else if (multiAreas(f)) drawMulti(ctx, still, f, sw, sh, box);
+  else if (f.mode === "split") {
     const a = splitAreas(f);
     ctx.save(); ctx.beginPath(); ctx.rect(0, a.stream.y, W, a.stream.h); ctx.clip(); ctx.drawImage(still, box.x, box.y + a.stream.y, box.w, box.h); ctx.restore();
     ctx.fillStyle = "#2a3340"; ctx.fillRect(0, a.background.y, W, a.background.h);

@@ -2,11 +2,16 @@
 // Step 1, Cut & frame: where the clip starts and ends, its shape, its template and the template's own settings.
 import type { RefObject } from "react";
 import { ArrowLeftToLine, ArrowRightToLine } from "lucide-react";
-import { ASPECTS, ASPECT_LABELS, DEFAULT_FACECAM, DEFAULT_SPLIT, camAreas, canvas as frameSize, splitAreas, stacks, templateOf } from "../../../worker/edit.mjs";
+import { ASPECTS, ASPECT_LABELS, DEFAULT_FACECAM, DEFAULT_SPLIT, camAreas, canvas as frameSize, captionSeat, multiAreas, stacks, templateOf } from "../../../worker/edit.mjs";
 import { More } from "../More";
 import { TemplateGallery } from "../TemplateGallery";
+import { BoxPicker } from "../BoxPicker";
+import { boxesOf, setBox, withStartingBoxes } from "../boxes";
 import { backgroundChoice, secs, type BgClip, type BgVideo } from "../backgrounds";
 import { clamp, fmt, type Aspect, type Bundle, type CamBox, type Edit, type Facecam, type Frame, type Split, type Tools } from "../types";
+
+// The layouts that stack pictures, which a landscape clip has no room for.
+export const STACKED: string[] = ["split", "cam", "duo", "duostack", "squad"];
 
 export function CutFrame({ bundle, edit, tools, video, time, setTrim, backgrounds, bgClips }: {
   bundle: Bundle; edit: Edit; tools: Tools; video: RefObject<HTMLVideoElement | null>; time: number; setTrim: (which: "start" | "end", t: number) => void; backgrounds: BgVideo[]; bgClips: BgClip[];
@@ -21,20 +26,26 @@ export function CutFrame({ bundle, edit, tools, video, time, setTrim, background
     </div>
     <label className="wide">Shape<div className="segmented aspect-picker">{(Object.keys(ASPECTS) as Aspect[]).map(a => <button key={a} type="button" className={aspect === a ? "active" : ""} title={ASPECT_LABELS[a]} onClick={() => change("frame-aspect", e => {
       // A landscape clip can't stack two pictures: split screen and facecam-on-top become the blurred fill there.
-      const frame = { ...e.frame, aspect: a }, flat = !stacks(frame) && (e.frame.mode === "split" || e.frame.mode === "cam");
+      const frame = { ...e.frame, aspect: a }, flat = !stacks(frame) && STACKED.includes(e.frame.mode);
       return { ...e, frame: flat ? { ...frame, mode: "blur" } : frame, captions: flat ? { ...e.captions, y: 0.72 } : e.captions };
     })}><span className={"aspect-icon a" + a.replace(":", "x")} aria-hidden />{a}</button>)}</div>
       <small>{aspect === "9:16" ? "TikTok, Reels and Shorts." : aspect === "16:9" ? "YouTube videos and X." : "Instagram and Facebook feeds."}</small></label>
     <TemplateGallery video={video} frame={edit.frame} face={bundle.source.face ?? null} active={templateOf(edit.frame)} onPick={t => change("frame-mode", e => {
       const m = t.mode as Frame["mode"];
-      const facecam = { ...DEFAULT_FACECAM, ...e.frame.facecam, ...("facecam" in t ? t.facecam : {}) } as Facecam, H = frameSize(e.frame).H;
+      const facecam = { ...DEFAULT_FACECAM, ...e.frame.facecam, ...("facecam" in t ? t.facecam : {}) } as Facecam;
       if ((m === "cam" || m === "pip") && !facecam.box) facecam.box = bundle.source.face ?? null;
       const content = m === "phone" && !e.frame.content ? bundle.source.content ?? null : e.frame.content ?? null;
-      // Captions follow the seam in the layouts that have one, and go back to the lower third otherwise.
-      const seam = m === "split" ? splitAreas(e.frame).seam / H : m === "cam" ? camAreas({ ...e.frame, facecam }).seam / H : 0.72;
-      const atSeam = Math.abs(e.captions.y - 0.72) < 0.01 || (e.frame.mode === "split" && Math.abs(e.captions.y - splitAreas(e.frame).seam / H) < 0.01) || (e.frame.mode === "cam" && Math.abs(e.captions.y - camAreas(e.frame).seam / H) < 0.01);
-      return { ...e, frame: { ...e.frame, mode: m, facecam, content }, captions: atSeam ? { ...e.captions, y: seam } : e.captions };
+      // The templates that need the clip's own boxes start with sensible ones (placed below in the box picker).
+      const frame = withStartingBoxes({ ...e.frame, mode: m, facecam, content, ...("frame" in t ? t.frame : {}) } as Frame, bundle.source.face);
+      // Subtitles follow the layout's own spot (a seam, or low in the game), unless they were moved somewhere else.
+      const atSeat = Math.abs(e.captions.y - 0.72) < 0.01 || Math.abs(e.captions.y - captionSeat(e.frame)) < 0.01;
+      return { ...e, frame, captions: atSeat ? { ...e.captions, y: captionSeat(frame) } : e.captions };
     })} />
+    {boxesOf(edit.frame).length > 0 && <div className="facecam-controls">
+      <small>{multiAreas(edit.frame) ? "Drag each box onto a person. Drag a corner to resize." : edit.frame.mode === "gameui" ? "Drag the purple box onto the scoreboard, minimap or kill feed." : "Drag the box onto the webcam."}</small>
+      <BoxPicker video={video} boxes={boxesOf(edit.frame)} onChange={(key, box) => change("box-" + key, e => ({ ...e, frame: setBox(e.frame, key, box) }))} />
+      {edit.frame.mode === "gameui" && <label className="switch-row"><input type="checkbox" checked={!!edit.frame.uiCam} onChange={ev => { const on = ev.target.checked; change("frame-uicam", e => ({ ...e, frame: withStartingBoxes({ ...e.frame, uiCam: on }, bundle.source.face) })); }} />Webcam in a corner</label>}
+    </div>}
     {edit.frame.mode === "phone" && <PhoneBox bundle={bundle} edit={edit} tools={tools} />}
     {(edit.frame.mode === "cam" || edit.frame.mode === "pip") && <Webcam bundle={bundle} edit={edit} tools={tools} />}
     {edit.frame.mode === "split" && <>
@@ -104,8 +115,7 @@ function Webcam({ bundle, edit, tools }: { bundle: Bundle; edit: Edit; tools: To
   });
   const setBox = (value: Partial<CamBox>) => { const nb = { ...(b ?? { x: 0, y: 0, w: 0.3, h: 0.4 }), ...value }; nb.w = clamp(nb.w, 0.05, 1); nb.h = clamp(nb.h, 0.05, 1); nb.x = clamp(nb.x, 0, 1 - nb.w); nb.y = clamp(nb.y, 0, 1 - nb.h); setCam({ box: nb }); };
   return <div className="facecam-controls">
-    <small>{b ? (bundle.source.face && b === bundle.source.face ? "Webcam found. " : "") + "Fit the box to the webcam." : "No webcam found. Place the box over it."}
-      {bundle.source.face && b !== bundle.source.face && <> <button type="button" className="text-button" onClick={() => setCam({ box: bundle.source.face! })}>Reset</button></>}</small>
+    {bundle.source.face && b !== bundle.source.face && <small><button type="button" className="text-button" onClick={() => setCam({ box: bundle.source.face! })}>Use the detected webcam</button></small>}
     <div className="control-grid">
       {edit.frame.mode === "cam" ? <label>Webcam strip <span>{Math.round(fc.share * 100)}%</span><input type="range" min={0.2} max={0.5} step={0.01} value={fc.share} onChange={e => setCam({ share: Number(e.target.value) })} /></label>
         : <><label>Corner<select value={fc.corner} onChange={e => setCam({ corner: e.target.value as Facecam["corner"] })}><option value="tl">Top left</option><option value="tr">Top right</option><option value="bl">Bottom left</option><option value="br">Bottom right</option></select></label>

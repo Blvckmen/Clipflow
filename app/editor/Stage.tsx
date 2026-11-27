@@ -3,10 +3,10 @@
 // loop, speed, sound, full screen, safe zones) and plain warnings about where the text sits.
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Eye, EyeOff, Maximize2, Pause, Play, Repeat, Volume2, VolumeX } from "lucide-react";
-import { HOOK_FADE_MS, HOOK_OUTLINE, HOOK_X, HOOK_Y, activeCue, hookLines, camAreas, canvas as frameSize, facecamPlacement, hookLook, hookOutlineColor, hookPlacement, layout, splitAreas, stacks, zoomAt } from "../../worker/edit.mjs";
-import { drawCam, drawChat, drawText, pop } from "./draw";
+import { HOOK_FADE_MS, HOOK_OUTLINE, HOOK_X, HOOK_Y, MULTI, activeCue, hookLines, multiAreas, multiPlacements, camAreas, canvas as frameSize, facecamPlacement, hookLook, hookOutlineColor, hookPlacement, layout, splitAreas, stacks, zoomAt } from "../../worker/edit.mjs";
+import { drawCam, drawChat, drawGameUi, drawMulti, drawText, pop } from "./draw";
 import { layoutWarnings } from "./warnings.mjs";
-import { clamp, fmt, setMedia, type Box, type Bundle, type Change, type ClipTimeline, type Edit } from "./types";
+import { clamp, fmt, setMedia, type Box, type Bundle, type Change, type ClipTimeline, type Edit, type Frame } from "./types";
 
 type Cue = { start: number; end: number; words: { t: string; s: number; k?: boolean }[] };
 type ChatWindow = { start: number; end: number; lines: { name: string; text: string; color: string }[] };
@@ -72,7 +72,9 @@ export function Stage({ bundle, edit, editRef, change, video, cues, chat, tl, pl
       const zoom = tr?.punches.length ? zoomAt(tr.punches, out) : 1;
       setTime(prev => Math.abs(prev - t) > 0.05 ? t : prev);
       const sw = v.videoWidth || bundle.source.width, sh = v.videoHeight || bundle.source.height;
-      const box = layout(e.frame, sw, sh), l = e.look;
+      // A multi-webcam layout without a box for each person shows the blurred fill, like the render.
+      const pf: Frame = (MULTI as Record<string, number>)[e.frame.mode] && !multiPlacements(e.frame, sw, sh) ? { ...e.frame, mode: "blur" } : e.frame;
+      const box = layout(pf, sw, sh), l = e.look;
       const look = `brightness(${l.brightness}) contrast(${l.contrast}) saturate(${l.saturation})`;
       ctx.save();
       ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
@@ -100,6 +102,10 @@ export function Stage({ bundle, edit, editRef, change, video, cues, chat, tl, pl
           ctx.fillText(L.hasBackgrounds ? "Background loading…" : "Upload backgrounds in Settings", W / 2, sb.y + sb.h / 2);
         }
         if (divider) { ctx.fillStyle = divider; ctx.fillRect(0, areas.seam - 3, W, 6); }
+      } else if (v.readyState >= 2 && pf.mode === "gameui") {
+        ctx.filter = look; drawGameUi(ctx, v, pf, sw, sh, box); ctx.filter = "none";
+      } else if (v.readyState >= 2 && multiAreas(pf)) {
+        ctx.filter = look; drawMulti(ctx, v, pf, sw, sh, box); ctx.filter = "none";
       } else if (v.readyState >= 2 && (e.frame.mode === "cam" || e.frame.mode === "pip") && e.frame.facecam?.box) {
         // Facecam layouts: the game (the stream, cut to its part) and the webcam cut out of the same stream.
         const fp = facecamPlacement(e.frame, sw, sh)!, game = e.frame.mode === "cam" ? camAreas(e.frame).game : { y: 0, h: H };
@@ -110,7 +116,7 @@ export function Stage({ bundle, edit, editRef, change, video, cues, chat, tl, pl
         const divider = e.frame.split?.divider;
         if (e.frame.mode === "cam" && divider) { ctx.fillStyle = divider; ctx.fillRect(0, camAreas(e.frame).seam - 3, W, 6); }
       } else if (v.readyState >= 2) {
-        if (e.frame.mode === "blur") {
+        if (pf.mode === "blur") {
           const cover = Math.max(W / sw, H / sh), cw = sw * cover, ch = sh * cover;
           ctx.filter = look + " blur(26px) brightness(0.86)";
           ctx.drawImage(v, (W - cw) / 2 - 30, (H - ch) / 2 - 30, cw + 60, ch + 60);

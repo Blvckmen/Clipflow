@@ -204,6 +204,12 @@
 .editor-shell .phone{transition:height .25s ease}
 .editor-shell.timeline-folded .phone{height:min(calc(100vh - 250px),720px)}
 @media(max-width:900px){.editor-shell.timeline-folded .phone{height:min(66vh,580px)}}
+.box-picker{position:relative;width:100%;border-radius:10px;overflow:hidden;background:#141a21;touch-action:none;user-select:none}
+.box-picker canvas{position:absolute;inset:0;width:100%;height:100%}
+.pick-box{position:absolute;border:2px solid;border-radius:4px;cursor:move;box-sizing:border-box}
+.pick-box:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.pick-label{position:absolute;left:0;top:0;font-size:11px;font-weight:700;color:#0b0e12;padding:1px 6px;border-radius:0 0 4px 0;white-space:nowrap;pointer-events:none}
+.pick-resize{position:absolute;right:-6px;bottom:-6px;width:12px;height:12px;border-radius:3px;cursor:nwse-resize;border:2px solid #0b0e12}
 .saved-looks{display:flex;flex-direction:column;gap:8px;padding-top:12px;border-top:1px solid var(--border)}
 .saved-looks h3{font-size:13px;margin:0;color:#d3dce7}.editor-controls .saved-looks select{flex:1;width:auto;min-width:140px;margin:0}
 @media(max-width:900px){.editor-shell{overflow-y:auto}.editor-body{flex:none}.editor-shell .phone{height:min(58vh,520px)}.timeline-grid{grid-template-columns:64px minmax(0,1fr)}.timeline,.step-bar{padding-left:14px;padding-right:14px}}

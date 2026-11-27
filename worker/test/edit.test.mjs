@@ -182,7 +182,7 @@ test("facecam layouts: the webcam across the top or in a corner, cut from the sa
 
 test("templates: bottom split and circle facecam", async () => {
   const { filterGraph, defaultStyle, facecamPlacement, camAreas, templateOf, TEMPLATE_IDS } = await import("../edit.mjs");
-  assert.deepEqual(TEMPLATE_IDS, ["cam", "camBottom", "blur", "pip", "circle", "crop", "fit", "split", "phone"]);
+  assert.deepEqual(TEMPLATE_IDS, ["cam", "camBottom", "blur", "pip", "circle", "crop", "fit", "split", "phone", "duo", "duoStack", "squad", "gameUi", "gameUiCam"]);
   const bottom = defaultStyle({ framing: "camBottom" });
   assert.deepEqual([bottom.frame.mode, bottom.frame.facecam.place, bottom.captions.y], ["cam", "bottom", 0.65]);
   assert.equal(templateOf(bottom.frame), "camBottom");
@@ -372,4 +372,64 @@ test("opening title: fade or no animation, and lines in their own colour and siz
   assert.equal(styleOf(lined).hook.lines, undefined);
   assert.equal(styleOf(fade).hook.anim, "fade");
   assert.equal(hookLines({ ...lined, hook: { ...lined.hook, uppercase: true } })[1].text, "SEE THAT COMING");
+});
+
+test("multi-webcam templates: duo, duo stack and squad lay each person out from the same stream", async () => {
+  const { defaultStyle, multiAreas, multiPlacements, filterGraph, normalizeStyle, templateOf, captionSeat } = await import("../edit.mjs");
+  const hook = { text: "", seconds: 3, color: "#111111", bg: "#ffffff" };
+  const p1 = { x: 0.02, y: 0.05, w: 0.26, h: 0.4 }, p2 = { x: 0.72, y: 0.05, w: 0.26, h: 0.4 }, p3 = { x: 0.02, y: 0.55, w: 0.26, h: 0.4 }, p4 = { x: 0.72, y: 0.55, w: 0.26, h: 0.4 };
+  const duo = defaultStyle({ framing: "duo" });
+  assert.equal(templateOf(duo.frame), "duo");
+  assert.deepEqual(multiAreas(duo.frame), { game: { x: 0, y: 384, w: 720, h: 512 }, cams: [{ x: 0, y: 0, w: 720, h: 384 }, { x: 0, y: 896, w: 720, h: 384 }] });
+  assert.equal(duo.captions.y, captionSeat(duo.frame));
+  assert.ok(duo.captions.y > 384 / 1280 && duo.captions.y < 896 / 1280, "subtitles in the game, off the faces");
+  assert.equal(multiPlacements(duo.frame, 1280, 720), null, "no boxes yet");
+  const withBoxes = f => ({ ...f, facecam: { ...f.facecam, box: p1 }, cams: [p2, p3, p4] });
+  const placed = multiPlacements(withBoxes(duo.frame), 1280, 720);
+  assert.equal(placed.length, 2);
+  assert.ok(Math.abs(placed[0].sw / placed[0].sh - 720 / 384) < 0.02, "cut to the strip's shape");
+  assert.ok(placed[1].sx >= 0.72 * 1280 - 1, "person 2 from their own box");
+  const g = filterGraph({ ...duo, frame: withBoxes(duo.frame), trim: { start: 0, end: 8 }, hook }, { width: 1280, height: 720 }, null);
+  assert.match(g, /split=3\[g\]\[c0\]\[c1\]/);
+  assert.match(g, /\[base\]\[game\]overlay=0:384:shortest=1\[m0\]/);
+  assert.match(g, /\[m1\]\[k1\]overlay=0:896\[v0\]/);
+  assert.match(filterGraph({ ...duo, frame: { ...duo.frame, facecam: { ...duo.frame.facecam, box: p1 } }, trim: { start: 0, end: 8 }, hook }, { width: 1280, height: 720 }, null), /boxblur/, "one box for two people: blurred fill");
+  const stack = defaultStyle({ framing: "duoStack" });
+  assert.deepEqual(multiAreas(stack.frame).cams.map(c => [c.x, c.w]), [[0, 360], [360, 360]]);
+  assert.ok(stack.captions.y <= (1280 - 360) / 1280 + 0.001, "kept above the app's text");
+  const squad = defaultStyle({ framing: "squad" });
+  assert.equal(multiAreas(squad.frame).cams.length, 4);
+  assert.match(filterGraph({ ...squad, frame: withBoxes(squad.frame), trim: { start: 0, end: 8 }, hook }, { width: 1280, height: 720 }, null), /split=5.*\[m3\]\[k3\]overlay=360:960\[v0\]/);
+  assert.equal(normalizeStyle({ frame: { mode: "duo", aspect: "16:9" } }).frame.mode, "blur", "landscape can't stack");
+  assert.throws(() => normalizeStyle({ frame: { mode: "squad", cams: [p2, p3, p4, p1] } }), /Webcams/);
+  assert.throws(() => normalizeStyle({ frame: { mode: "duo", cams: [{ x: 0, y: 0, w: 0 }] } }), /Webcam 2/);
+  assert.deepEqual(normalizeStyle({ frame: { mode: "duo" } }).frame.cams, [], "older styles get no extra webcams");
+});
+
+test("game UI templates: the game UI pinned uncropped, with the webcam in a bottom corner for the enhanced one", async () => {
+  const { defaultStyle, uiPlacement, facecamPlacement, filterGraph, templateOf, UI_TOP } = await import("../edit.mjs");
+  const hook = { text: "", seconds: 3, color: "#111111", bg: "#ffffff" };
+  const plain = defaultStyle({ framing: "gameUi" }), cam = defaultStyle({ framing: "gameUiCam" });
+  assert.deepEqual([templateOf(plain.frame), templateOf(cam.frame)], ["gameUi", "gameUiCam"]);
+  const ui = { x: 0.35, y: 0.82, w: 0.3, h: 0.16 };
+  const p = uiPlacement({ ...plain.frame, ui }, 1280, 720);
+  assert.equal(p.y, UI_TOP);
+  assert.ok(Math.abs(p.w / p.h - (0.3 * 1280) / (0.16 * 720)) < 0.03, "its own shape");
+  assert.ok(p.w <= 648 && p.h <= 1280 * 0.22 + 1);
+  assert.equal(p.x, (720 - p.w) / 2);
+  const g = filterGraph({ ...plain, frame: { ...plain.frame, ui }, trim: { start: 0, end: 8 }, hook }, { width: 1280, height: 720 }, null);
+  assert.match(g, /split=2\[g\]\[u\]/);
+  assert.match(g, /\[game\]\[ui\]overlay=\d+:300\[gu\]/);
+  assert.match(filterGraph({ ...plain, trim: { start: 0, end: 8 }, hook }, { width: 1280, height: 720 }, null), /null\[g\].*\[game\]null\[v0\]/, "no UI box yet: just the game");
+  const box = { x: 0.7, y: 0.05, w: 0.28, h: 0.4 }, cf = { ...cam.frame, ui, facecam: { ...cam.frame.facecam, box } };
+  const fp = facecamPlacement(cf, 1280, 720);
+  assert.equal(fp.y + fp.h, 1280 - 230, "in a bottom corner, clear of the UI");
+  assert.match(filterGraph({ ...cam, frame: cf, trim: { start: 0, end: 8 }, hook }, { width: 1280, height: 720 }, null), /split=3\[g\]\[u\]\[c\].*\[gu\]\[cam\]overlay/);
+});
+
+test("withTextStyle keeps the subtitle height only between the same template", async () => {
+  const { withTextStyle, defaultStyle, defaultEdit } = await import("../edit.mjs");
+  const top = defaultEdit(defaultStyle({ framing: "cam" }), { trimStart: 0, trimEnd: 10 }), bottom = defaultStyle({ framing: "camBottom" });
+  assert.equal(withTextStyle(top, bottom).captions.y, top.captions.y, "Bottom split's seam isn't copied onto Top split");
+  assert.equal(withTextStyle(top, { ...defaultStyle({ framing: "cam" }), captions: { ...defaultStyle({ framing: "cam" }).captions, y: 0.4 } }).captions.y, 0.4);
 });

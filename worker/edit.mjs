@@ -33,7 +33,14 @@ export const FONTS = ["Arial", "Impact", "Verdana", "Trebuchet MS", "Georgia", "
 // either side of a landscape stream. frame.content is that picture's rectangle (fractions of the stream, found by the
 // worker); it is cut out and fills the frame. Without one, an upright 9:16 picture in the middle is assumed.
 // facecam.place puts the "cam" strip at the top or the bottom; facecam.shape draws the "pip" webcam as a box or a circle.
-export const FRAMINGS = ["blur", "crop", "fit", "split", "cam", "pip", "phone"];
+// Several webcams (co-streams): frame.facecam.box is person 1 and frame.cams the others (up to 3 more), each a rectangle
+// of the stream. "duo": person 1 across the top, the game in the middle, person 2 across the bottom. "duostack": the
+// two side by side across the top, the game below. "squad": two across the top, the game, two across the bottom.
+// Without enough boxes they render as "blur". "gameui": the game fills the frame and frame.ui (a rectangle of the
+// stream: a scoreboard, minimap or kill feed) is pinned under the title, uncropped; with frame.uiCam the webcam sits in
+// a bottom corner too.
+export const FRAMINGS = ["blur", "crop", "fit", "split", "cam", "pip", "phone", "duo", "duostack", "squad", "gameui"];
+export const MULTI = { duo: 2, duostack: 2, squad: 4 };
 export const CORNERS = ["tl", "tr", "bl", "br"];
 export const CAM_PLACES = ["top", "bottom"], CAM_SHAPES = ["box", "circle"];
 export const DEFAULT_FACECAM = { box: null, share: 0.35, corner: "tr", size: 0.36, place: "top", shape: "box" };
@@ -49,12 +56,18 @@ export const TEMPLATES = [
   { id: "fit", label: "Fit", mode: "fit" },
   { id: "split", label: "Background video", mode: "split" },
   { id: "phone", label: "Phone stream", mode: "phone" },
+  // These need each clip's own boxes (placed in the editor), so they aren't offered as a workspace default.
+  { id: "duo", label: "Duo spotlight", mode: "duo", perClip: true },
+  { id: "duoStack", label: "Duo stack", mode: "duostack", perClip: true },
+  { id: "squad", label: "Squad spotlight", mode: "squad", perClip: true },
+  { id: "gameUi", label: "Game UI", mode: "gameui", frame: { uiCam: false }, perClip: true },
+  { id: "gameUiCam", label: "Enhanced game UI", mode: "gameui", frame: { uiCam: true }, perClip: true },
 ];
 export const TEMPLATE_IDS = TEMPLATES.map(t => t.id);
 // The template a frame matches (its mode, and for the facecam ones where the webcam goes).
 export function templateOf(frame) {
-  const fc = { ...DEFAULT_FACECAM, ...(frame?.facecam ?? {}) };
-  return TEMPLATES.find(t => t.mode === frame?.mode && Object.entries(t.facecam ?? {}).every(([k, v]) => fc[k] === v))?.id ?? frame?.mode;
+  const fc = { ...DEFAULT_FACECAM, ...(frame?.facecam ?? {}) }, fr = { uiCam: false, ...(frame ?? {}) };
+  return TEMPLATES.find(t => t.mode === frame?.mode && Object.entries(t.facecam ?? {}).every(([k, v]) => fc[k] === v) && Object.entries(t.frame ?? {}).every(([k, v]) => fr[k] === v))?.id ?? frame?.mode;
 }
 export const ANIMATIONS = ["none", "pop", "karaoke", "word"];
 export const MIN_CLIP = 5, MAX_CLIP = 90;
@@ -96,9 +109,10 @@ export function defaultStyle({ framing = "blur", captions = true } = {}) {
   delete preset.label;
   // framing is a template id (the plain framings are templates too).
   const t = TEMPLATES.find(x => x.id === framing) ?? TEMPLATES.find(x => x.id === "blur"), facecam = { ...DEFAULT_FACECAM, ...(t.facecam ?? {}) };
-  const seam = t.mode === "split" ? 0.5 : t.mode === "cam" ? (facecam.place === "bottom" ? 1 - facecam.share : facecam.share) : 0.72;
+  const frame = { mode: t.mode, aspect: "9:16", zoom: 1, x: 0, y: 0, content: null, background: null, pool: [], split: { ...DEFAULT_SPLIT }, facecam, cams: [], ui: null, uiCam: false, ...(t.frame ?? {}) };
+  const seam = captionSeat(frame);
   return {
-    frame: { mode: t.mode, aspect: "9:16", zoom: 1, x: 0, y: 0, content: null, background: null, pool: [], split: { ...DEFAULT_SPLIT }, facecam },
+    frame,
     look: { brightness: 1, contrast: 1, saturation: 1 },
     // Split screen and the facecam strip put captions on the seam between the two pictures.
     captions: { on: !!captions, preset: "bold", ...preset, keywords: true, y: seam, mask: false },
@@ -175,10 +189,14 @@ export function normalizeStyle(input, base = defaultStyle()) {
   const ch = { ...DEFAULT_CHAT, ...(base.chat ?? {}), ...(s.chat ?? {}) };
   const au = { ...DEFAULT_AUDIO, ...(base.audio ?? {}), ...(s.audio ?? {}) };
   const aspect = pick(f.aspect ?? "9:16", Object.keys(ASPECTS), "Clip shape");
-  // A landscape clip has no room to stack two pictures: split screen and facecam-on-top become the blurred fill.
-  const mode = pick(f.mode, FRAMINGS, "Framing"), fits = stacks({ aspect }) || (mode !== "split" && mode !== "cam");
+  // A landscape clip has no room to stack pictures: split screen, facecam-on-top and the multi-webcam layouts become the
+  // blurred fill.
+  const mode = pick(f.mode, FRAMINGS, "Framing"), fits = stacks({ aspect }) || !STACKED.includes(mode);
+  const cams = f.cams === undefined || f.cams === null ? [] : Array.isArray(f.cams) && f.cams.length <= 3 ? f.cams.map((b, i) => camBox(b, "Webcam " + (i + 2))) : fail("Webcams are not valid");
+  if (cams.includes(null)) fail("Webcams are not valid");
   return {
     frame: { mode: fits ? mode : "blur", aspect, content: camBox(f.content, "Phone picture"), zoom: num(f.zoom, 1, 3, "Zoom"), x: num(f.x, -1, 1, "Horizontal position"), y: num(f.y, -1, 1, "Vertical position"), background: ref(f.background, "Background video"), pool: pool(f.pool),
+      cams, ui: camBox(f.ui, "Game UI"), uiCam: bool(f.uiCam ?? false, "Webcam with the game UI"),
       split: { share: num(sp.share, 0.3, 0.8, "Stream share"), top: pick(sp.top, SPLIT_TOPS, "Split order"), divider: sp.divider === null ? null : color(sp.divider, "Divider colour"), volume: num(sp.volume, 0, 1, "Background volume") },
       facecam: { box: camBox(fc.box), share: num(fc.share, 0.2, 0.5, "Facecam height"), corner: pick(fc.corner, CORNERS, "Facecam corner"), size: num(fc.size, 0.2, 0.5, "Facecam size"),
         place: pick(fc.place, CAM_PLACES, "Facecam place"), shape: pick(fc.shape, CAM_SHAPES, "Facecam shape") } },
@@ -219,7 +237,9 @@ export const showsHook = edit => edit.hook?.on !== false && !!edit.hook?.text;
 // hook's text, whether each is switched on, and the subtitle height when the two are framed differently (it follows
 // the framing's seam).
 export function withTextStyle(edit, source) {
-  const s = normalizeStyle(source), sameFrame = s.frame.mode === edit.frame.mode;
+  // The subtitle height comes along only between clips in the same template (Top and Bottom split share a mode but
+  // not a seam).
+  const s = normalizeStyle(source), sameFrame = templateOf(s.frame) === templateOf(edit.frame);
   return { ...edit, captions: { ...s.captions, on: edit.captions.on, y: sameFrame ? s.captions.y : edit.captions.y },
     hook: { ...s.hook, on: edit.hook.on !== false, text: edit.hook.text ?? "", seconds: Math.min(s.hook.seconds, MAX_CLIP), ...(edit.hook.lines && { lines: edit.hook.lines }) } };
 }
@@ -291,6 +311,56 @@ export function camAreas(frame) {
   if (frame.facecam?.place === "bottom") return { cam: { y: H - camH, h: camH }, game: { y: 0, h: H - camH }, seam: H - camH };
   return { cam: { y: 0, h: camH }, game: { y: camH, h: H - camH }, seam: camH };
 }
+// The layouts that stack pictures (portrait and square clips only).
+const STACKED = ["split", "cam", "duo", "duostack", "squad"];
+// Several webcams: where the game and each person go on the canvas ({x, y, w, h}, whole even pixels). Strips are 30%
+// of the height for "duo" and "duostack", 25% for "squad"'s two rows.
+export function multiAreas(frame) {
+  const { W, H } = canvas(frame), mode = frame.mode, half = even(W / 2);
+  if (mode === "duo") { const s = even(H * 0.3); return { game: { x: 0, y: s, w: W, h: H - 2 * s }, cams: [{ x: 0, y: 0, w: W, h: s }, { x: 0, y: H - s, w: W, h: s }] }; }
+  if (mode === "duostack") { const s = even(H * 0.3); return { game: { x: 0, y: s, w: W, h: H - s }, cams: [{ x: 0, y: 0, w: half, h: s }, { x: half, y: 0, w: W - half, h: s }] }; }
+  if (mode === "squad") { const s = even(H * 0.25); return { game: { x: 0, y: s, w: W, h: H - 2 * s }, cams: [{ x: 0, y: 0, w: half, h: s }, { x: half, y: 0, w: W - half, h: s }, { x: 0, y: H - s, w: half, h: s }, { x: half, y: H - s, w: W - half, h: s }] }; }
+  return null;
+}
+// A box of the stream cut to a w x h area's shape, staying inside the box: centred sideways and trimmed mostly from
+// the bottom (a face sits in the upper part of a webcam box). In source pixels.
+function cutTo(b, SW, SH, w, h) {
+  let sx = b.x * SW, sy = b.y * SH, bw = b.w * SW, bh = b.h * SH;
+  const want = w / h;
+  if (bw / bh > want) { const nw = bh * want; sx += (bw - nw) / 2; bw = nw; } else { const nh = bw / want; sy += (bh - nh) * 0.25; bh = nh; }
+  return { sx: Math.round(sx), sy: Math.round(sy), sw: even(bw), sh: even(bh) };
+}
+// Each person's cut and place in a multi-webcam layout ([{sx, sy, sw, sh, x, y, w, h}]), or null without enough boxes.
+export function multiPlacements(frame, width, height) {
+  const a = multiAreas(frame), need = MULTI[frame.mode];
+  if (!a) return null;
+  const boxes = [frame.facecam?.box, ...(frame.cams ?? [])].filter(Boolean).slice(0, need);
+  if (boxes.length < need) return null;
+  const SW = width > 0 ? width : 1280, SH = height > 0 ? height : 720;
+  return a.cams.map((c, i) => ({ ...cutTo(boxes[i], SW, SH, c.w, c.h), ...c }));
+}
+// The game UI pinned under the title: its own shape, 90% of the width at most and 22% of the height at most.
+export const UI_TOP = 300;
+export function uiPlacement(frame, width, height) {
+  const b = frame.ui, { W, H } = canvas(frame);
+  if (!b) return null;
+  const SW = width > 0 ? width : 1280, SH = height > 0 ? height : 720, bw = b.w * SW, bh = b.h * SH;
+  let w = even(W * 0.9), h = even(w * bh / bw);
+  if (h > H * 0.22) { h = even(H * 0.22); w = even(h * bw / bh); }
+  return { sx: Math.round(b.x * SW), sy: Math.round(b.y * SH), sw: even(bw), sh: even(bh), x: Math.round((W - w) / 2), y: Math.min(UI_TOP, H - h - PIP_MARGIN), w, h };
+}
+// Where subtitles sit by default in a frame's layout (a fraction of the height): on the seam of split screen and the
+// facecam strip, low in the game for the multi-webcam layouts (above the app's text at the bottom), below the pinned
+// game UI, and in the lower third otherwise.
+export function captionSeat(frame) {
+  const { H } = canvas(frame), r = n => Math.round(n * 1000) / 1000;
+  if (frame.mode === "split") return r(splitAreas(frame).seam / H);
+  if (frame.mode === "cam") return r(camAreas(frame).seam / H);
+  const a = multiAreas(frame);
+  if (a) return r(Math.min(a.game.y + a.game.h * 0.8, H - 360) / H);
+  if (frame.mode === "gameui") return 0.55;
+  return 0.72;
+}
 // The white ring around a circle facecam, in pixels.
 export const RING = 6;
 // Where the webcam is cut from the stream (sx, sy, sw, sh in source pixels) and drawn on the canvas (x, y, w, h):
@@ -312,7 +382,9 @@ export function facecamPlacement(frame, width, height) {
   // A circle shows a square cut of the box: centred sideways, trimmed mostly from the bottom like the strip.
   if (fc.shape === "circle") { if (bw > bh) { sx += (bw - bh) / 2; bw = bh; } else { sy += (bh - bw) * 0.25; bh = bw; } }
   const w = even(W * fc.size), h = fc.shape === "circle" ? w : even(w * bh / bw);
-  const x = fc.corner.endsWith("l") ? PIP_MARGIN : W - PIP_MARGIN - w, y = Math.max(PIP_MARGIN, fc.corner.startsWith("t") ? PIP_TOP : H - PIP_BOTTOM - h);
+  // With the game UI pinned at the top, the webcam goes in a bottom corner (on the side its corner says).
+  const corner = frame.mode === "gameui" ? "b" + fc.corner[1] : fc.corner;
+  const x = corner.endsWith("l") ? PIP_MARGIN : W - PIP_MARGIN - w, y = Math.max(PIP_MARGIN, corner.startsWith("t") ? PIP_TOP : H - PIP_BOTTOM - h);
   return { sx: Math.round(sx), sy: Math.round(sy), sw: even(bw), sh: even(bh), x, y, w, h };
 }
 // The phone picture inside the stream, in stream pixels: frame.content, or an upright 9:16 picture in the middle.
@@ -328,10 +400,10 @@ export function phoneBox(frame, width, height) {
 export function layout(frame, width, height) {
   const fw = width > 0 ? width : 1280, fh = height > 0 ? height : 720, { W, H } = canvas(frame);
   const src = frame.mode === "phone" ? phoneBox(frame, fw, fh) : { x: 0, y: 0, w: fw, h: fh }, sw = src.w, sh = src.h;
-  const cam = frame.mode === "cam" && frame.facecam?.box ? camAreas(frame) : null;
-  const areas = frame.mode === "split" ? splitAreas(frame) : cam ? { stream: cam.game } : null;
+  const cam = frame.mode === "cam" && frame.facecam?.box ? camAreas(frame) : null, multi = multiAreas(frame);
+  const areas = frame.mode === "split" ? splitAreas(frame) : cam ? { stream: cam.game } : multi ? { stream: multi.game } : null;
   const AW = W, AH = areas ? areas.stream.h : H;
-  const base = ["crop", "split", "cam", "pip", "phone"].includes(frame.mode) ? Math.max(AW / sw, AH / sh) : Math.min(AW / sw, AH / sh);
+  const base = ["crop", "split", "cam", "pip", "phone", "duo", "duostack", "squad", "gameui"].includes(frame.mode) ? Math.max(AW / sw, AH / sh) : Math.min(AW / sw, AH / sh);
   const w = even(sw * base * frame.zoom), h = even(sh * base * frame.zoom);
   return { w, h, x: Math.round((AW - w) / 2 + frame.x * Math.abs(AW - w) / 2), y: Math.round((AH - h) / 2 + frame.y * Math.abs(AH - h) / 2), area: { w: AW, h: AH, y: areas ? areas.stream.y : 0 }, src };
 }
@@ -592,7 +664,8 @@ const fmt = n => String(Math.round(n * 1000) / 1000);
 export function filterGraph(edit, { width, height }, subtitles, { background = false, audio = null, tl = plain(edit), emoji = null } = {}) {
   const split = edit.frame.mode === "split" && background;
   // Split screen without a background, or a facecam layout without a webcam box, falls back to the blurred fill.
-  const noCam = (edit.frame.mode === "cam" || edit.frame.mode === "pip") && !edit.frame.facecam?.box;
+  // So does a multi-webcam layout without a box for each person.
+  const noCam = ((edit.frame.mode === "cam" || edit.frame.mode === "pip") && !edit.frame.facecam?.box) || (MULTI[edit.frame.mode] && !multiPlacements(edit.frame, width, height));
   const frame = (edit.frame.mode === "split" && !background) || noCam ? { ...edit.frame, mode: "blur" } : edit.frame;
   const { w, h, x, y, src: cut } = layout(frame, width, height), l = edit.look, { W, H } = canvas(edit.frame);
   // Brightness scales luma above video black (16), like the preview's CSS brightness(), through a lookup table:
@@ -610,6 +683,24 @@ export function filterGraph(edit, { width, height }, subtitles, { background = f
     parts.push(src + `scale=${w}:${h},crop=${W}:${a.stream.h}:${-x}:${-y},setsar=1[st]`,
       `[1:v]scale=${W}:${a.background.h}:force_original_aspect_ratio=increase,crop=${W}:${a.background.h},fps=30,setsar=1[bk]`,
       (a.stream.y === 0 ? "[st][bk]" : "[bk][st]") + `vstack=inputs=2:shortest=1` + (divider ? `,drawbox=x=0:y=${a.seam - 3}:w=${W}:h=6:color=${hex6(divider)}:t=fill` : "") + `[v0]`);
+  } else if (MULTI[frame.mode]) {
+    // Several webcams: the game cut to its band, each person cut from the same stream to their area, all laid on a
+    // black canvas (the areas cover it).
+    const a = multiAreas(frame), cams = multiPlacements(frame, width, height), n = cams.length;
+    parts.push(src + `split=${n + 1}[g]` + cams.map((_, i) => `[c${i}]`).join(""), `[g]scale=${w}:${h},crop=${W}:${a.game.h}:${-x}:${-y},setsar=1[game]`,
+      ...cams.map((c, i) => `[c${i}]crop=${c.sw}:${c.sh}:${c.sx}:${c.sy},scale=${c.w}:${c.h},setsar=1[k${i}]`),
+      `color=c=black:s=${W}x${H}:r=30[base]`, `[base][game]overlay=0:${a.game.y}:shortest=1[m0]`,
+      ...cams.map((c, i) => `[m${i}][k${i}]overlay=${c.x}:${c.y}[${i === n - 1 ? "v0" : "m" + (i + 1)}]`));
+  } else if (frame.mode === "gameui") {
+    // The game filling the frame, the game UI cut out of the same stream and pinned under the title, and with uiCam
+    // the webcam in a bordered box in a bottom corner.
+    const ui = uiPlacement(frame, width, height), fp = frame.uiCam ? facecamPlacement(frame, width, height) : null;
+    const outs = ["[g]", ...(ui ? ["[u]"] : []), ...(fp ? ["[c]"] : [])];
+    parts.push(src + (outs.length > 1 ? `split=${outs.length}` + outs.join("") : "null[g]"), `[g]scale=${w}:${h},crop=${W}:${H}:${-x}:${-y},setsar=1[game]`);
+    let last = "game";
+    if (ui) { parts.push(`[u]crop=${ui.sw}:${ui.sh}:${ui.sx}:${ui.sy},scale=${ui.w}:${ui.h},setsar=1[ui]`, `[${last}][ui]overlay=${ui.x}:${ui.y}[gu]`); last = "gu"; }
+    if (fp) { parts.push(`[c]crop=${fp.sw}:${fp.sh}:${fp.sx}:${fp.sy},scale=${fp.w}:${fp.h},setsar=1,pad=${fp.w + 8}:${fp.h + 8}:4:4:color=white[cam]`, `[${last}][cam]overlay=${fp.x - 4}:${fp.y - 4}[gc]`); last = "gc"; }
+    parts.push(`[${last}]null[v0]`);
   } else if (frame.mode === "cam" || frame.mode === "pip") {
     // The webcam cut out of the stream once, and the stream itself as the game.
     const fp = facecamPlacement(frame, width, height), divider = frame.split?.divider;
