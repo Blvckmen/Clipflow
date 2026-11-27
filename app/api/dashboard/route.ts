@@ -387,7 +387,8 @@ export async function POST(request:Request){
    if(json.length>MAX_TEXT_STYLE_BYTES)return Response.json({error:"That style is too big to save."},{status:400});
    const have=await db.prepare("SELECT count(*) AS n,sum(name=?) AS same FROM text_styles WHERE owner=?").bind(name,owner).first<{n:number;same:number|null}>();
    if(!have?.same&&(have?.n??0)>=MAX_TEXT_STYLES)return Response.json({error:"You have "+MAX_TEXT_STYLES+" saved styles. Delete one to save another."},{status:409});
-   await db.prepare("INSERT INTO text_styles (id,owner,name,style,created_at) VALUES (lower(hex(randomblob(16))),?,?,?,?) ON CONFLICT(owner,name) DO UPDATE SET style=excluded.style").bind(owner,name,json,iso).run();
+   // A UUID id: deleteTextStyle and bulkClips' styleId only take those.
+   await db.prepare("INSERT INTO text_styles (id,owner,name,style,created_at) VALUES (?,?,?,?,?) ON CONFLICT(owner,name) DO UPDATE SET style=excluded.style").bind(crypto.randomUUID(),owner,name,json,iso).run();
    return Response.json({ok:true,message:(have?.same?"Updated the style ":"Saved the style ")+"“"+name+"”."});
   }
   if(payload.action==="deleteTextStyle"){
