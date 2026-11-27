@@ -987,3 +987,69 @@ button.account-streamers{max-width:none;justify-self:start}
 .pc-controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;margin:4px 0 14px}
 .pc-controls>button{display:inline-flex;align-items:center;gap:6px}
 .pc-controls>small{flex-basis:100%;color:var(--muted)}
+/* Settings in categories (app/settings-nav.tsx), after the ClipFlow 2.0 Phase 14 design: a menu, one category at a
+   time, each setting a row with its control on the right, switches for on/off. Calm: no gradients or effects. */
+.settings-layout{display:grid;grid-template-columns:232px minmax(0,1fr);gap:28px;align-items:start;max-width:1120px}
+.settings-menu{display:flex;flex-direction:column;gap:6px;position:sticky;top:16px}
+.settings-menu button{text-align:left;background:transparent;border:1px solid transparent;border-radius:9px;padding:11px 14px;min-height:58px;color:#d9dee6;cursor:pointer}
+.settings-menu button:hover{background:#161b22}
+.settings-menu button strong,.settings-menu button small{display:block}
+.settings-menu button strong{font-size:14px;font-weight:600}
+.settings-menu button small{font-size:12px;color:var(--muted);margin-top:2px}
+.settings-menu button[aria-current]{background:#1a2219;border-color:#4f6a35;color:var(--lime)}
+.settings-badge{display:inline-block;margin-left:8px;padding:1px 7px;border-radius:999px;background:#3a2e12;color:#ffcf6b;font-size:11px;font-weight:600;vertical-align:1px}
+.settings-main{min-width:0;display:flex;flex-direction:column;gap:18px}
+.settings-scope{margin:0;font-size:13px;color:var(--muted)}
+.settings-main .settings-groups{grid-template-columns:1fr;gap:18px;padding-bottom:84px}
+.settings-main .settings-group{margin:0}
+.settings-main .settings-group .group-body{gap:0;padding:4px 22px 10px}
+.settings-main .settings-group .group-body>*{padding:15px 0;border-top:1px solid var(--border)}
+.settings-main .settings-group .group-body>*:first-child{border-top:0}
+/* A setting with one control: its name and note on the left, the control on the right. */
+.settings-main .group-body>label:not(.check-row):not(:has(input[type=range])):not(:has(textarea)):not(:has(.input-suffix)){display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:18px;row-gap:3px;align-items:center}
+.settings-main .group-body>label:not(.check-row):not(:has(input[type=range])):not(:has(textarea)):not(:has(.input-suffix))>select,
+.settings-main .group-body>label:not(.check-row):not(:has(input[type=range])):not(:has(textarea)):not(:has(.input-suffix))>input,
+.settings-main .group-body>label:not(.check-row):not(:has(input[type=range])):not(:has(textarea)):not(:has(.input-suffix))>button{grid-column:2;grid-row:1 / span 2;width:220px;max-width:100%;margin:0}
+.settings-main .group-body>label:not(.check-row)>input[type=number]{width:110px}
+.settings-main .group-body>label:not(.check-row)>small{grid-column:1}
+/* On/off settings as switches on the right. */
+.settings-main .check-row{display:grid!important;grid-template-columns:minmax(0,1fr) auto;column-gap:18px;align-items:center;cursor:pointer}
+.settings-main .check-row>span{grid-column:1;grid-row:1;font-size:14px;font-weight:500}
+.settings-main .check-row>span small{display:block;font-weight:400;margin-top:3px;line-height:1.5}
+.settings-main .check-row>input[type=checkbox]{grid-column:2;grid-row:1;appearance:none;-webkit-appearance:none;width:44px;height:25px;margin:0;padding:0;border:1px solid #4b5563;border-radius:20px;background:#2a313b;position:relative;cursor:pointer;flex:none}
+.settings-main .check-row>input[type=checkbox]::before{content:"";position:absolute;left:3px;top:3px;width:17px;height:17px;border-radius:50%;background:#d6dce4;transition:left .15s}
+.settings-main .check-row>input[type=checkbox]:checked{background:var(--lime);border-color:var(--lime)}
+.settings-main .check-row>input[type=checkbox]:checked::before{left:22px;background:#10140d}
+.settings-main .check-row>input[type=checkbox]:focus-visible{outline:2px solid var(--lime);outline-offset:2px}
+.settings-main .check-row>input[type=checkbox]:disabled{opacity:.5}
+/* The three switches for text on new clips sit in their own block. */
+.settings-main fieldset.clip-text-fields{border:0;margin:0;padding:15px 0;display:flex;flex-direction:column;gap:12px}
+.settings-main fieldset.clip-text-fields>legend{float:left;width:100%;font-size:14px;font-weight:500;padding:0;margin-bottom:4px}
+.settings-main fieldset.clip-text-fields>legend small{display:block;font-weight:400;margin-top:3px}
+.settings-main fieldset.clip-text-fields>.check-row{padding:0;border:0}
+.settings-saved{margin:0;font-size:13px;color:var(--lime);min-height:20px;border-top:0!important;padding-top:6px!important}
+/* This device → Reduce motion. */
+.cf-reduce-motion *,.cf-reduce-motion *::before,.cf-reduce-motion *::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
+@media(max-width:860px){
+  .settings-layout{grid-template-columns:1fr;gap:14px}
+  .settings-menu{position:static;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+  .settings-menu button{min-height:52px;padding:9px 11px}
+}
+@media(max-width:480px){
+  .settings-main .settings-group .group-body{padding:4px 16px 10px}
+  .settings-main .group-body>label:not(.check-row):not(:has(input[type=range])):not(:has(textarea)):not(:has(.input-suffix)){grid-template-columns:1fr}
+  .settings-main .group-body>label:not(.check-row):not(:has(input[type=range])):not(:has(textarea)):not(:has(.input-suffix))>select,
+  .settings-main .group-body>label:not(.check-row):not(:has(input[type=range])):not(:has(textarea)):not(:has(.input-suffix))>input,
+  .settings-main .group-body>label:not(.check-row):not(:has(input[type=range])):not(:has(textarea)):not(:has(.input-suffix))>button{grid-column:1;grid-row:auto;width:100%}
+}
+@media(prefers-reduced-motion:reduce){.settings-main .check-row>input[type=checkbox]::before{transition:none}}
+/* A row with a name and note on the left and one action on the right (Your data, Sign-in). */
+.settings-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 18px;align-items:center}
+.settings-row strong{display:block;font-size:14px;font-weight:500}
+.settings-row small{display:block;margin-top:3px;line-height:1.5}
+.settings-row>a,.settings-row>button{justify-self:end;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.button-link{text-decoration:none}
+.settings-state{color:var(--lime);font-size:13px;justify-self:end}
+.settings-main .this-pc .group-head{flex-wrap:nowrap;align-items:flex-start}
+.settings-main .this-pc .group-head .apply-chip{margin-left:auto;flex-shrink:0}
+@media(max-width:480px){.settings-row{grid-template-columns:1fr}.settings-row>a,.settings-row>button{justify-self:start}.settings-main .this-pc .group-head{flex-wrap:wrap}}

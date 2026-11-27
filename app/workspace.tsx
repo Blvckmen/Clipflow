@@ -15,6 +15,7 @@ import { captureModes, defaults, destinations, framings, type WorkerSettings } f
 import { BeingMade, clipsOf } from "./being-made";
 import { PlanPanel, type Plan } from "./plan-panel";
 import { AccountData } from "./account-data";
+import { DeviceSettings, SettingsNav, scopeOf, useDevicePrefs, type SettingsTab } from "./settings-nav";
 import { RejectReasonBar, RejectSummary } from "./reject-reason";
 import { viralityLabel } from "../lib/virality.mjs";
 import { ReviewFeed } from "./review-feed";
@@ -171,6 +172,8 @@ export default function Dashboard(){
   });
   return()=>cancelAnimationFrame(frame);
  },[dialog]);
+ // Settings in categories (app/settings-nav.tsx), and this browser's own preferences (Settings → This device).
+ const [settingsTab,setSettingsTab]=useState<SettingsTab>("clips"),device=useDevicePrefs();
  // Returning from Instagram sign-in: show the outcome once, then tidy the address bar.
  useEffect(()=>{
   const params=new URLSearchParams(window.location.search),ok=params.get("connected"),problem=params.get("connect_error")??params.get("signin_error"),who=params.get("account");
@@ -178,7 +181,7 @@ export default function Dashboard(){
   const paid=params.get("billing");
   if(!ok&&!problem&&!paid)return;
   window.history.replaceState(null,"",window.location.pathname);
-  const timer=setTimeout(()=>{if(paid){setToast(paid==="done"?"Thanks! Your plan is active. It can take a few seconds to show here.":"Checkout was cancelled. Nothing was charged.");setView("Settings");}else if(ok){setToast(platformName(ok)+" "+(who?"@"+who+" ":"")+"connected. Choose which streamers it posts for below.");setView("Connections");}else setError(problem!);},0);
+  const timer=setTimeout(()=>{if(paid){setToast(paid==="done"?"Thanks! Your plan is active. It can take a few seconds to show here.":"Checkout was cancelled. Nothing was charged.");setView("Settings");setSettingsTab("plan");}else if(ok){setToast(platformName(ok)+" "+(who?"@"+who+" ":"")+"connected. Choose which streamers it posts for below.");setView("Connections");}else setError(problem!);},0);
   return()=>clearTimeout(timer);
  },[]);
  useEffect(()=>{if(!toast)return;const timer=setTimeout(()=>setToast(""),5000);return()=>clearTimeout(timer);},[toast]);
@@ -240,6 +243,8 @@ export default function Dashboard(){
  const linkedTo=new Map(streamers.map(s=>[s.id,s.accounts]));
  // Library order: newest first (as loaded), or best first by virality score (lib/virality.mjs), newest first on ties.
  const [clipSort,setClipSort]=useState<"new"|"best">("new");
+ // eslint-disable-next-line react-hooks/set-state-in-effect
+ useEffect(()=>{setClipSort(device.prefs.clipOrder);},[device.prefs.clipOrder]);
  const accountStatus=(c:Clip,id:string):TargetState|null=>c.targets?.[id]??(c.review!=="rejected"&&linkedTo.get(c.streamer_id)?.includes(id)?"linked":null);
  const accountFilter=accounts.some(a=>a.id===clipAccount)?clipAccount:"all",filterAccount=accounts.find(a=>a.id===accountFilter);
  const shownClips=clips.filter(c=>(clipFilter==="all"||c.review===clipFilter)&&(clipStreamer==="all"||c.streamer_id===clipStreamer)&&(accountFilter==="all"||accountStatus(c,accountFilter)!==null)).sort(clipSort==="best"?byScore:()=>0);
@@ -386,14 +391,16 @@ export default function Dashboard(){
  {view==="Overview"&&<div className={accounts.length?"lower-grid":"lower-grid single"}>{accounts.length>0&&postingToday}<section className="panel"><div className="panel-heading"><div><h2>Recent activity</h2><p>What's happening in your workspace</p></div><Activity size={18} className="muted"/></div><div className="activity-list">{data?.events.length?data.events.slice(0,4).map(e=><div key={e.id} className="activity-item"><span className="activity-mark"><Check size={13}/></span><div><p>{e.message}</p><small>{when(e.created_at)}</small></div></div>):<div className="activity-empty"><Clock3 size={26}/><h3>A fresh start</h3><p>Your channel and settings changes will appear here.</p></div>}</div></section></div>}
  </>}
  {view==="Connections"&&<>{zernioPanel}{(data?.publishing.instagram||instagramAccounts.length>0)&&instagramPanel}<p className="muted connection-note">Connecting an account uses that platform&apos;s own sign-in. Clipflow never sees your password.</p></>}
- {view==="Settings"&&data?.plan&&<PlanPanel plan={data.plan}/>}
- {view==="Settings"&&data&&<AccountData/>}
- {view==="Settings"&&data?.account&&(data.account.twitch||data.account.session)&&<section className="panel settings-group"><div className="group-head"><Link2 size={18}/><div><h2>Sign-in</h2><p>How you sign in to this workspace.</p></div></div><div className="group-body">
-  {data.account.twitch&&(data.account.twitchLogin!==null?<p>Sign in with Twitch: linked{data.account.twitchLogin?<> to <strong>@{data.account.twitchLogin}</strong></>:null}.</p>:<p>Link your Twitch account to sign in with it. Your clips, channels and settings stay in this workspace. <a className="secondary" href="/api/auth/twitch/start?return_to=/" target="_top">Link Twitch</a></p>)}
-  {data.account.session&&<form method="post" action="/api/auth/signout"><button className="secondary" type="submit">Sign out</button></form>}
+ {view==="Settings"&&<div className="settings-layout"><SettingsNav tab={settingsTab} onTab={setSettingsTab} tabs={(["clips","moments","posting","recordings","pc",...(data?.plan?["plan" as const]:[]),"account","device"] as SettingsTab[])} linkTwitch={!!data?.account?.twitch&&data.account.twitchLogin===null}/><div className="settings-main"><p className="settings-scope">Applies to: {scopeOf(settingsTab)}</p>
+ {settingsTab==="plan"&&data?.plan&&<PlanPanel plan={data.plan}/>}
+ {settingsTab==="device"&&<DeviceSettings {...device}/>}
+ {settingsTab==="account"&&data?.account&&(data.account.twitch||data.account.session)&&<section className="panel settings-group"><div className="group-head"><Link2 size={18}/><div><h2>Sign-in</h2><p>How you sign in to this workspace.</p></div></div><div className="group-body">
+  {data.account.twitch&&<div className="settings-row"><div><strong>Sign in with Twitch</strong><small>{data.account.twitchLogin!==null?<>Linked{data.account.twitchLogin?<> to <b>@{data.account.twitchLogin}</b></>:null}. You can sign in with it.</>:"Link your Twitch account to sign in with it. Your clips, channels and settings stay in this workspace."}</small></div>{data.account.twitchLogin===null?<a className="primary button-link" href="/api/auth/twitch/start?return_to=/" target="_top">Link Twitch</a>:<span className="settings-state">Linked</span>}</div>}
+  {data.account.session&&<form method="post" action="/api/auth/signout" className="settings-row"><div><strong>Sign out</strong><small>End this browser's session. Your workspace stays as it is.</small></div><button className="secondary" type="submit">Sign out</button></form>}
  </div></section>}
- {view==="Settings"&&<form onSubmit={async e=>{e.preventDefault();await mutate({action:"settings",settings:draft});}} className="settings-groups">
- <section className="panel settings-group"><div className="group-head"><Scissors size={18}/><div><h2>Clips</h2><p>How each new clip is cut and framed.</p></div></div><div className="group-body">
+ {settingsTab==="account"&&data&&<AccountData/>}
+ <form onSubmit={async e=>{e.preventDefault();await mutate({action:"settings",settings:draft});}} className="settings-groups">
+ {settingsTab==="clips"&&<section className="panel settings-group"><div className="group-head"><Scissors size={18}/><div><h2>Clips</h2><p>How each new clip is cut and framed.</p></div></div><div className="group-body">
   <label>Clip length <span className="value">{draft.duration} seconds</span><input type="range" min="15" max="90" step="5" value={draft.duration} onChange={e=>setDraft({...draft,duration:Number(e.target.value)})}/><small>15 to 90 seconds. Cuts snap to whole sentences, so clips land a few seconds either side.</small></label>
   <label>Template<select value={draft.framing} onChange={e=>setDraft({...draft,framing:e.target.value})}>{Object.entries(framings).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select><small>The layout for new clips. Without a webcam, facecam templates use Blurred.</small></label>
   <fieldset className="clip-text-fields"><legend>Text on new clips <small>Each one turns on or off by itself. A channel can choose its own in its settings, and single clips in the editor.</small></legend>
@@ -402,27 +409,27 @@ export default function Dashboard(){
   <label className="check-row"><input type="checkbox" checked={draft.hooks!==false} onChange={e=>setDraft({...draft,hooks:e.target.checked})}/><span>Opening title<small>A short title over the first seconds, written from what is said. You can type your own in the editor.</small></span></label>
   </fieldset>
   <label>Daily limit<input type="number" min="1" max="100" required value={draft.dailyLimit} onChange={e=>setDraft({...draft,dailyLimit:Number(e.target.value)})}/><small>Each day, at most this many clips per streamer and this many posts per account (TikTok takes at most 15). A streamer or account can have its own limit instead. The last 30% of a streamer&apos;s clips are kept for chat spikes, !clip and viewers&apos; clips.</small></label>
- </div></section>
- <section className="panel settings-group"><div className="group-head"><Zap size={18}/><div><h2>Finding moments</h2><p>What makes the worker clip.</p></div></div><div className="group-body">
+ </div></section>}
+ {settingsTab==="moments"&&<section className="panel settings-group"><div className="group-head"><Zap size={18}/><div><h2>Finding moments</h2><p>What makes the worker clip.</p></div></div><div className="group-body">
   <label>Clip from chat with !clip<select value={draft.clipCommand??"mods"} onChange={e=>setDraft({...draft,clipCommand:e.target.value as Settings["clipCommand"]})}><option value="mods">The streamer, moderators and VIPs</option><option value="everyone">Also viewers (3 within 30 seconds)</option><option value="off">Off</option></select><small>Typing !clip in a Twitch chat clips the last moment straight away. Viewers need 3 of them within 30 seconds, so one person can&apos;t spam clips.</small></label>
   <ViewerClipsSettings importClips={draft.importClips??0} value={draft.viewerClips??defaults.viewerClips} onChange={(importClips,viewerClips)=>setDraft({...draft,importClips,viewerClips})}/>
   <label className="check-row"><input type="checkbox" checked={draft.learn!==false} onChange={e=>setDraft({...draft,learn:e.target.checked})}/><span>Learn from views<small>Whichever does better for a streamer, chat spikes or loud moments, counts for more when the worker picks their moments. See Publishing → Performance.</small></span></label>
- </div></section>
- <section className="panel settings-group"><div className="group-head"><Clapperboard size={18}/><div><h2>Posting</h2><p>What happens once a clip is made.</p></div></div><div className="group-body">
+ </div></section>}
+ {settingsTab==="posting"&&<section className="panel settings-group"><div className="group-head"><Clapperboard size={18}/><div><h2>Posting</h2><p>What happens once a clip is made.</p></div></div><div className="group-body">
   <label>New clips<select value={draft.mode} onChange={e=>setDraft({...draft,mode:e.target.value})}><option value="review">Wait for my review</option><option value="automatic">Post automatically</option></select><small>Each streamer can override this: Channels → Edit → New clips.</small></label>
   <label className="check-row"><input type="checkbox" checked={draft.aiCaptions??true} onChange={e=>setDraft({...draft,aiCaptions:e.target.checked})}/><span>Write post text from what was said<small>From the transcript, with the streamer&apos;s credit and hashtags. Clips without speech use the text below.</small></span></label>
   {(draft.aiCaptions??true)&&<label>Extra hashtags <small className="inline-note">optional</small><textarea rows={2} maxLength={1000} placeholder="#gaming #clips" value={draft.captionNotes??""} onChange={e=>setDraft({...draft,captionNotes:e.target.value})}/><small>Only #hashtags are used.</small></label>}
   <label>{(draft.aiCaptions??true)?"Fallback post text":"Post text"}<textarea rows={2} maxLength={500} value={draft.captionTemplate??""} onChange={e=>setDraft({...draft,captionTemplate:e.target.value})}/><small>{"{streamer}"} and {"{platform}"} become the clip&apos;s channel and source, e.g. {renderPreview(draft.captionTemplate)}</small></label>
   <details className="settings-more"><summary>Preferred destinations</summary><div className="destination-checks">{destinations.map(p=><label key={p}><input type="checkbox" checked={draft.destinations.includes(p)} onChange={e=>setDraft({...draft,destinations:e.target.checked?[...draft.destinations,p]:draft.destinations.filter(x=>x!==p)})}/><Brand name={p}/>{p}</label>)}</div><small className="field-note">Only for planning: connected accounts post the streamers picked for them under Channels → Posts to.</small></details>
- </div></section>
- <section className="panel settings-group"><div className="group-head"><Video size={18}/><div><h2>Recordings &amp; highlights</h2><p>Whole streams and the weekly video.</p></div></div><div className="group-body">
+ </div></section>}
+ {settingsTab==="recordings"&&<section className="panel settings-group"><div className="group-head"><Video size={18}/><div><h2>Recordings &amp; highlights</h2><p>Whole streams and the weekly video.</p></div></div><div className="group-body">
   <label>Keep stream recordings for<div className="input-suffix"><input type="number" min="1" max="30" required value={draft.recordingDays??7} onChange={e=>setDraft({...draft,recordingDays:Number(e.target.value)})}/><span>days</span></div><small>For streamers set to record whole streams. Clips made from a recording stay after it&apos;s deleted.</small></label>
   <label className="check-row"><input type="checkbox" checked={!!draft.weeklyHighlights} onChange={e=>setDraft({...draft,weeklyHighlights:e.target.checked})}/><span>Weekly highlight video<small>Every Monday, the past week&apos;s best accepted clips joined into one landscape video for YouTube, under Clips → Highlights.</small></span></label>
- </div></section>
- <ThisPcSettings value={draft.worker??{}} onChange={worker=>setDraft({...draft,worker})} engine={engine} dirty={JSON.stringify(draft.worker??{})!==JSON.stringify(settings.worker??{})} channelName={id=>streamers.find(x=>x.id===id)?.name??null} onRefresh={()=>void load(true)} onRestart={now=>void mutate({action:"restartWorker",now:!!now})} onPower={stop=>void mutate({action:"workerPower",power:stop?"stopped":"running"})} busy={busy}/>
- <section className="panel settings-group"><div className="group-head"><Film size={18}/><div><h2>Clips you already have</h2><p>Applies straight away; posted clips are left alone.</p></div></div><div className="group-body"><div className="bulk-captions"><small>Re-renders the clips from their original video.</small><div><button type="button" className="secondary" disabled={busy||!data} onClick={()=>void mutate({action:"captionsAll",on:false,scope:"unposted"})}>Remove subtitles from all clips</button><button type="button" className="secondary" disabled={busy||!data} onClick={()=>void mutate({action:"captionsAll",on:true,scope:"unposted"})}>Add subtitles back</button></div></div></div></section>
+ </div></section>}
+ {settingsTab==="pc"&&<ThisPcSettings value={draft.worker??{}} onChange={worker=>setDraft({...draft,worker})} engine={engine} dirty={JSON.stringify(draft.worker??{})!==JSON.stringify(settings.worker??{})} channelName={id=>streamers.find(x=>x.id===id)?.name??null} onRefresh={()=>void load(true)} onRestart={now=>void mutate({action:"restartWorker",now:!!now})} onPower={stop=>void mutate({action:"workerPower",power:stop?"stopped":"running"})} busy={busy}/>}
+ {settingsTab==="clips"&&<section className="panel settings-group"><div className="group-head"><Film size={18}/><div><h2>Clips you already have</h2><p>Applies straight away; posted clips are left alone.</p></div></div><div className="group-body"><div className="bulk-captions"><small>Re-renders the clips from their original video.</small><div><button type="button" className="secondary" disabled={busy||!data} onClick={()=>void mutate({action:"captionsAll",on:false,scope:"unposted"})}>Remove subtitles from all clips</button><button type="button" className="secondary" disabled={busy||!data} onClick={()=>void mutate({action:"captionsAll",on:true,scope:"unposted"})}>Add subtitles back</button></div></div></div></section>}
  <div className={"save-bar"+(settingsDirty?" show":"")} role="region" aria-label="Unsaved settings"><span>{settingsDirty?"You have unsaved changes":"All changes saved"}</span><button type="button" className="secondary" disabled={!settingsDirty||busy} onClick={()=>setDraft(settings)}>Discard</button><button type="submit" className="primary" disabled={!settingsDirty||busy||!data}>{busy?<Loader2 className="spin" size={16}/>:<Check size={16}/>}Save changes</button></div>
- </form>}
+ </form></div></div>}
  {view==="Alerts"&&data&&<AlertsSettings on={!!(settings as {discordAlerts?:boolean}).discordAlerts} error={(settings as {alertError?:string|null}).alertError??null} busy={busy} mutate={body=>mutate(body)}/>}
  {view==="Alerts"&&<section className="panel worker-panel"><div className="panel-heading"><div><h2>Clip worker</h2><p>{engine?.lastSeen?"Last checked in "+when(engine.lastSeen)+".":"The worker records and clips on your PC; nothing is captured until it runs."}</p></div><span className={"tag "+(engine?.connected?"lime":"amber")}>{engine?.status||"Setup required"}</span></div>{recentError&&<p className="engine-error worker-problem">Problem {when(recentError.at)}: {recentError.message}</p>}<div className="panel-foot worker-actions"><button className="secondary" onClick={()=>{setToken("");setDialog("worker");}}><Zap size={14}/>Connect or set up the worker</button><button className="secondary" onClick={()=>setDialog("setup")}><CircleHelp size={14}/>Setup &amp; help</button></div></section>}
  {view==="Look"&&data&&<BackgroundLibrary backgrounds={data.backgrounds??[]} storage={data.storage} busy={busy} onUploaded={message=>{void load();setToast(message);}} onDelete={id=>void mutate({action:"deleteBackground",id})}/>}
